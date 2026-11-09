@@ -14,4 +14,6 @@ def main():
     tools = RobotTools(client)
     mcp = FastMCP("lekiwi")
     mcp.tool(structured_output=False)(tools.observe)
+    if not args.snapshot:
+        mcp.tool(structured_output=False)(tools.execute)
     mcp.run()

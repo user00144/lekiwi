@@ -119,14 +119,14 @@ class HardwareTest(unittest.TestCase):
 
     def test_servo_device_errors_are_not_success(self):
         arm = ArmEgoReader(load_config()["arm"])
-        arm._bus, arm._packet = Mock(), Mock()
-        bus = arm._bus
-        arm._packet.read2ByteTxRx.return_value = (2000, 0, 1)
+        arm.bus.port_handler, arm.bus.packet_handler = Mock(), Mock()
+        bus = arm.bus.port_handler
+        arm.bus.packet_handler.read2ByteTxRx.return_value = (2000, 0, 1)
         result = arm.read_ego()
         self.assertFalse(result["available"])
         self.assertEqual(result["joints"], {})
         bus.closePort.assert_called_once()
-        self.assertIsNone(arm._bus)
+        self.assertIsNone(arm.bus.port_handler)
 
     def test_failed_baudrate_releases_port(self):
         arm = ArmEgoReader(load_config()["arm"])
@@ -134,5 +134,5 @@ class HardwareTest(unittest.TestCase):
             handler.return_value.openPort.return_value = True
             handler.return_value.setBaudRate.return_value = False
             with self.assertRaises(OSError):
-                arm._open('/dev/fake')
+                arm.bus._open('/dev/fake')
             handler.return_value.closePort.assert_called_once()

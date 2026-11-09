@@ -26,13 +26,11 @@ uv run --project harness harness-run \
 - Codex 로그인 필요. 공식 `openai-codex` Python SDK와 번들 runtime 사용.
 - `--server tcp://127.0.0.1:5556`, `--model`로 연결 주소와 모델 지정 가능.
 - `runtime.py`: Codex 실행, MCP 연결, JSON 출력. 모델 미지정 시 Codex 기본 설정 사용.
-- `tools.py`: `observe(robot_id)` 하나만 노출. JPEG는 MCP 이미지로 반환.
+- `tools.py`: `observe(robot_id)`와 `execute(robot_id, x, y, theta, duration_ms)` 노출. JPEG는 MCP 이미지로 반환. snapshot 모드에는 observe만 등록합니다.
 - `client.py`: 독립된 ZMQ 서버에 요청. 다른 프로젝트의 Python 코드를 import하지 않음.
 - MCP 관측 성공을 확인하지 못하면 제어신호 출력을 거절함.
 
-현재 ORIN이 지원하는 액션은 `wait`뿐입니다. 이동·관절 명령이 필요한 요청은
-`wait, duration_ms=0`과 미지원 사유를 반환합니다. 모터 명령 형식이 확정되면
-`runtime.py`의 출력 스키마와 지시문을 변경하면 됩니다.
+ORIN은 `wait`와 `move`를 지원합니다. `harness-run`은 기존대로 observe만 허용하는 제어신호 출력 모드이며, 현재 출력 스키마는 wait 전용입니다. 실제 주행은 아래 execute MCP를 직접 호출합니다.
 
 ```json
 {"robot_id":"kiwi-01","command":{"action":"wait","duration_ms":100},"reason":"관측에 기반한 설명"}
@@ -43,3 +41,24 @@ MCP만 실행: `uv run --project harness harness --server tcp://127.0.0.1:5556`
 테스트: `uv run --project harness python -m unittest discover -s harness/tests -v`
 
 SDK 문서: https://learn.chatgpt.com/docs/codex-sdk
+
+## 차체 속도 기반 execute MCP
+
+```json
+{"robot_id":"kiwi-01","x":0.2,"y":0.0,"theta":0.0,"duration_ms":500}
+```
+
+위 호출은 전진 0.2 m/s를 500 ms 동안 명령합니다. `x`는 전진(+)/후진(-), `y`는 왼쪽(+)/오른쪽(-) 평행이동(m/s), `theta`는 반시계(+)/시계(-) 회전(deg/s)입니다. 평행이동과 회전을 함께 지정할 수 있습니다. 평행이동 속도 `hypot(x,y)`는 최대 0.4 m/s, 회전은 ±150 deg/s, 시간은 1–1000 ms입니다. 모두 0인 속도도 허용합니다.
+
+MCP는 서버에 `command: {action: "move", x, y, theta, duration_ms}`를 보내며, ORIN이 바퀴 ID 7·8·9의 속도로 변환합니다. 실행 종료 시 정지·토크 해제를 수행한 뒤 observation을 반환합니다. 완료는 명령 전송과 정지 처리의 성공을 의미하며, 실제 이동 거리 도달을 검증하는 방식은 아닙니다. 통신 오류나 시간 초과는 실행 결과가 불확실할 수 있어 자동 재시도하지 않습니다.
+
+## 폴더에서 직접 실행
+
+observe/execute MCP 서버(stdio)를 시작합니다. Codex 제어신호 출력은 기존 `harness-run` 명령을 사용합니다.
+
+```bash
+cd harness
+uv run python main.py
+```
+
+`uv run`이 의존성과 프로젝트 설치를 준비합니다. 이미 설치된 Python 환경에서는 `python main.py`로 실행할 수 있습니다. 기존 CLI 옵션도 그대로 사용할 수 있습니다.

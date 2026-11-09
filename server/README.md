@@ -24,3 +24,14 @@ uv run --project server server
 새 요청은 거절합니다. timeout 시 실행 결과는 미확정이며 자동 재전송하지 않습니다.
 시각화·MCP·하드웨어·실패 기록은 포함하지 않습니다.
 기존 TEMP 대시보드 서버와 5555 포트를 동시에 사용할 수 없습니다.
+
+## 폴더에서 직접 실행
+
+ZeroMQ 중계 서버를 시작합니다.
+
+```bash
+cd server
+uv run python main.py
+```
+
+`uv run`이 의존성과 프로젝트 설치를 준비합니다. 이미 설치된 Python 환경에서는 `python main.py`로 실행할 수 있습니다. 기존 CLI 옵션도 그대로 사용할 수 있습니다.

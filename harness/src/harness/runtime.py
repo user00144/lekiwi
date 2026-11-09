@@ -42,7 +42,7 @@ class CodexRuntime:
                 developer_instructions=(
                     "Call lekiwi.observe for the requested robot before deciding. "
                     "Use the current images, radar and joints to propose one control command. "
-                    "Only wait (duration_ms 0..1000) is implemented by this robot. "
+                    "This proposal-only mode supports wait (duration_ms 0..1000); movement execution is available separately through MCP execute. "
                     "If the instruction needs unsupported movement, output wait with duration_ms=0 "
                     "and explain the limitation. If observation fails, do not invent sensor data. "
                     "If source.recorded is true, explicitly say the observation is recorded, not live. "

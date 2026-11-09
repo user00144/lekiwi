@@ -4,6 +4,8 @@ import time
 
 from .config import load_config
 from .drivers.arm import ArmEgoReader
+from .drivers.servo import ServoBus
+from .drivers.wheels import WheelDrive, valid_motion
 from .drivers.camera import CameraStream
 from .drivers.radar import RadarStream
 
@@ -15,7 +17,9 @@ class OrinRobot:
         self.cameras = {name: CameraStream(name, settings, mock)
                         for name, settings in config["cameras"].items()}
         self.radar = RadarStream(config["radar"], mock)
-        self.arm = ArmEgoReader(config["arm"], mock)
+        bus = ServoBus(config["arm"])
+        self.arm = ArmEgoReader(config["arm"], mock, bus)
+        self.wheels = WheelDrive(bus, mock)
         self._sensors = [*self.cameras.values(), self.radar, self.arm]
 
     def __enter__(self):
@@ -35,6 +39,10 @@ class OrinRobot:
     def close(self) -> None:
         # Attempt every close even if one device fails during cleanup.
         errors = []
+        try:
+            self.wheels.close()
+        except Exception as exc:
+            errors.append(exc)
         for sensor in reversed(self._sensors):
             try:
                 sensor.close()
@@ -57,6 +65,11 @@ class OrinRobot:
         }
 
     def execute(self, command: dict) -> bool:
+        if command.get("action") == "move":
+            if not valid_motion(command):
+                return False
+            self.wheels.move(command["x"], command["y"], command["theta"], command["duration_ms"])
+            return True
         if command.get("action") != "wait":
             return False
         duration = command.get("duration_ms")

@@ -2,7 +2,7 @@
 
 여러 Lekiwi 로봇의 observation을 ZeroMQ로 수신하고, Codex가 관측을 바탕으로 제어신호를 생성하는 프로젝트입니다.
 
-현재 harness는 **observation 조회와 제어신호 JSON 출력까지만** 수행합니다. 출력한 신호를 로봇에 전송하지 않습니다. 지원하는 액션은 `wait`이며 이동·관절 제어는 아직 구현하지 않았습니다.
+현재 harness는 **observation 조회와 제어신호 JSON 출력까지만** 수행합니다. 출력한 신호를 로봇에 전송하지 않습니다. 별도 MCP `execute`는 차체 속도 기반 주행을 실행합니다. 런타임은 `wait`와 `move`를 지원하며 관절 제어는 아직 구현하지 않았습니다.
 
 ## 구성
 
@@ -110,3 +110,15 @@ uv run --project lekiwi_runtime python -m unittest discover -s lekiwi_runtime/te
 ```
 
 모의 로봇 라우팅, MCP 관측, snapshot 처리와 runtime 응답을 검증합니다. 실물 로봇이나 Codex 모델 호출 없이 실행됩니다.
+
+## 폴더별 main.py 실행
+
+각 폴더 안에서 `uv run python main.py`를 실행합니다. 이미 해당 패키지를 설치한 Python 환경에서는 `python main.py`도 가능합니다.
+
+| 폴더 | 실행되는 프로그램 | 기본 연결 |
+| --- | --- | --- |
+| `server` | ZeroMQ 중계 서버 | 로봇 5555, API 5556 |
+| `harness` | observe/execute MCP 서버(stdio) | `tcp://127.0.0.1:5556` |
+| `lekiwi_runtime` | 로봇 센서·주행 클라이언트 | `tcp://127.0.0.1:5555` |
+
+서로 다른 컴퓨터에서 실행할 때는 harness/runtime에 `--server tcp://SERVER_IP:PORT`를 지정합니다. MCP 서버는 터미널 대화형 UI가 아니라 MCP 클라이언트와 stdio로 연결하는 프로세스입니다.
