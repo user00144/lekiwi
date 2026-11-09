@@ -1,3 +1,5 @@
+import sys
+
 import asyncio
 
 import zmq
@@ -17,7 +19,12 @@ class ServerClient:
             socket.connect(self.endpoint)
             async with asyncio.timeout(self.timeout):
                 await socket.send_json({"robot_id": robot_id, "op": op, **payload})
-                return await socket.recv_json()
+                response = await socket.recv_json()
+                if op == "execute":
+                    print(f"Execution response robot={robot_id} request={response.get('request_id')} status={response.get('status')}", file=sys.stderr, flush=True)
+                elif response.get("status") != "ok":
+                    print(f"Observation failed robot={robot_id} status={response.get('status')}", file=sys.stderr, flush=True)
+                return response
 
 
 class SnapshotClient:

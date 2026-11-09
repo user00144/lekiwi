@@ -1,3 +1,5 @@
+import sys
+
 import asyncio
 from contextlib import suppress
 import json
@@ -29,6 +31,7 @@ class RobotServer:
             self._socket.close()
             self._context.term()
             raise
+        print(f'Robot router listening endpoint={self.endpoint}', file=sys.stderr, flush=True)
         self._reader = asyncio.create_task(self._receive())
         return self
 
@@ -41,6 +44,7 @@ class RobotServer:
                 future.set_exception(ConnectionError("Server closed"))
         self._socket.close()
         self._context.term()
+        print('Robot router stopped', file=sys.stderr, flush=True)
 
     async def observe(self, robot_id: str) -> dict:
         return await self._request(robot_id, {"op": "observe"})
@@ -63,7 +67,13 @@ class RobotServer:
                 body = json.dumps({**payload, "request_id": request_id}).encode()
                 async with asyncio.timeout(self.timeout):
                     await self._socket.send_multipart([key[0], body], flags=zmq.DONTWAIT)
-                    return await future
+                    response = await future
+                    if payload["op"] == "execute":
+                        print(f"Execution reply robot={robot_id} request={request_id} status={response.get('status')}", file=sys.stderr, flush=True)
+                    return response
+            except TimeoutError:
+                print(f"Robot request timed out robot={robot_id} request={request_id} op={payload['op']}; outcome unknown", file=sys.stderr, flush=True)
+                raise
             finally:
                 self._pending.pop(key, None)
                 future.cancel()
@@ -76,6 +86,9 @@ class RobotServer:
             try:
                 reply = json.loads(frames[1])
             except (ValueError, UnicodeDecodeError):
+                continue
+            if isinstance(reply, dict) and reply.get("type") == "hello":
+                print(f"Robot registered robot={frames[0].decode(errors='replace')}", file=sys.stderr, flush=True)
                 continue
             if not isinstance(reply, dict) or not isinstance(reply.get("request_id"), str):
                 continue

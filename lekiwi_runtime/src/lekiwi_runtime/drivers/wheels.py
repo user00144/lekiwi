@@ -1,9 +1,12 @@
 """Bounded body-velocity commands for the three STS3215 omni wheels."""
 
+import sys
+
 import math
 import time
 
 from .servo import ServoBus
+
 
 WHEEL_IDS = (7, 8, 9)
 GOAL_VELOCITY = 46
@@ -83,6 +86,7 @@ class WheelDrive:
     def move(self, x: float, y: float, theta: float, duration_ms: int) -> None:
         if not valid_motion(dict(x=x, y=y, theta=theta, duration_ms=duration_ms)):
             raise ValueError("Invalid body velocity or duration")
+        print(f'Motion command x={x} y={y} theta={theta} duration_ms={duration_ms} mock={self.mock}', file=sys.stderr, flush=True)
         if self.mock:
             time.sleep(duration_ms / 1000)
             return
@@ -113,4 +117,6 @@ class WheelDrive:
                     errors.append(exc)
         self._active = bool(errors)
         if errors:
+            print('Wheel stop/release failed; physical state unknown', file=sys.stderr, flush=True)
             raise OSError("Wheel stop/release failed; physical state unknown") from errors[0]
+        print('Wheels stopped and torque released', file=sys.stderr, flush=True)

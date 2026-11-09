@@ -1,3 +1,5 @@
+import sys
+
 def main():
     import argparse
     from pathlib import Path
@@ -16,4 +18,8 @@ def main():
     mcp.tool(structured_output=False)(tools.observe)
     if not args.snapshot:
         mcp.tool(structured_output=False)(tools.execute)
-    mcp.run()
+    print(f"Starting MCP server mode={('snapshot' if args.snapshot else 'live')} endpoint={args.server}", file=sys.stderr, flush=True)
+    try:
+        mcp.run()
+    finally:
+        print('MCP server stopped', file=sys.stderr, flush=True)

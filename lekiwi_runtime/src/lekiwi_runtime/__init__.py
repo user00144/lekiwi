@@ -1,3 +1,5 @@
+import sys
+
 from .client import RobotClient
 from .robot import Robot
 
@@ -20,11 +22,16 @@ def main():
     def interrupt(signum, frame):
         raise KeyboardInterrupt
 
+    print(f'Starting robot runtime robot={args.robot_id} mock={args.mock}', file=sys.stderr, flush=True)
     previous = signal.signal(signal.SIGTERM, interrupt)
     try:
         with OrinRobot(load_config(args.config), mock=args.mock) as robot:
             RobotClient(robot, args.robot_id, args.server).run()
     except KeyboardInterrupt:
         pass
+    except Exception:
+        print('Robot runtime failed', file=sys.stderr, flush=True)
+        raise
     finally:
+        print(f'Robot runtime stopped robot={args.robot_id}', file=sys.stderr, flush=True)
         signal.signal(signal.SIGTERM, previous)

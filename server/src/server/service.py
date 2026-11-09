@@ -1,3 +1,5 @@
+import sys
+
 import asyncio
 
 import zmq
@@ -30,6 +32,7 @@ class ServerService:
         except TimeoutError:
             response = {"status": "error", "error": "Robot timeout; execution outcome unknown. Do not retry blindly."}
         except Exception as exc:
+            print(f'API request failed: {exc}', file=sys.stderr, flush=True)
             response = {"status": "error", "error": str(exc)}
         await socket.send_multipart([*address, json.dumps(response).encode()])
 
@@ -37,6 +40,7 @@ class ServerService:
         with zmq.asyncio.Context() as context, context.socket(zmq.ROUTER) as socket:
             socket.setsockopt(zmq.LINGER, 0)
             socket.bind(self.endpoint)
+            print(f'Request API listening endpoint={self.endpoint}', file=sys.stderr, flush=True)
             tasks = set()
             try:
                 while True:
