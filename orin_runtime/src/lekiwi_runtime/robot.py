@@ -1,0 +1,6 @@
+from typing import Protocol
+
+
+class Robot(Protocol):
+    def observe(self) -> dict: ...
+    def execute(self, command: dict) -> bool: ...
