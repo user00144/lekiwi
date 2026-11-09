@@ -10,7 +10,7 @@
 | --- | --- |
 | [server](server/README.md) | 로봇별 observe/execute 요청과 응답을 중계하는 ZeroMQ 서버 |
 | [harness](harness/README.md) | Codex Python runtime, MCP observe 도구, 제어신호 출력 |
-| [lekiwi_runtime](lekiwi_runtime/README.md) | ORIN에서 실행하는 DEALER 클라이언트와 하드웨어 어댑터 |
+| [lekiwi_runtime](lekiwi_runtime/README.md) | ORIN에서 실행하는 DEALER 클라이언트와 센서 드라이버 |
 | `contracts/` | 예약된 빈 폴더 |
 | `utility/` | 예약된 빈 폴더 |
 | `TEMP/` | 로컬 참고 코드와 observation 캡처. Git 관리 제외 |
@@ -35,7 +35,7 @@ Codex Python runtime
 ## 준비
 
 - 서버·harness: Python 3.13 이상, uv
-- ORIN runtime: Python 3.10 이상, 기존 ORIN 하드웨어 코드와 드라이버 의존성
+- ORIN runtime: Python 3.10 이상; 센서 드라이버와 설정은 runtime에 포함
 - Codex runtime 실행: Codex 로그인
 
 아래 명령은 저장소 루트에서 실행합니다.
@@ -57,18 +57,17 @@ uv run --project server server
 
 ### 2. ORIN
 
-기존 하드웨어 드라이버가 설치된 Python 환경에서 runtime을 설치하고 실행합니다.
+runtime과 드라이버 의존성을 설치하고 실행합니다.
 
 ```bash
-pip install ./lekiwi_runtime
-lekiwi-runtime \
+uv sync --project lekiwi_runtime
+uv run --project lekiwi_runtime lekiwi-runtime \
   --server tcp://SERVER_IP:5555 \
-  --robot-id kiwi-01 \
-  --client-dir /path/to/ORIN/client
+  --robot-id kiwi-01
 ```
 
 `SERVER_IP`는 서버 PC 주소입니다. 각 로봇은 서로 다른 `--robot-id`를 사용합니다.
-`--client-dir`에는 기존 `hardware.py`와 `handlers.py`가 있어야 하며, ORIN의 teleop/radar 폴더 배치를 유지해야 합니다. 이 하드웨어 코드는 저장소에 포함하지 않습니다.
+외부 ORIN 폴더 없이 실행됩니다. 장비별 설정은 `--config /etc/lekiwi/robot.json`으로 지정하고, 하드웨어 없이 확인하려면 `--mock`을 사용합니다. 기본 레이더 프로필은 TDM 펌웨어용이며, 보정값은 제공된 follower 로봇 기준입니다. 상세 설정은 [runtime 문서](lekiwi_runtime/README.md)를 참고하세요.
 
 ### 3. 관측 기반 제어신호 출력
 

@@ -1,0 +1,40 @@
+{
+  "cameras": {
+    "front": {
+      "enabled": true,
+      "device": "/dev/video0",
+      "width": 640,
+      "height": 480,
+      "fps": 30,
+      "fourcc": "MJPG",
+      "rotation": 0,
+      "jpeg_quality": 85
+    },
+    "wrist": {
+      "enabled": true,
+      "device": "/dev/video2",
+      "width": 640,
+      "height": 480,
+      "fps": 30,
+      "fourcc": "MJPG",
+      "rotation": 0,
+      "jpeg_quality": 85
+    }
+  },
+  "radar": {
+    "enabled": true,
+    "port": "auto",
+    "cli_port": "auto",
+    "baud": 3125000,
+    "cli_baud": 115200,
+    "auto_init": true,
+    "cfg_path": "radar.cfg",
+    "max_points": 256
+  },
+  "arm": {
+    "enabled": true,
+    "port": null,
+    "baudrate": 1000000,
+    "calib_path": "follower.json"
+  }
+}
