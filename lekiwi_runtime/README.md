@@ -49,12 +49,12 @@ uv run --project lekiwi_runtime lekiwi-runtime \
 | 파일 | 역할 |
 | --- | --- |
 | `client.py` | ZeroMQ 요청·응답, 오류 응답 |
-| `orin.py` | 센서 시작·종료, observation 조합, wait/move 실행 |
+| `orin.py` | 센서 시작·종료, observation 조합, wait/move/move_arm 실행 |
 | `config.py`, `data/` | 기본 설정과 장비별 설정 로딩 |
 | `drivers/camera.py` | 최신 프레임 캡처와 JPEG 인코딩 |
 | `drivers/radar.py` | 레이더 UART 수신과 초기화 |
 | `drivers/radar_protocol.py` | 포인트·SNR 패킷 파싱 |
-| `drivers/arm.py` | 팔 위치 읽기와 보정값 변환 |
+| `drivers/arm.py` | 팔 관측, 보정 변환, 목표 보간·피드백 검증 |
 | `drivers/servo.py` | 팔과 바퀴가 공유하는 시리얼 연결 |
 | `drivers/wheels.py` | 차체 속도 변환, 바퀴 실행과 정지 |
 
@@ -85,3 +85,14 @@ uv run python main.py
 ```
 
 `uv run`이 의존성과 프로젝트 설치를 준비합니다. 이미 설치된 Python 환경에서는 `python main.py`로 실행할 수 있습니다. 기존 CLI 옵션도 그대로 사용할 수 있습니다.
+
+## 팔 액션
+
+`{"op":"execute","request_id":"arm-1","action":"move_arm","joints":{"wrist_roll":10},"duration_ms":1000}`
+
+- 절대 관절 각도(deg), 그리퍼는 0–100%입니다. 부분 목표를 허용하며 생략한 관절에는 쓰지 않습니다.
+- `ego.limits`로 보정된 범위와 속도 제한을 제공합니다. 현재 위치·위치 모드·온도·하드웨어 homing offset을 검사한 후 현재 위치를 목표로 기록하고 토크를 켭니다.
+- 50Hz 목표 보간과 서보 속도 제한을 적용합니다. 관절 30deg/s, 그리퍼 50%/s, 100–1000ms입니다.
+- 실행 후 최대 500ms 동안 관절 피드백을 확인합니다. 허용오차는 관절 2도, 그리퍼 5%p이며 미도달은 error입니다. `ego.last_motion`은 성공한 목표와 측정값을 포함합니다.
+- 정상 완료 후 목표 자세를 유지합니다. 중단·오류에는 측정 위치를 hold하도록 시도하고 자동으로 팔 토크를 끄지 않습니다. 이는 충돌 회피나 물체 파지 성공을 보장하지 않습니다.
+- 팔 기능을 사용하려면 ORIN에 변경된 runtime을 설치하고 재시작해야 합니다. 단순 관측과 베이스 주행은 팔 토크를 활성화하지 않습니다.

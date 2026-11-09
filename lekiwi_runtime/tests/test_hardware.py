@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from lekiwi_runtime.config import DATA_DIR, load_config
-from lekiwi_runtime.drivers.arm import ArmEgoReader, load_calibration, raw_to_unit
+from lekiwi_runtime.drivers.arm import ArmController, load_calibration, raw_to_unit
 from lekiwi_runtime.drivers import radar_protocol as protocol
 from lekiwi_runtime.orin import OrinRobot
 
@@ -118,7 +118,7 @@ class HardwareTest(unittest.TestCase):
         broken.close.assert_called_once()
 
     def test_servo_device_errors_are_not_success(self):
-        arm = ArmEgoReader(load_config()["arm"])
+        arm = ArmController(load_config()["arm"])
         arm.bus.port_handler, arm.bus.packet_handler = Mock(), Mock()
         bus = arm.bus.port_handler
         arm.bus.packet_handler.read2ByteTxRx.return_value = (2000, 0, 1)
@@ -129,7 +129,7 @@ class HardwareTest(unittest.TestCase):
         self.assertIsNone(arm.bus.port_handler)
 
     def test_failed_baudrate_releases_port(self):
-        arm = ArmEgoReader(load_config()["arm"])
+        arm = ArmController(load_config()["arm"])
         with patch('scservo_sdk.PortHandler') as handler:
             handler.return_value.openPort.return_value = True
             handler.return_value.setBaudRate.return_value = False

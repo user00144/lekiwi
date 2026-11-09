@@ -3,7 +3,7 @@
 import time
 
 from .config import load_config
-from .drivers.arm import ArmEgoReader
+from .drivers.arm import ArmController
 from .drivers.servo import ServoBus
 from .drivers.wheels import WheelDrive, valid_motion
 from .drivers.camera import CameraStream
@@ -18,7 +18,7 @@ class OrinRobot:
                         for name, settings in config["cameras"].items()}
         self.radar = RadarStream(config["radar"], mock)
         bus = ServoBus(config["arm"])
-        self.arm = ArmEgoReader(config["arm"], mock, bus)
+        self.arm = ArmController(config["arm"], mock, bus)
         self.wheels = WheelDrive(bus, mock)
         self._sensors = [*self.cameras.values(), self.radar, self.arm]
 
@@ -65,6 +65,11 @@ class OrinRobot:
         }
 
     def execute(self, command: dict) -> bool:
+        if command.get("action") == "move_arm":
+            if not self.arm.valid_target(command.get("joints"), command.get("duration_ms")):
+                return False
+            self.arm.move(command["joints"], command["duration_ms"])
+            return True
         if command.get("action") == "move":
             if not valid_motion(command):
                 return False

@@ -147,6 +147,17 @@ class IntegrationTest(unittest.IsolatedAsyncioTestCase):
                         self.assertEqual(response['status'], 'completed')
                         self.assertTrue(response['observation']['simulated'])
                         self.assertTrue(response['observation']['ego']['available'])
+                        arm = await session.call_tool('execute', {
+                            'robot_id': 'mock', 'action': 'move_arm',
+                            'joints': {'wrist_roll': 10, 'gripper': 60}, 'duration_ms': 1000,
+                        })
+                        self.assertFalse(arm.isError)
+                        arm_response = json.loads(arm.content[0].text)
+                        self.assertEqual(arm_response['status'], 'completed')
+                        feedback = arm_response['observation']['ego']
+                        self.assertTrue(feedback['last_motion']['reached'])
+                        self.assertAlmostEqual(feedback['joints']['wrist_roll'], 10, delta=.1)
+
                 rejected = await client.request('mock', 'execute', command={
                     'action': 'move', 'x': 1, 'y': 0, 'theta': 0, 'duration_ms': 10,
                 })
