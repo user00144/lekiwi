@@ -19,9 +19,13 @@ def load_config(path: Path | None = None) -> dict:
             if not isinstance(value, str) or not value:
                 raise ValueError(f"{section}.{key} must be a file path")
             config[section][key] = str((path.parent / Path(value).expanduser()).resolve())
-    for sensor in [*config["cameras"].values(), config["radar"], config["arm"]]:
+    for sensor in [*config["cameras"].values(), config["radar"], config["arm"], config["imu"]]:
         if type(sensor["enabled"]) is not bool:
             raise ValueError("Sensor enabled must be true or false")
+    if type(config["imu"]["bus"]) is not int or config["imu"]["bus"] < 0:
+        raise ValueError("imu.bus must be a nonnegative integer")
+    if config["imu"]["address"] not in (0x68, 0x69) or type(config["imu"]["address"]) is not int:
+        raise ValueError("imu.address must be 104 or 105")
     return config
 
 

@@ -2,7 +2,7 @@
 
 여러 Lekiwi 로봇의 observation을 ZeroMQ로 수신하고, Codex가 관측을 바탕으로 제어신호를 생성하는 프로젝트입니다.
 
-현재 harness는 **observation 조회와 제어신호 JSON 출력까지만** 수행합니다. 출력한 신호를 로봇에 전송하지 않습니다. 별도 MCP `execute`는 차체 속도 기반 주행을 실행합니다. 런타임은 `wait`, `move`, `move_arm`을 지원합니다.
+현재 harness는 **observation 조회와 제어신호 JSON 출력까지만** 수행합니다. 출력한 신호를 로봇에 전송하지 않습니다. 별도 MCP `execute`는 차체 속도 기반 주행을 실행합니다. 런타임은 `move`, `wait`을 지원합니다.
 
 ## 구성
 

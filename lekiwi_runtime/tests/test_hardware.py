@@ -88,6 +88,8 @@ class HardwareTest(unittest.TestCase):
             self.assertTrue(observation["radar"]["available"])
             self.assertTrue(observation["ego"]["available"])
             self.assertEqual(len(observation["ego"]["joints"]), 6)
+            self.assertTrue(observation["imu"]["available"])
+            self.assertTrue(observation["imu"]["calibrated"])
             json.dumps(observation, allow_nan=False)
             self.assertTrue(robot.execute({"action": "wait", "duration_ms": 0}))
             for duration in (True, -1, 1001, 1.5, None):
@@ -98,7 +100,7 @@ class HardwareTest(unittest.TestCase):
 
     def test_disabled_devices_do_not_open_hardware(self):
         config = load_config()
-        for sensor in [*config["cameras"].values(), config["radar"], config["arm"]]:
+        for sensor in [*config["cameras"].values(), config["radar"], config["arm"], config["imu"]]:
             sensor["enabled"] = False
         with patch('serial.Serial', side_effect=AssertionError('opened hardware')):
             with OrinRobot(config) as robot:

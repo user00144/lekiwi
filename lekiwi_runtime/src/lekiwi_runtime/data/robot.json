@@ -36,5 +36,10 @@
     "port": null,
     "baudrate": 1000000,
     "calib_path": "follower.json"
+  },
+  "imu": {
+    "enabled": true,
+    "bus": 7,
+    "address": 105
   }
 }

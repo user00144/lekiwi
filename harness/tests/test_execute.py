@@ -33,11 +33,14 @@ class ExecuteTest(unittest.IsolatedAsyncioTestCase):
     async def test_arm_payload_and_rejection(self):
         client=AsyncMock()
         client.request.return_value={'status':'completed','observation':{'ego':{'last_motion':{'reached':True}}}}
-        await RobotTools(client).execute('kiwi',action='move_arm',joints={'gripper':60},duration_ms=1000)
+        await RobotTools(client).execute('kiwi',action='move',joints={'gripper':60},duration_ms=1000)
         client.request.assert_awaited_once_with('kiwi','execute',command={
-            'action':'move_arm','joints':{'gripper':60},'duration_ms':1000})
+            'action':'move','x':0,'y':0,'theta':0,'joints':{'gripper':60},'duration_ms':1000})
         for joints in ({'unknown':0},{'gripper':200},{'wrist_roll':True}):
             with self.assertRaises(ValueError):
-                await RobotTools(client).execute('kiwi',action='move_arm',joints=joints)
-        with self.assertRaises(ValueError):
-            await RobotTools(client).execute('kiwi',x=.1,action='move_arm',joints={'gripper':60})
+                await RobotTools(client).execute('kiwi',action='move',joints=joints)
+        await RobotTools(client).execute('kiwi',x=.1,action='move',joints={'gripper':60})
+        self.assertEqual(client.request.call_args.kwargs['command']['x'],.1)
+        for action in ('move_arm', 'move_combined', 'unknown'):
+            with self.assertRaises(ValueError):
+                await RobotTools(client).execute('kiwi',action=action)

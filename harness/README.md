@@ -30,7 +30,7 @@ uv run --project harness harness-run \
 - `client.py`: 독립된 ZMQ 서버에 요청. 다른 프로젝트의 Python 코드를 import하지 않음.
 - MCP 관측 성공을 확인하지 못하면 제어신호 출력을 거절함.
 
-ORIN은 `wait`, `move`, `move_arm`을 지원합니다. `harness-run`은 기존대로 observe만 허용하는 제어신호 출력 모드이며, 현재 출력 스키마는 wait 전용입니다. 실제 주행은 아래 execute MCP를 직접 호출합니다.
+ORIN은 `move`, `wait`을 지원합니다. `harness-run`은 기존대로 observe만 허용하는 제어신호 출력 모드이며, 현재 출력 스키마는 wait 전용입니다. 실제 주행은 아래 execute MCP를 직접 호출합니다.
 
 ```json
 {"robot_id":"kiwi-01","command":{"action":"wait","duration_ms":100},"reason":"관측에 기반한 설명"}
@@ -68,9 +68,18 @@ uv run python main.py
 execute MCP 예시(절대 목표값):
 
 ```json
-{"robot_id":"kiwi-01","action":"move_arm","joints":{"wrist_roll":10,"gripper":60},"duration_ms":1000}
+{"robot_id":"kiwi-01","action":"move","joints":{"wrist_roll":10,"gripper":60},"duration_ms":1000}
 ```
 
 관절명은 shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll, gripper입니다. 팔은 도(deg), 그리퍼는 보정된 개폐율(%)입니다. 먼저 observe의 `ego.joints`와 `ego.limits`를 확인합니다. 생략한 관절은 건드리지 않습니다. 이동 중 속도는 관절 30deg/s, 그리퍼 50%/s 이하, 실행 시간은 100–1000ms입니다. 베이스와 팔을 한 요청에서 동시에 제어하지 않습니다.
 
 팔은 목표 도달 피드백을 확인한 후 완료를 반환합니다. `ego.last_motion`에 목표·측정값·허용오차가 포함됩니다. 팔 자세 유지 토크는 자동으로 해제하지 않습니다. 관절 도달과 물체 잡기 성공은 서로 다르며, Cartesian IK·자동 파지 경로 계획은 포함하지 않습니다.
+
+베이스와 팔을 동시에 움직이려면 execute에 `action="move"`, `x/y/theta`, `joints`, 공통 `duration_ms`(100–1000)를 전달합니다. 각 축의 기존 범위·속도 검증을 적용하며, ORIN runtime의 동시 제어 지원 버전이 필요합니다. 정상 실행 후 팔은 자세를 유지하지만 런타임 종료 시에는 팔·바퀴 토크를 해제합니다.
+
+### Action 규칙
+
+MCP 도구는 `observe`, `execute` 두 개이며, execute의 action은 `move`, `wait` 두 개입니다.
+`move`는 베이스 속도(x/y/theta, 생략 시 0)와 팔 관절 목표(joints, 생략 시 팔 유지)를 선택적으로 받습니다. 둘 다 지정하면 동시에 움직입니다. `wait`에는 이동 목표를 넣지 않습니다.
+
+`observe`와 `execute` 응답에는 `observation.imu`도 포함됩니다. 가속도·각속도·자세 및 초기 위치 기준 추정 변위(m)를 반환합니다. `available`, `estimate_valid`, `age_s`, `origin_id`를 확인하고, 동일 원점의 유효한 추정값끼리만 비교합니다. IMU 적분 변위는 누적 오차가 있는 추정치입니다. 도구와 action은 추가되지 않습니다.

@@ -89,3 +89,9 @@ class WheelTest(unittest.TestCase):
             drive.close()
         self.assertEqual(drive.bus.packet_handler.write2ByteTxRx.call_count, 3)
         self.assertTrue(drive._active)
+
+    def test_shutdown_releases_even_when_no_motion_was_started(self):
+        drive = self.drive()
+        self.assertFalse(drive._active)
+        drive.close(release_all=True)
+        self.assert_stopped(drive)

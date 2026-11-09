@@ -15,7 +15,9 @@ class RobotTools:
         self.client = client
 
     async def observe(self, robot_id: str) -> list[TextContent | ImageContent]:
-        """Get current cameras, radar and joints for one robot."""
+        """Get current cameras, radar, joints and IMU for one robot.
+        IMU includes acceleration, angular velocity, orientation and drift-prone relative displacement.
+        Use displacement only when available and estimate_valid; it is not exact position."""
         response = await self.client.request(robot_id, "observe")
         if response.get("status") != "ok" or not isinstance(response.get("observation"), dict):
             raise RuntimeError(f"Observation unavailable: {response}")
@@ -26,11 +28,13 @@ class RobotTools:
                       y: Annotated[float, Field(strict=True, ge=-0.4, le=0.4, allow_inf_nan=False)] = 0,
                       theta: Annotated[float, Field(strict=True, ge=-150, le=150, allow_inf_nan=False)] = 0,
                       duration_ms: Annotated[int, Field(strict=True, ge=1, le=1000)] = 500,
-                      action: Literal["move", "move_arm", "wait"] = "move",
+                      action: Literal["move", "wait"] = "move",
                       joints: dict[str, Annotated[float, Field(strict=True, allow_inf_nan=False)]] | None = None,
                       ) -> list[TextContent | ImageContent]:
         """Execute one bounded action. move: x forward/y left m/s, theta CCW deg/s.
-        move_arm: absolute joint degrees, gripper 0..100%; omitted joints unchanged.
+        move accepts optional joints: absolute degrees, gripper 0..100%; omitted joints unchanged.
+        Omitted base velocities default to zero. Supply both to move base and arm together.
+        wait pauses without motion targets.
         Arm duration 100..1000ms; speed <=30deg/s or 50%/s, calibrated limits from observe.
         Arm completion includes joint feedback; torque remains on to hold posture.
         Timeout means outcome unknown; do not blindly retry.
@@ -42,18 +46,18 @@ class RobotTools:
         if not all(type(v) in (int, float) and math.isfinite(v) for v in (x, y, theta)):
             raise ValueError("Velocity must be finite")
         command = {"action": action, "duration_ms": duration_ms}
-        if action == "move_arm":
-            names = {"shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper"}
-            if (any((x, y, theta)) or duration_ms < 100 or not isinstance(joints, dict) or not joints
-                    or not all(k in names and type(v) in (int, float) and math.isfinite(v)
-                               and (0 <= v <= 100 if k == "gripper" else -180 <= v <= 180)
-                               for k, v in joints.items())):
-                raise ValueError("Invalid arm targets; use absolute degrees/gripper percent and zero base velocity")
-            command["joints"] = joints
-        elif action == "move":
-            if joints is not None or math.hypot(x, y) > .4 or abs(theta) > 150:
-                raise ValueError("Expected hypot(x,y)<=0.4 m/s, abs(theta)<=150 deg/s and no arm targets")
+        if action == "move":
+            if math.hypot(x, y) > .4 or abs(theta) > 150:
+                raise ValueError("Expected hypot(x,y)<=0.4 m/s and abs(theta)<=150 deg/s")
             command.update(x=x, y=y, theta=theta)
+            if joints is not None:
+                names = {"shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper"}
+                if (duration_ms < 100 or not isinstance(joints, dict) or not joints
+                        or not all(k in names and type(v) in (int, float) and math.isfinite(v)
+                                   and (0 <= v <= 100 if k == "gripper" else -180 <= v <= 180)
+                                   for k, v in joints.items())):
+                    raise ValueError("Invalid arm targets or duration")
+                command["joints"] = joints
         elif action == "wait":
             if joints is not None or any((x, y, theta)):
                 raise ValueError("Wait cannot contain motion targets")

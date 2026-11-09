@@ -1,5 +1,6 @@
 """Bounded body-velocity commands for the three STS3215 omni wheels."""
 
+from contextlib import contextmanager
 import sys
 
 import math
@@ -87,8 +88,16 @@ class WheelDrive:
         if not valid_motion(dict(x=x, y=y, theta=theta, duration_ms=duration_ms)):
             raise ValueError("Invalid body velocity or duration")
         print(f'Motion command x={x} y={y} theta={theta} duration_ms={duration_ms} mock={self.mock}', file=sys.stderr, flush=True)
-        if self.mock:
+        with self.driving(x, y, theta):
             time.sleep(duration_ms / 1000)
+
+    @contextmanager
+    def driving(self, x: float, y: float, theta: float):
+        """Run wheels during a bounded caller-owned trajectory on the same thread."""
+        if not valid_motion(dict(x=x, y=y, theta=theta, duration_ms=1)):
+            raise ValueError("Invalid body velocity")
+        if self.mock:
+            yield
             return
         import scservo_sdk as sdk
 
@@ -100,12 +109,12 @@ class WheelDrive:
                     raise OSError(f"Cannot build wheel command for {motor_id}")
             if writer.txPacket() != sdk.COMM_SUCCESS:
                 raise OSError("Wheel velocity transmission failed")
-            time.sleep(duration_ms / 1000)
+            yield
         finally:
             self.close()
 
-    def close(self) -> None:
-        if self.mock or not self._active:
+    def close(self, release_all=False) -> None:
+        if self.mock or self.bus.port_handler is None or (not self._active and not release_all):
             return
         errors = []
         for motor_id in WHEEL_IDS:

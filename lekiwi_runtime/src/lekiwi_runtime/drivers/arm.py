@@ -1,5 +1,6 @@
 """STS3215 calibrated joint feedback and bounded position trajectories."""
 
+from contextlib import nullcontext
 import json
 import math
 import sys
@@ -63,8 +64,18 @@ class ArmController:
             self.error = str(exc)
 
     def close(self) -> None:
+        errors = []
         try:
-            self.hold()
+            if self.enabled and not self.mock and self.bus.port_handler is not None:
+                for _, motor_id in ARM_JOINTS:
+                    try:
+                        self._write(motor_id, 40, 0, 1)
+                    except Exception as exc:
+                        errors.append(str(exc))
+                self._pending.clear()
+                if errors:
+                    raise OSError("Arm torque release failed: " + "; ".join(errors))
+                print("Arm torque released", file=sys.stderr, flush=True)
         finally:
             self.bus.close()
 
@@ -99,7 +110,7 @@ class ArmController:
             except Exception as exc:
                 errors.append(str(exc))
             if errors:
-                self.close()  # Reconnect on the next observation after a disconnect.
+                self.bus.close()  # Reconnect on the next observation; shutdown releases torque.
         joints = {name: round(raw_to_unit(value, name, self.calibration[name]), 3)
                   for name, value in raw.items()}
         return {**result, "available": not errors, "port": ("mock" if self.mock else self.bus.port),
@@ -152,7 +163,7 @@ class ArmController:
             print("Arm holding measured position", file=sys.stderr, flush=True)
         self._pending.clear()
 
-    def move(self, joints: dict, duration_ms: int):
+    def move(self, joints: dict, duration_ms: int, base_motion=None):
         if not self.valid_target(joints, duration_ms):
             raise ValueError("Invalid arm targets or duration")
         self.last_motion = None
@@ -178,8 +189,9 @@ class ArmController:
             goals[name] = round(raw)
         print(f"Arm motion targets={joints} duration_ms={duration_ms} mock={self.mock}", file=sys.stderr, flush=True)
         if self.mock:
-            time.sleep(seconds)
-            self._mock_raw.update(goals)
+            with base_motion if base_motion is not None else nullcontext():
+                time.sleep(seconds)
+                self._mock_raw.update(goals)
         else:
             # Read all checks before writing any goal or enabling torque.
             for name in joints:
@@ -202,13 +214,14 @@ class ArmController:
                     self._write(mid, 44, 0)
                     self._write(mid, 46, max(1, round(speed)))
                     self._write(mid, 40, 1, 1)
-                steps = max(1, math.ceil(seconds / .02))
-                started = time.monotonic()
-                for step in range(1, steps + 1):
-                    for name, goal in goals.items():
-                        initial = before["raw"][name]
-                        self._write(ids[name], 42, round(initial + (goal - initial) * step / steps))
-                    time.sleep(max(0, started + step * seconds / steps - time.monotonic()))
+                with base_motion if base_motion is not None else nullcontext():
+                    steps = max(1, math.ceil(seconds / .02))
+                    started = time.monotonic()
+                    for step in range(1, steps + 1):
+                        for name, goal in goals.items():
+                            initial = before["raw"][name]
+                            self._write(ids[name], 42, round(initial + (goal - initial) * step / steps))
+                        time.sleep(max(0, started + step * seconds / steps - time.monotonic()))
                 deadline = time.monotonic() + .5
                 while True:
                     measured = {name: raw_to_unit(self._read(ids[name], PRESENT_POSITION), name, self.calibration[name])

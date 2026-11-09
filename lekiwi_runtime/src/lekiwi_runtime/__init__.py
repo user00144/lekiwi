@@ -20,10 +20,13 @@ def main():
     parser.add_argument("--mock", action="store_true")
     args = parser.parse_args()
     def interrupt(signum, frame):
+        # Let cleanup finish even when Ctrl+C is pressed repeatedly.
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
         raise KeyboardInterrupt
 
     print(f'Starting robot runtime robot={args.robot_id} mock={args.mock}', file=sys.stderr, flush=True)
-    previous = signal.signal(signal.SIGTERM, interrupt)
+    previous = {sig: signal.signal(sig, interrupt) for sig in (signal.SIGINT, signal.SIGTERM)}
     try:
         with OrinRobot(load_config(args.config), mock=args.mock) as robot:
             RobotClient(robot, args.robot_id, args.server).run()
@@ -34,4 +37,5 @@ def main():
         raise
     finally:
         print(f'Robot runtime stopped robot={args.robot_id}', file=sys.stderr, flush=True)
-        signal.signal(signal.SIGTERM, previous)
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)

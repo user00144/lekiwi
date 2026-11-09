@@ -147,8 +147,11 @@ class IntegrationTest(unittest.IsolatedAsyncioTestCase):
                         self.assertEqual(response['status'], 'completed')
                         self.assertTrue(response['observation']['simulated'])
                         self.assertTrue(response['observation']['ego']['available'])
+                        self.assertTrue(response['observation']['imu']['available'])
+                        self.assertIn('displacement_m', response['observation']['imu'])
+                        self.assertTrue(response['observation']['imu']['simulated'])
                         arm = await session.call_tool('execute', {
-                            'robot_id': 'mock', 'action': 'move_arm',
+                            'robot_id': 'mock', 'action': 'move', 'x': .05, 'y': 0., 'theta': 0.,
                             'joints': {'wrist_roll': 10, 'gripper': 60}, 'duration_ms': 1000,
                         })
                         self.assertFalse(arm.isError)

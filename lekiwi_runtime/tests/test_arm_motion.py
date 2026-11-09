@@ -32,7 +32,7 @@ class ArmMotionTest(unittest.TestCase):
         robot=OrinRobot(mock=True)
         before=robot.arm.read_ego()
         with patch('time.sleep'):
-            self.assertTrue(robot.execute({'action':'move_arm','joints':{'wrist_roll':10,'gripper':60},'duration_ms':1000}))
+            self.assertTrue(robot.execute({'action':'move','joints':{'wrist_roll':10,'gripper':60},'duration_ms':1000}))
         after=robot.arm.read_ego()
         self.assertAlmostEqual(after['joints']['wrist_roll'],10,delta=.1)
         self.assertAlmostEqual(after['joints']['gripper'],60,delta=.1)

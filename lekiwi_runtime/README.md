@@ -1,6 +1,6 @@
 # Lekiwi Runtime
 
-ORIN에서 카메라 2대, AWR2944 레이더, STS3215 팔 관절을 읽고 ZeroMQ DEALER로 서버 요청에 응답합니다. 하드웨어 코드와 기본 설정을 이 패키지에 포함하므로 외부 ORIN 폴더가 필요하지 않습니다.
+ORIN에서 카메라 2대, AWR2944 레이더, BMI160 IMU, STS3215 팔 관절을 읽고 ZeroMQ DEALER로 서버 요청에 응답합니다. 하드웨어 코드와 기본 설정을 이 패키지에 포함하므로 외부 ORIN 폴더가 필요하지 않습니다.
 
 ## 설치와 실행
 
@@ -49,7 +49,7 @@ uv run --project lekiwi_runtime lekiwi-runtime \
 | 파일 | 역할 |
 | --- | --- |
 | `client.py` | ZeroMQ 요청·응답, 오류 응답 |
-| `orin.py` | 센서 시작·종료, observation 조합, wait/move/move_arm 실행 |
+| `orin.py` | 센서 시작·종료, observation 조합, move/wait 실행 |
 | `config.py`, `data/` | 기본 설정과 장비별 설정 로딩 |
 | `drivers/camera.py` | 최신 프레임 캡처와 JPEG 인코딩 |
 | `drivers/radar.py` | 레이더 UART 수신과 초기화 |
@@ -88,7 +88,7 @@ uv run python main.py
 
 ## 팔 액션
 
-`{"op":"execute","request_id":"arm-1","action":"move_arm","joints":{"wrist_roll":10},"duration_ms":1000}`
+`{"op":"execute","request_id":"arm-1","action":"move","joints":{"wrist_roll":10},"duration_ms":1000}`
 
 - 절대 관절 각도(deg), 그리퍼는 0–100%입니다. 부분 목표를 허용하며 생략한 관절에는 쓰지 않습니다.
 - `ego.limits`로 보정된 범위와 속도 제한을 제공합니다. 현재 위치·위치 모드·온도·하드웨어 homing offset을 검사한 후 현재 위치를 목표로 기록하고 토크를 켭니다.
@@ -96,3 +96,39 @@ uv run python main.py
 - 실행 후 최대 500ms 동안 관절 피드백을 확인합니다. 허용오차는 관절 2도, 그리퍼 5%p이며 미도달은 error입니다. `ego.last_motion`은 성공한 목표와 측정값을 포함합니다.
 - 정상 완료 후 목표 자세를 유지합니다. 중단·오류에는 측정 위치를 hold하도록 시도하고 자동으로 팔 토크를 끄지 않습니다. 이는 충돌 회피나 물체 파지 성공을 보장하지 않습니다.
 - 팔 기능을 사용하려면 ORIN에 변경된 runtime을 설치하고 재시작해야 합니다. 단순 관측과 베이스 주행은 팔 토크를 활성화하지 않습니다.
+
+## 베이스·팔 동시 제어와 종료
+
+`move`는 베이스 속도와 팔 목표를 같은 시간 동안 실행합니다.
+
+```json
+{"action":"move","x":0.05,"y":0,"theta":0,"joints":{"wrist_roll":10},"duration_ms":1000}
+```
+
+팔 보정·속도·모드 검사를 통과한 후 바퀴 속도를 켜고 팔 목표를 보간합니다. 한 스레드에서 공유 버스를 사용하며 팔 이동 구간이 끝나면 바퀴를 정지한 뒤 팔 도달 여부를 확인합니다. 오류나 인터럽트에도 바퀴 정지를 시도합니다.
+
+정상 종료·Ctrl+C·SIGTERM에는 바퀴 ID 7–9를 정지하고 토크를 해제한 뒤 팔 ID 1–6의 토크도 해제하고 포트를 닫습니다. 한 모터의 통신 실패가 다른 모터의 해제 시도를 막지 않습니다. 토크가 해제되면 팔은 자세를 유지하지 않습니다. SIGKILL·전원 차단·통신 단절 시에는 소프트웨어 정리가 보장되지 않습니다.
+
+## IMU와 추정 변위
+
+기존 IMU 테스트 코드의 BMI160 설정을 사용합니다. 기본 I²C 버스는 7, 주소는 105(`0x69`)이며 `imu: {"enabled": true, "bus": 7, "address": 105}`로 변경할 수 있습니다. `enabled: false`이면 하드웨어에 접근하지 않습니다. 드라이버는 런타임에 포함되어 TEMP 폴더나 추가 패키지가 필요하지 않습니다. 실행 계정에 `/dev/i2c-7` 접근 권한이 필요합니다.
+
+시작 후 약 1초간 로봇을 정지시켜 초기 자세·자이로 편향·중력 방향 가속도 편향을 추정합니다. 움직임이 감지되면 보정을 실패 처리합니다. 균일한 속도의 이동은 IMU만으로 정지와 구별할 수 없으므로 실제 초기 정지가 필요합니다. 샘플은 약 100 Hz로 연속 수집하며 observe 호출 빈도와 무관하게 적분합니다.
+
+`observation.imu` 필드:
+
+| 필드 | 의미 |
+| --- | --- |
+| `available`, `timestamp`, `age_s`, `error` | 센서 상태와 최신 샘플 시각·경과 시간 |
+| `accel_m_s2`, `gyro_deg_s`, `temperature_c` | 센서 좌표계 가속도(중력 포함), 각속도, 온도 |
+| `orientation_deg` | 시작 시 yaw=0인 상대 roll/pitch/yaw |
+| `linear_accel_m_s2` | 자세를 반영해 좌표를 변환하고 중력을 제거한 가속도 |
+| `velocity_m_s`, `displacement_m` | 초기 정지·원점으로부터 적분한 XYZ 추정 속도·변위 |
+| `estimate_valid`, `estimate_error` | 적분 연속성·포화 여부에 따른 사용 가능 상태 |
+| `origin_id`, `origin_timestamp`, `frame` | 원점 식별자, 보정 시각, 시작 시 중력 정렬 센서 좌표계 |
+
+변위는 실제 위치 측정값이 아닙니다. 시작 시 센서 수평 방향을 기준으로 하며 로봇 전방 축과 동일하다고 가정하지 않습니다. 초기 정지 보정 이후에는 자이로로 자세를 적분합니다. 단일 자세 보정은 가속도계의 모든 축 편향을 분리할 수 없으며 자이로·가속도 편향, 진동, 온도, 기울기 오차가 변위에 누적됩니다. 별도 엔코더·영상 보정이나 저가속도 기반 속도 강제 초기화는 하지 않습니다. `estimate_valid: true`는 연속 적분이 가능하다는 뜻이지 정확도가 보장된다는 뜻이 아닙니다.
+
+샘플 간격이 100ms를 초과하거나 포화되면 추정 변위·속도는 null이 되고 재시작 전까지 무효 상태를 유지합니다. 마지막 샘플이 250ms 이상 오래되면 센서도 unavailable로 표시합니다. 센서 연결 실패 시 다른 센서는 계속 사용 가능합니다. 재시작하면 원점이 바뀌므로 전후 차이는 같은 origin_id끼리만 비교합니다. `--mock` IMU는 정지된 합성 데이터이며 실제 움직임을 나타내지 않습니다.
+
+레지스터·단위 참고: [Bosch BMI160 데이터시트](https://www.bosch-sensortec.com/media/boschsensortec/downloads/datasheets/bst-bmi160-ds000.pdf).
