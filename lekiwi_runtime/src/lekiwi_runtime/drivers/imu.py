@@ -11,6 +11,33 @@ import numpy as np
 from .bmi160 import BMI160, LinuxI2CBus
 
 GRAVITY = 9.80665
+SAMPLE_RATE_HZ = 100
+CALIBRATION_SECONDS = 3.0
+
+
+class CalibrationError(ValueError):
+    """Stationary calibration window rejected; caller may retry."""
+
+
+def calibration_problem(accel, gyro, samples):
+    """Return why the window is not stationary, or None if it is usable."""
+    if not np.isfinite(accel).all() or not np.isfinite(gyro).all():
+        return 'non-finite sample'
+    if any(s.get('saturated') for s in samples):
+        return 'saturated sample'
+    accel_std = np.max(np.std(accel, axis=0))
+    if accel_std > .15:
+        return f'accel std {accel_std:.3f} m/s^2 > 0.15'
+    gyro_std = np.max(np.std(gyro, axis=0))
+    if gyro_std > .5:
+        return f'gyro std {gyro_std:.3f} deg/s > 0.5'
+    gyro_mean = np.linalg.norm(gyro.mean(axis=0))
+    if gyro_mean > 5:
+        return f'gyro mean {gyro_mean:.2f} deg/s > 5'
+    accel_norm = np.linalg.norm(accel.mean(axis=0))
+    if abs(accel_norm - GRAVITY) > .5:
+        return f'accel magnitude {accel_norm:.2f} m/s^2 not within {GRAVITY:.2f} +/- 0.5'
+    return None
 
 
 class InertialEstimate:
@@ -22,13 +49,9 @@ class InertialEstimate:
     def __init__(self, samples, timestamp):
         accel = np.array([s['accel_m_s2'] for s in samples], dtype=float)
         gyro = np.array([s['gyro_deg_s'] for s in samples], dtype=float)
-        if (not np.isfinite(accel).all() or not np.isfinite(gyro).all()
-                or any(s.get('saturated') for s in samples)
-                or np.max(np.std(accel, axis=0)) > .15
-                or np.max(np.std(gyro, axis=0)) > .5
-                or np.linalg.norm(gyro.mean(axis=0)) > 5
-                or abs(np.linalg.norm(accel.mean(axis=0)) - GRAVITY) > .5):
-            raise ValueError('IMU calibration requires the robot to remain stationary; restart runtime')
+        problem = calibration_problem(accel, gyro, samples)
+        if problem:
+            raise CalibrationError(problem)
         mean = accel.mean(axis=0)
         norm = np.linalg.norm(mean)
         roll = math.atan2(mean[1], mean[2])
@@ -127,7 +150,8 @@ class ImuStream:
     def _run(self):
         bus = None
         try:
-            print('IMU starting; keep robot stationary during calibration', file=sys.stderr, flush=True)
+            print(f'IMU starting; keep robot stationary for {CALIBRATION_SECONDS:g} s calibration',
+                  file=sys.stderr, flush=True)
             if self.mock:
                 def read():
                     return dict(accel_m_s2=[0,0,GRAVITY], gyro_deg_s=[0,0,0], temperature_c=23, saturated=False)
@@ -138,6 +162,8 @@ class ImuStream:
                 sensor.initialize()
                 read = sensor.read
             samples, estimator = [], None
+            required = 1 if self.mock else int(CALIBRATION_SECONDS * SAMPLE_RATE_HZ)
+            attempt = 1
             last_received = time.monotonic()
             while not self._stop.is_set():
                 sample = read()
@@ -150,12 +176,20 @@ class ImuStream:
                 last_received = now
                 if estimator is None:
                     samples.append(sample)
-                    if len(samples) >= (1 if self.mock else 100):
-                        estimator = InertialEstimate(samples, now)
-                        with self._lock:
-                            self._state.update(calibrated=True, origin_id=uuid.uuid4().hex,
-                                               origin_timestamp=time.time())
-                        print('IMU calibration complete; displacement origin set', file=sys.stderr, flush=True)
+                    if len(samples) >= required:
+                        try:
+                            estimator = InertialEstimate(samples, now)
+                        except CalibrationError as exc:
+                            print(f'IMU calibration attempt {attempt} rejected ({exc}). '
+                                  f'Movement detected: do not move the robot. '
+                                  f'Retrying {CALIBRATION_SECONDS:g} s stationary calibration...',
+                                  file=sys.stderr, flush=True)
+                            samples, attempt = [], attempt + 1
+                        else:
+                            with self._lock:
+                                self._state.update(calibrated=True, origin_id=uuid.uuid4().hex,
+                                                   origin_timestamp=time.time())
+                            print('IMU calibration complete; displacement origin set', file=sys.stderr, flush=True)
                     data = dict(estimate_valid=False, displacement_m=None, velocity_m_s=None)
                 else:
                     data = estimator.update(sample, now)
