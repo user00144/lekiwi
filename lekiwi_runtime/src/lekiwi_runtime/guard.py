@@ -16,8 +16,9 @@ from .robot import ARM_MAX_DURATION_MS, BASE_MAX_DURATION_MS, PreDispatchRejecte
 GUARD_FIELDS = frozenset({"observation_id", "runtime_id", "action_id", "reason"})
 CAPABILITIES = {"guarded_execution": 1, "arm_reconciliation": 1, "arm_motion_warning": 1}
 MAX_ARM_RECONCILIATIONS = 2
-RECOVERY_MAX_JOINT_DELTA_DEG = 3.0
-RECOVERY_MIN_DURATION_MS = 3000
+RECOVERY_MAX_JOINT_DELTA_DEG = 40.0
+RECOVERY_MIN_DURATION_MS = 5000
+ARM_WARNING_MAX_ERROR_DEG = 10.0
 MAX_OBSERVATION_BYTES = 2 * 1024 * 1024
 JOINT_NAMES = frozenset({"shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper"})
 
@@ -165,7 +166,7 @@ class ExecutionGuard:
                 or execution.get("arm_reached") is not False
                 or execution.get("arm_hold_verified") is not True
                 or not isinstance(warning, dict) or warning.get("code") != "arm_target_not_reached"
-                or not _number(bound) or not 0 < bound <= 5.
+                or not _number(bound) or not 0 < bound <= ARM_WARNING_MAX_ERROR_DEG
                 or not isinstance(motion, dict) or motion.get("targets") != command["joints"]
                 or motion.get("reached") is not False or motion.get("warning_eligible") is not True
                 or motion.get("communication_recoveries") != [] or self._hold_problem(hold)

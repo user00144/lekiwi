@@ -20,7 +20,7 @@ from .tools import ARM_MAX_DURATION_MS, ARM_MIN_DURATION_MS, build_command
 
 
 MAX_ARM_RECONCILIATIONS = 2
-MAX_ARM_WARNING_ERROR_DEG = 5.
+MAX_ARM_WARNING_ERROR_DEG = 10.
 RECOVERY_ARM_JOINTS = {'shoulder_pan', 'shoulder_lift', 'elbow_flex', 'wrist_flex', 'wrist_roll'}
 
 
@@ -662,9 +662,10 @@ class EpisodeRunner:
                 and type(constraints.get('remaining')) is int
                 and 0 <= constraints['remaining'] < MAX_ARM_RECONCILIATIONS
                 and self._finite_number(constraints.get('max_joint_delta_deg'))
-                and 0 < constraints['max_joint_delta_deg'] <= 3.
+                and 0 < constraints['max_joint_delta_deg'] <= 40.
                 and type(constraints.get('min_duration_ms')) is int
-                and 3000 <= constraints['min_duration_ms'] <= ARM_MAX_DURATION_MS)
+                and (5000 if constraints['max_joint_delta_deg'] > 3. else 3000)
+                    <= constraints['min_duration_ms'] <= ARM_MAX_DURATION_MS)
 
     def _verified_motion_warning(self, packet, action_id, command):
         """Accept only a typed, bounded endpoint error with a verified measured hold."""
@@ -880,9 +881,10 @@ class EpisodeRunner:
                 or not 0 <= remaining < MAX_ARM_RECONCILIATIONS
                 or type(constraints.get('remaining')) is not int or constraints['remaining'] != remaining
                 or not self._finite_number(constraints.get('max_joint_delta_deg'))
-                or not 0 < constraints['max_joint_delta_deg'] <= 3.
+                or not 0 < constraints['max_joint_delta_deg'] <= 40.
                 or type(constraints.get('min_duration_ms')) is not int
-                or not 3000 <= constraints['min_duration_ms'] <= ARM_MAX_DURATION_MS):
+                or not (5000 if constraints['max_joint_delta_deg'] > 3. else 3000)
+                    <= constraints['min_duration_ms'] <= ARM_MAX_DURATION_MS):
             raise EpisodeStopped('reconciliation_failed', 'Reconciliation did not provide bounded arm constraints')
         observation = response.get('observation') or {}
         ego = observation.get('ego') or {}
@@ -923,7 +925,7 @@ class EpisodeRunner:
                 failure = 'Reconciled motion cannot command the gripper, base, or an empty arm target'
             elif any(not self._finite_number(measured.get(name)) or abs(value - measured[name]) > maximum
                      for name, value in joints.items()):
-                failure = 'Reconciled joint targets must stay within 3 degrees of the fresh measured pose'
+                failure = f'Reconciled joint targets must stay within {maximum:g} degrees of the fresh measured pose'
         if failure is None:
             return True
         self.rejection_feedback = {
