@@ -14,7 +14,7 @@ from .robot import ARM_MAX_DURATION_MS, BASE_MAX_DURATION_MS, PreDispatchRejecte
 
 
 GUARD_FIELDS = frozenset({"observation_id", "runtime_id", "action_id", "reason"})
-CAPABILITIES = {"guarded_execution": 1, "arm_reconciliation": 1}
+CAPABILITIES = {"guarded_execution": 1, "arm_reconciliation": 1, "arm_motion_warning": 1}
 MAX_ARM_RECONCILIATIONS = 2
 RECOVERY_MAX_JOINT_DELTA_DEG = 3.0
 RECOVERY_MIN_DURATION_MS = 3000
@@ -155,6 +155,51 @@ class ExecutionGuard:
                              "created": time.monotonic(), "finished_at": time.time()}
         self.halt("arm_reconciliation_required")
         execution["motion_finished_at"] = self._arm_failure["finished_at"]
+
+    def _validate_warning(self, command, execution, calibration_id):
+        """Accept a measured, bounded miss without claiming target arrival."""
+        motion, warning = execution.get("arm_motion"), execution.get("warning")
+        hold = motion.get("hold") if isinstance(motion, dict) else None
+        bound = warning.get("max_error_deg") if isinstance(warning, dict) else None
+        if (not self._arm_only(command) or execution.get("command_sent") is not True
+                or execution.get("arm_reached") is not False
+                or execution.get("arm_hold_verified") is not True
+                or not isinstance(warning, dict) or warning.get("code") != "arm_target_not_reached"
+                or not _number(bound) or not 0 < bound <= 5.
+                or not isinstance(motion, dict) or motion.get("targets") != command["joints"]
+                or motion.get("reached") is not False or motion.get("warning_eligible") is not True
+                or motion.get("communication_recoveries") != [] or self._hold_problem(hold)
+                or hold.get("calibration_id") != calibration_id
+                or not -.1 <= time.time() - hold["timestamp"] <= 1.0):
+            raise ValueError("Invalid arm motion warning evidence")
+        measured, errors = motion.get("measured"), motion.get("errors")
+        if (not isinstance(measured, dict) or set(measured) != set(command["joints"])
+                or not isinstance(errors, dict) or set(errors) != set(command["joints"])):
+            raise ValueError("Missing arm warning measurements")
+        for name, target in command["joints"].items():
+            if (not _number(measured[name]) or not _number(errors[name])
+                    or abs(errors[name]) > bound
+                    or abs(errors[name] - (measured[name] - target)) > 1e-6
+                    or abs(hold["measured"][name] - target) > bound):
+                raise ValueError("Arm warning exceeds its measured error bound")
+
+    @staticmethod
+    def _validate_warning_observation(response, command, execution):
+        observation = response["observation"]
+        ego = observation.get("ego")
+        hold = execution["arm_motion"]["hold"]
+        joints = ego.get("joints") if isinstance(ego, dict) else None
+        if (not _fresh(ego, 1., time.time())
+                or ego["timestamp"] <= execution["motion_finished_at"]
+                or ego.get("calibration_id") != hold["calibration_id"]
+                or (ego.get("calibration_status") or {}).get("valid") is not True
+                or not isinstance(joints, dict) or not JOINT_NAMES <= set(joints)
+                or any(not _number(joints[name])
+                       or abs(joints[name] - hold["measured"][name]) > (2. if name == "gripper" else .5)
+                       for name in JOINT_NAMES)
+                or any(abs(joints[name] - target) > execution["warning"]["max_error_deg"]
+                       for name, target in command["joints"].items())):
+            raise ValueError("Arm state changed after warning hold verification")
 
     def reconcile(self, request):
         """Recheck a known, verified hold without sending any motor command."""
@@ -484,6 +529,7 @@ class ExecutionGuard:
             response = self._reject(command, problem)
         else:
             post_cameras = tuple(self._baseline["valid_cameras"])
+            calibration_id = (self._baseline["observation"].get("ego") or {}).get("calibration_id")
             preflight_joints = self._preflight_joints
             self.invalidate()  # The observation is single-use, including on failure.
             try:
@@ -495,7 +541,7 @@ class ExecutionGuard:
                         execution["command_sent"] = False
                 else:
                     execution = execute(command)
-                    if not isinstance(execution, dict) or execution.get("outcome") not in ("completed", "rejected", "incomplete"):
+                    if not isinstance(execution, dict) or execution.get("outcome") not in ("completed", "rejected", "incomplete", "warning"):
                         raise ValueError("Invalid guarded execution result")
                     if len(json.dumps(execution, allow_nan=False).encode()) > 64 * 1024:
                         raise ValueError("Guarded execution result exceeds size limit")
@@ -503,6 +549,8 @@ class ExecutionGuard:
                                  "action_id": identity}
                     if execution["outcome"] == "incomplete":
                         self._record_incomplete(command, execution)
+                    elif execution["outcome"] == "warning":
+                        self._validate_warning(command, execution, calibration_id)
                 response = {"status": execution["outcome"], "execution": execution,
                             "capabilities": dict(CAPABILITIES), "action_context": self._context()}
                 if execution["outcome"] == "incomplete":
@@ -519,11 +567,18 @@ class ExecutionGuard:
                             "execution": self._execution(command, "uncertain_execution"),
                             "capabilities": dict(CAPABILITIES), "action_context": self._context()}
             else:
-                if response["status"] == "completed":
+                if response["status"] in ("completed", "warning"):
+                    warning = response["status"] == "warning"
                     finished_at = time.time()
                     response["execution"]["motion_finished_at"] = finished_at
                     try:
                         response.update(self._post_observe(command, finished_at, post_cameras))
+                        if warning:
+                            try:
+                                self._validate_warning_observation(response, command, execution)
+                            except Exception:
+                                self.halt()
+                                raise
                         if (self._recovery_constraints and self._arm_only(command)
                                 and execution.get("command_sent") is True
                                 and execution.get("arm_reached") is True):
@@ -542,7 +597,8 @@ class ExecutionGuard:
                             response["action_context"] = self._context()
                     except Exception as exc:
                         self.invalidate()
-                        response.update(status="completed_without_observation", observation_error=str(exc)[:1024],
+                        response.update(status="warning_without_observation" if warning else "completed_without_observation",
+                                        observation_error=str(exc)[:1024],
                                         action_context=self._context())
 
         encoded = json.dumps(response, allow_nan=False, separators=(",", ":"))
@@ -555,6 +611,8 @@ class ExecutionGuard:
             response.pop("observation", None)
             if response["status"] == "completed":
                 response["status"] = "completed_without_observation"
+            elif response["status"] == "warning":
+                response["status"] = "warning_without_observation"
             response.update(observation_error="action_cache_full", action_context=self._context())
             size = len(fingerprint.encode()) + len(json.dumps(response).encode())
         self._cache[identity] = (fingerprint, deepcopy(response))

@@ -18,9 +18,11 @@ ARM_JOINTS = (
 )
 PRESENT_POSITION = 56
 ARM_FEEDBACK_TIMEOUT_S = 2.0
-ARM_CONTROL_REVISION = 'arm-only-reconcile-v4'
+ARM_CONTROL_REVISION = 'arm-warning-v5'
+ARM_WARNING_MAX_ERROR_DEG = 5.0
 HOLD_STABILITY_INTERVAL_S = .2
 HOLD_STABILITY_SAMPLES = 3
+HOLD_STABILITY_TIMEOUT_S = 2.0
 
 
 class ArmTransportError(OSError):
@@ -120,7 +122,8 @@ class ArmController:
                   "limits": self.limits(), "last_motion": self.last_motion, "calibration_id": self.calibration_id,
                   "control": {"revision": ARM_CONTROL_REVISION, "max_duration_ms": ARM_MAX_DURATION_MS,
                               "feedback_timeout_s": ARM_FEEDBACK_TIMEOUT_S, "tolerance_deg": 2,
-                              "tolerance_percent": 5},
+                              "tolerance_percent": 5, "warning_max_error_deg": ARM_WARNING_MAX_ERROR_DEG,
+                              "hold_stability_timeout_s": HOLD_STABILITY_TIMEOUT_S},
                   "calibration_status": self.calibration_status({}, available=False),
                   "communication_retries": []}
         if not self.enabled:
@@ -320,14 +323,22 @@ class ArmController:
             passive_anchor = dict(passive_anchor)
         expected = dict(held_goals)
         samples, stamps, health = [], [], {}
-        for index in range(HOLD_STABILITY_SAMPLES):
-            if index:
+        verification_started = time.monotonic()
+        deadline = verification_started + HOLD_STABILITY_TIMEOUT_S
+        drift_limits = {name: 2. if name == 'gripper' else .5 for name in names}
+        while True:
+            if stamps:
                 # The interval is measured between completed samples, not assumed
-                # from servo-read latency or a number of polling iterations.
-                due = stamps[0] + HOLD_STABILITY_INTERVAL_S * index / (HOLD_STABILITY_SAMPLES - 1)
-                time.sleep(max(0., due - time.monotonic()))
+                # from servo-read latency. Allow a newly written hold to settle,
+                # but never repeat a write or relax the stability criterion.
+                due = stamps[-1] + HOLD_STABILITY_INTERVAL_S / (HOLD_STABILITY_SAMPLES - 1)
+                time.sleep(max(0., min(due, deadline) - time.monotonic()))
+                if time.monotonic() >= deadline:
+                    raise OSError('Arm hold position is not stable within settling timeout')
             measured_raw, passive = {}, set()
             for name, motor_id in ARM_JOINTS:
+                if time.monotonic() >= deadline:
+                    raise OSError('Arm hold position is not stable within settling timeout')
                 goal = self._read(motor_id, 42)
                 if name not in expected:
                     expected[name] = goal
@@ -373,26 +384,49 @@ class ArmController:
                     raise OSError(f'{name}: arm moved away from hold certificate')
             samples.append(measured)
             stamps.append(time.monotonic())
-        interval = stamps[-1] - stamps[0]
-        if interval + 1e-9 < HOLD_STABILITY_INTERVAL_S:
-            raise OSError('Arm hold sampling interval too short')
-        drift = {name: max(sample[name] for sample in samples) - min(sample[name] for sample in samples) for name in names}
-        drift_limits = {name: 2. if name == 'gripper' else .5 for name in names}
-        if any(drift[name] > drift_limits[name] for name in names):
-            raise OSError('Arm hold position is not stable')
+            if stamps[-1] > deadline:
+                raise OSError('Arm hold position is not stable within settling timeout')
+            samples, stamps = samples[-HOLD_STABILITY_SAMPLES:], stamps[-HOLD_STABILITY_SAMPLES:]
+            interval = stamps[-1] - stamps[0]
+            if len(samples) == HOLD_STABILITY_SAMPLES and interval + 1e-9 >= HOLD_STABILITY_INTERVAL_S:
+                drift = {name: max(sample[name] for sample in samples) - min(sample[name] for sample in samples)
+                         for name in names}
+                if all(drift[name] <= drift_limits[name] for name in names):
+                    break
         return {'verified': True, 'revision': ARM_CONTROL_REVISION, 'calibration_id': self.calibration_id,
                 'commanded_joints': sorted(commanded), 'passive_joints': sorted(expected_passive),
                 'passive_reference': passive_anchor,
                 'timestamp': time.time(), 'held_goal_raw': expected, 'goals': goals,
                 'measured_raw': measured_raw, 'measured': samples[-1], 'health': health,
                 'stability': {'sample_count': len(samples), 'interval_s': interval,
-                              'max_drift': drift, 'limits': drift_limits},
+                              'max_drift': drift, 'limits': drift_limits,
+                              'settling_elapsed_s': stamps[-1] - verification_started,
+                              'settling_timeout_s': HOLD_STABILITY_TIMEOUT_S},
                 'tolerances': {name: 5. if name == 'gripper' else 2. for name in names}}
 
     def reconcile_hold(self, certificate):
         """Recheck an existing hold using reads only; never replay a movement."""
         goals = certificate.get('held_goal_raw') if isinstance(certificate, dict) else None
         return self.verify_hold(goals, certificate=certificate)
+
+    def _warning_eligibility(self, feedback, before, base_motion):
+        """A small acknowledged endpoint miss may continue after a verified hold."""
+        if 'gripper' in feedback['targets']:
+            return False, 'gripper_command_not_warning_eligible'
+        if base_motion is not None:
+            return False, 'base_motion_not_warning_eligible'
+        if before.get('communication_retries') != [] or feedback['communication_recoveries']:
+            return False, 'communication_not_fully_acknowledged'
+        if self.calibration_status(before['raw']).get('valid') is not True:
+            return False, 'initial_calibration_invalid'
+        if any(not self.calibration[name]['range_min'] <= feedback['measured_raw'][name]
+                   <= self.calibration[name]['range_max'] for name in feedback['targets']):
+            return False, 'endpoint_calibration_invalid'
+        if (not feedback['failed_joints'] or not feedback['errors']
+                or any(not math.isfinite(error) or abs(error) > ARM_WARNING_MAX_ERROR_DEG
+                       for error in feedback['errors'].values())):
+            return False, 'endpoint_error_exceeds_warning_limit'
+        return True, 'hold_verification_required'
 
     def _recovery_eligibility(self, feedback, before, base_motion):
         """Return conservative endpoint-only recovery evidence before hold checks."""
@@ -523,6 +557,8 @@ class ArmController:
                             'tolerance_deg': 2, 'tolerance_percent': 5, 'timestamp': time.time(),
                             'communication_recoveries': deepcopy(communication_recoveries),
                             'recovery_eligible': False, 'recovery_reason': 'hold_not_verified', 'hold': None,
+                            'warning_eligible': False, 'warning_reason': 'hold_not_verified',
+                            'warning_max_error_deg': ARM_WARNING_MAX_ERROR_DEG,
                         }
                         raise ArmTargetNotReached(self.last_motion)
                     # Retain the final goal while checking feedback. No goal,
@@ -534,20 +570,36 @@ class ArmController:
                 except BaseException as hold_failure:
                     if type(failure) is ArmTargetNotReached:
                         self.last_motion.update(recovery_eligible=False, recovery_reason='hold_failed',
+                                                warning_eligible=False, warning_reason='hold_failed',
                                                 hold_error=str(hold_failure))
                         failure.feedback = deepcopy(self.last_motion)
                     raise
                 if type(failure) is ArmTargetNotReached:
                     eligible, reason, progress = self._recovery_eligibility(self.last_motion, before, base_motion)
-                    self.last_motion.update(recovery_reason=reason, progress=progress)
-                    if eligible:
+                    warning_eligible, warning_reason = self._warning_eligibility(self.last_motion, before, base_motion)
+                    self.last_motion.update(recovery_reason=reason, progress=progress, warning_reason=warning_reason)
+                    if eligible or warning_eligible:
                         try:
                             certificate = self.verify_hold(held_goals, passive_reference=before['joints'])
                         except Exception as verification_failure:
                             self.last_motion.update(recovery_reason='hold_verification_failed',
+                                                    warning_reason='hold_verification_failed',
                                                     hold_error=str(verification_failure))
                         else:
-                            self.last_motion.update(recovery_eligible=True, recovery_reason='verified_measured_hold',
+                            hold_target_errors = {
+                                name: certificate['measured'][name] - target
+                                for name, target in self.last_motion['targets'].items()
+                            }
+                            if warning_eligible and any(
+                                    not math.isfinite(error) or abs(error) > ARM_WARNING_MAX_ERROR_DEG
+                                    for error in hold_target_errors.values()):
+                                warning_eligible = False
+                                warning_reason = 'held_position_error_exceeds_warning_limit'
+                            self.last_motion.update(recovery_eligible=eligible,
+                                                    recovery_reason='verified_measured_hold' if eligible else reason,
+                                                    warning_eligible=warning_eligible,
+                                                    warning_reason='verified_measured_hold' if warning_eligible else warning_reason,
+                                                    hold_target_errors=hold_target_errors,
                                                     hold=certificate)
                     failure.feedback = deepcopy(self.last_motion)
                 raise

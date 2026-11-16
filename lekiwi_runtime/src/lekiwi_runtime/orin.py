@@ -4,7 +4,7 @@ import time
 from copy import deepcopy
 
 from .config import load_config
-from .drivers.arm import ARM_CONTROL_REVISION, ArmController, ArmTargetNotReached
+from .drivers.arm import ARM_CONTROL_REVISION, ARM_WARNING_MAX_ERROR_DEG, ArmController, ArmTargetNotReached
 from .drivers.imu import ImuStream
 from .drivers.servo import ServoBus
 from .drivers.wheels import WheelDrive, valid_motion
@@ -103,8 +103,9 @@ class OrinRobot:
         """Report what this driver verifies; base pose/stationarity are unknown.
 
         PreDispatchRejected certifies a validation failure before motor writes.
-        An exact endpoint failure may report incomplete only after measured
-        progress and a verified hold; it remains distinct from completion.
+        An exact small endpoint miss may report a warning after a verified hold;
+        larger misses require measured progress and explicit reconciliation.
+        Neither is reported as reaching the requested target.
         Communication errors and partly transmitted commands retain uncertainty.
         """
         moving = command.get("action") == "move"
@@ -115,20 +116,33 @@ class OrinRobot:
         except ArmTargetNotReached as failure:
             feedback = failure.feedback
             hold = feedback.get('hold')
-            # Only this exact driver failure, after measured progress and an
-            # independently verified hold, can be reconciled by fresh feedback.
+            # Only this exact driver failure and an independently verified hold
+            # can continue from fresh feedback or be explicitly reconciled.
             # No goal or transport exception is inferred safe from its message.
             if (type(failure) is not ArmTargetNotReached or not uses_arm or uses_base
                     or 'gripper' in command['joints'] or feedback.get('targets') != command['joints']
-                    or feedback != self.arm.last_motion or feedback.get('recovery_eligible') is not True
+                    or feedback != self.arm.last_motion
+                    or not (feedback.get('warning_eligible') is True or feedback.get('recovery_eligible') is True)
                     or not isinstance(hold, dict) or hold.get('verified') is not True
                     or hold.get('revision') != ARM_CONTROL_REVISION
                     or hold.get('calibration_id') != self.arm.calibration_id):
                 raise
-            return {'outcome': 'incomplete', 'command_sent': True, 'arm_reached': False,
+            warning = feedback.get('warning_eligible') is True
+            result = {'outcome': 'warning' if warning else 'incomplete', 'command_sent': True, 'arm_reached': False,
                     'arm_hold_verified': True, 'arm_motion': deepcopy(feedback),
                     'base_stop_command_sent': None, 'base_stop_verified': None,
                     'simulated': self.mock}
+            if warning:
+                actual_error = max(abs(error) for error in feedback['errors'].values())
+                result['warning'] = {
+                    'code': 'arm_target_not_reached',
+                    'message': (f'Arm target missed by up to {actual_error:.3f} deg '
+                                f'(warning limit {ARM_WARNING_MAX_ERROR_DEG:g} deg); '
+                                'measured hold verified, continue from fresh measured positions'),
+                    'max_error_deg': ARM_WARNING_MAX_ERROR_DEG,
+                    'measured_max_error_deg': actual_error,
+                }
+            return result
         result = {
             "outcome": "completed" if accepted else "rejected",
             "command_sent": bool(accepted and moving),

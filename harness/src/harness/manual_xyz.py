@@ -237,6 +237,11 @@ class ManualXYZ:
             packet = runner.previous_result or {}
             if packet.get('status') == 'completed' and (packet.get('execution') or {}).get('arm_reached') is True:
                 status, detail = 'completed', '관절 도달 응답과 이동 후 관찰을 받았습니다. 실제 XYZ 방향은 화면과 실물로 확인하세요.'
+            elif packet.get('status') == 'warning' and not runner.in_flight:
+                # execute returns normally only after validating the exact known
+                # warning and a fresh observation. A manual request still ends
+                # after one move; the next request must read and prepare again.
+                status, detail = 'warning', '목표 오차 경고 · 현재 위치를 확인했습니다. 새 목표를 계산해 계속 이동할 수 있습니다.'
             elif runner.in_flight:
                 status, detail = 'uncertain_execution', '전송 결과가 확인되지 않았습니다. 자동으로 다시 보내지 않습니다.'
             elif packet.get('status') == 'completed':
@@ -246,15 +251,18 @@ class ManualXYZ:
         except BaseException as exc:
             status = 'uncertain_execution' if runner.in_flight else exc.reason if isinstance(exc, EpisodeStopped) else 'host_error'
             detail = str(exc) or type(exc).__name__
-        if status == 'incomplete':
+        if status in ('incomplete', 'warning'):
             motion = ((runner.previous_result or {}).get('execution') or {}).get('arm_motion') or {}
             targets, measured = motion.get('targets') or {}, motion.get('measured') or {}
-            values = [f'{name}: 목표 {target:.2f}°, 측정 {measured[name]:.2f}°'
+            if status == 'warning':
+                measured = ((runner.packet.get('observation') or {}).get('ego') or {}).get('joints') or measured
+            values = [f'{name}: 목표 {target:.2f}°, 실제 {measured[name]:.2f}°, 차이 {measured[name] - target:+.2f}°'
                       for name, target in targets.items()
                       if type(target) in (int, float) and type(measured.get(name)) in (int, float)]
             detail += (' ' + '; '.join(values)) if values else ''
         result = runner.finish(status, detail)
-        self.last = {**result, 'run_id': view['run_id'], 'execution': (runner.previous_result or {}).get('execution')}
+        self.last = {**result, 'run_id': view['run_id'], 'execution': (runner.previous_result or {}).get('execution'),
+                     'current_joints': ((runner.packet.get('observation') or {}).get('ego') or {}).get('joints')}
         self.current_run_id = None
 
     async def close(self):

@@ -20,6 +20,7 @@ from .tools import ARM_MAX_DURATION_MS, ARM_MIN_DURATION_MS, build_command
 
 
 MAX_ARM_RECONCILIATIONS = 2
+MAX_ARM_WARNING_ERROR_DEG = 5.
 RECOVERY_ARM_JOINTS = {'shoulder_pan', 'shoulder_lift', 'elbow_flex', 'wrist_flex', 'wrist_roll'}
 
 
@@ -568,12 +569,17 @@ class EpisodeRunner:
             confirmed = (status in ('completed', 'completed_without_observation') and type(sent) is bool
                          and execution.get('outcome') == 'completed')
             incomplete = status == 'incomplete' and self._verified_incomplete(packet, action_id, command)
-            if not safe_rejection and not confirmed and not incomplete:
+            warning = (status in ('warning', 'warning_without_observation')
+                       and self._verified_motion_warning(packet, action_id, command))
+            if not safe_rejection and not confirmed and not incomplete and not warning:
                 raise EpisodeStopped('uncertain_execution', f'Execution {status}: observation or result not confirmed')
             if confirmed and self.recovery_constraints is not None and execution.get('arm_reached') is not True:
                 raise EpisodeStopped('uncertain_execution', 'Revised arm motion has no confirmed joint arrival')
         if incomplete:
             await self._reconcile_incomplete(packet, before, command, requested_command, action_id)
+            return
+        if warning:
+            self._accept_motion_warning(packet, images, before, command, requested_command, action_id)
             return
         if status == 'rejected' and sent is False and execution.get('outcome') == 'rejected':
             self.in_flight = None
@@ -659,6 +665,114 @@ class EpisodeRunner:
                 and 0 < constraints['max_joint_delta_deg'] <= 3.
                 and type(constraints.get('min_duration_ms')) is int
                 and 3000 <= constraints['min_duration_ms'] <= ARM_MAX_DURATION_MS)
+
+    def _verified_motion_warning(self, packet, action_id, command):
+        """Accept only a typed, bounded endpoint error with a verified measured hold."""
+        execution = packet.get('execution') or {}
+        capabilities = packet.get('capabilities') or {}
+        motion, warning = execution.get('arm_motion'), execution.get('warning')
+        targets = command.get('joints')
+        ego = self.packet['observation'].get('ego') or {}
+        calibration_id = ego.get('calibration_id')
+        if (any(type(capabilities.get(name)) is not int or capabilities[name] != 1
+                for name in ('guarded_execution', 'arm_motion_warning'))
+                or execution.get('action_id') != action_id or execution.get('outcome') != 'warning'
+                or execution.get('command_sent') is not True or execution.get('arm_reached') is not False
+                or execution.get('arm_hold_verified') is not True
+                or command.get('action') != 'move' or any(command.get(axis) for axis in ('x', 'y', 'theta'))
+                or not isinstance(targets, dict) or not targets or not set(targets) <= RECOVERY_ARM_JOINTS
+                or not isinstance(motion, dict) or motion.get('targets') != targets
+                or motion.get('reached') is not False or motion.get('warning_eligible') is not True
+                or motion.get('communication_recoveries') != []
+                or ego.get('available') is not True or ego.get('error')
+                or (ego.get('calibration_status') or {}).get('valid') is not True
+                or not self._valid_hold(motion.get('hold'), calibration_id)
+                or not self._finite_number(execution.get('motion_finished_at'))
+                or execution['motion_finished_at'] < motion['hold']['timestamp']
+                or not isinstance(warning, dict) or warning.get('code') != 'arm_target_not_reached'
+                or not self._finite_number(warning.get('max_error_deg'))
+                or not 0 < warning['max_error_deg'] <= MAX_ARM_WARNING_ERROR_DEG):
+            return False
+        measured, errors = motion.get('measured'), motion.get('errors')
+        limit = warning['max_error_deg']
+        if (not isinstance(measured, dict) or set(measured) != set(targets)
+                or not isinstance(errors, dict) or set(errors) != set(targets)
+                or any(not self._finite_number(measured[name]) or not self._finite_number(errors[name])
+                       or abs(errors[name]) > limit
+                       or abs(measured[name] - target - errors[name]) > 1e-6
+                       or abs(motion['hold']['measured'][name] - target) > limit
+                       for name, target in targets.items())):
+            return False
+        return True
+
+    def _accept_motion_warning(self, packet, images, before, command, requested_command, action_id):
+        # A warning is a known partial result, not confirmed arrival. It authorizes
+        # planning only after independent fresh camera and measured-pose checks.
+        self.in_flight = None
+        self.previous_result = packet
+        self.completion_candidate = None
+        if packet.get('status') == 'warning_without_observation':
+            raise EpisodeStopped('post_motion_observation_failed',
+                                 'Known arm endpoint warning; fresh observation unavailable')
+        execution = packet['execution']
+        motion, warning = execution['arm_motion'], execution['warning']
+        hold = motion['hold']
+        observation = packet.get('observation') or {}
+        ego = observation.get('ego') or {}
+        joints = ego.get('joints')
+        names = RECOVERY_ARM_JOINTS | {'gripper'}
+        if (ego.get('available') is not True or ego.get('error')
+                or ego.get('calibration_id') != hold['calibration_id']
+                or (ego.get('calibration_status') or {}).get('valid') is not True
+                or not self._finite_number(ego.get('timestamp'))
+                or ego['timestamp'] <= execution['motion_finished_at']
+                or not isinstance(joints, dict) or not names <= set(joints)
+                or not all(self._finite_number(joints[name]) for name in names)
+                or any(abs(joints[name] - hold['measured'][name]) > (2. if name == 'gripper' else .5)
+                       for name in names)
+                or any(abs(joints[name] - target) > warning['max_error_deg']
+                       for name, target in command['joints'].items())
+                or not any(label == 'wrist' for label, _, _ in images)):
+            raise EpisodeStopped('post_motion_observation_failed',
+                                 'Arm warning requires fresh calibrated feedback consistent with its verified hold')
+        self._check_post_motion(packet, command, execution)
+        self.before_images = self.images
+        self._accept_observation(packet, images, previous_id=before['observation']['observation_id'])
+        errors = {name: joints[name] - target for name, target in command['joints'].items()}
+        self.pending_feedback = {
+            **self._feedback(before, packet, command, execution),
+            'motion_warning': True, 'arm_reached': False, 'warning': warning,
+            'targets': command['joints'], 'measured_joints': joints, 'joint_errors': errors,
+            'guidance': 'The arm stopped at a verified measured pose with a small target error. '
+                        'Plan the next action from these actual joints and current images. '
+                        'Do not assume target arrival, replay a queued motion, or claim task success from this warning.',
+        }
+        self.record.event('motion_feedback', self.pending_feedback)
+        self.record.event('motion_warning', {
+            'action_id': action_id, 'runtime_id': self.runtime_id,
+            'command': command, 'requested_command': requested_command,
+            'execution': execution, 'arm_motion': motion, 'warning': warning,
+            'targets': command['joints'], 'measured_joints': joints, 'errors': errors,
+            'current_observation_id': observation['observation_id'],
+            'recovery_constraints': self.recovery_constraints,
+            'guidance': self.pending_feedback['guidance'],
+        })
+        if self.recovery_constraints is not None:
+            self.motion_failure_feedback = {
+                **self.motion_failure_feedback, 'resolved': False,
+                'current_observation_id': observation['observation_id'], 'measured_joints': joints,
+                'last_revised_action_id': action_id, 'last_warning': warning,
+                'guidance': 'The revised arm motion ended with a known small target error. '
+                            'Retain the existing recovery constraints and replan from measured state; '
+                            'this warning does not resolve the prior incomplete motion.',
+            }
+            self.record.event('motion_failure_feedback', self.motion_failure_feedback)
+        self.rejected_signature = (json.dumps(command, sort_keys=True)
+                                   if self.pending_feedback['no_joint_progress'] else None)
+        if not self.pending_feedback['no_joint_progress']:
+            self.rejected_commands.clear()
+            self.rejection_feedback = None
+            self.repeat_block_count = 0
 
     def _verified_incomplete(self, packet, action_id, command):
         """Recognize one typed, held, known partial motion; never infer from error text."""

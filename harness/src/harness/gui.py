@@ -242,6 +242,10 @@ class GuiController:
                 # This host event is written only after the exact held partial
                 # result has passed validation. It never certifies target arrival.
                 pending = None
+            elif event.get('event') == 'motion_warning' and event['data'].get('action_id') == pending:
+                # The runner records this only after validating the warning and
+                # fresh post-move observation; target arrival remains unconfirmed.
+                pending = None
             elif event.get('event') == 'action_result' and event['data'].get('action_id') == pending:
                 packet = event['data'].get('packet') or {}
                 execution = packet.get('execution') or {}
@@ -357,7 +361,8 @@ class GuiController:
                   'planning_started': 'planning', 'planning_finished': 'planned',
                   'decision': 'decided', 'action_prepared': 'executing', 'action_started': 'executing',
                   'action_finished': 'reviewing', 'action_result': 'reviewing',
-                  'motion_incomplete': 'reviewing', 'reconcile_started': 'reconciling',
+                  'motion_incomplete': 'reviewing', 'motion_warning': 'replanning',
+                  'reconcile_started': 'reconciling',
                   'reconcile_finished': 'replanning', 'motion_replanning': 'replanning',
                   'motion_failure_feedback': 'replanning', 'motion_recovery_completed': 'reviewing',
                   'motion_feedback': 'reviewing', 'completion_candidate': 'confirming'}

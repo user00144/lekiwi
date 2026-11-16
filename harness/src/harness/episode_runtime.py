@@ -39,6 +39,15 @@ Other joints or base motion are alternatives only if they can safely advance the
 Never edit calibration, widen limits, clamp/falsify the observed state, or try to force a joint back into
 range. If the task requires an unavailable joint, return blocked with the calibration issue and needed
 operator inspection. A safe rejection is not physical motion or progress. Unknown execution is never retried.
+pending_motion_feedback.motion_warning describes a small measured arm target error (at most 5 degrees)
+whose communication, calibrated held pose, and fresh post-motion camera/state were verified by the host.
+This warning permits continued planning within the ordinary action/time/speed/calibration limits;
+it does not mean the arm arrived at its requested target and does not require reconciliation.
+Compare the warning's targets, measured_joints and joint_errors with CURRENT images, then plan ONE next
+action from the ACTUAL measured pose. Do not add movement to the previous requested pose, blindly replay
+the command, increase force, or assume more time solves contact. A warning is never evidence of task success;
+completion still requires the normal independent fresh observations and evidence-backed completion claims.
+If recovery_constraints already exist, the warning does not remove them or resolve motion_failure_feedback.
 motion_failure_feedback describes a distinct, known partial arm motion whose measured hold was verified.
 The host alone may recheck that held state with a bounded read-only reconciliation (at most twice),
 then supply a fresh observation and recovery_constraints. Do not replay the failed command or assume

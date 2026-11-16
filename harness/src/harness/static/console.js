@@ -15,6 +15,7 @@
     blocked: "작업 보류", budget_actions: "행동 한도", budget_steps: "판단 한도",
     budget_seconds: "시간 한도", uncertain_execution: "실행 미확정",
     incomplete: "목표 미도달 · 재계획 필요", recovery_exhausted: "상태 재확인 한도",
+    warning: "목표 오차 · 현재 위치에서 계속", warning_without_observation: "목표 오차 · 재관찰 확인 필요",
     reconciliation_failed: "상태 재확인 실패",
     post_motion_observation_failed: "재관찰 실패", observation_failed: "관찰 실패",
     observation_invalid: "관찰 확인 필요", guarded_execution_unavailable: "실행 미지원",
@@ -32,7 +33,7 @@
     decision: "에이전트 판단", decision_rejected: "판단 보류", action_prepared: "명령 준비",
     action_started: "행동 실행", action_finished: "행동 응답", action_result: "실행 결과",
     motion_feedback: "실행 전후 비교", rejection_feedback: "명령 거부 · 재관찰 후 수정", completion_candidate: "완료 주장 · 재관찰 요청",
-    motion_incomplete: "목표 미도달 · 자세 유지 확인", reconcile_started: "상태 재확인",
+    motion_incomplete: "목표 미도달 · 자세 유지 확인", motion_warning: "목표 오차 · 현재 위치에서 계속", reconcile_started: "상태 재확인",
     reconcile_finished: "상태 재확인 응답", reconcile_result: "상태 재확인 결과",
     motion_failure_feedback: "미도달 원인과 현재 관절", motion_replanning: "새 경로 재계획",
     motion_recovery_completed: "수정한 팔 목표 도달",
@@ -80,8 +81,8 @@
   function label(status) { return statusLabels[status] || status || "대기"; }
   function statusTone(status) {
     if (["running", "starting", "completion_claim"].includes(status)) return "good";
-    if (["host_error", "gui_error", "startup_error", "error", "uncertain_execution", "post_motion_observation_failed", "observation_failed", "reconciliation_failed"].includes(status)) return "error";
-    if (["blocked", "stopping", "budget_actions", "budget_steps", "budget_seconds", "repeated_failed_action", "incomplete", "recovery_exhausted"].includes(status)) return "warning";
+    if (["host_error", "gui_error", "startup_error", "error", "uncertain_execution", "post_motion_observation_failed", "observation_failed", "reconciliation_failed", "warning_without_observation"].includes(status)) return "error";
+    if (["blocked", "stopping", "budget_actions", "budget_steps", "budget_seconds", "repeated_failed_action", "incomplete", "recovery_exhausted", "warning"].includes(status)) return "warning";
     return "neutral";
   }
   function badge(id, value, tone = "neutral") { text(id, value); $(id).className = `badge ${tone}`; }
@@ -572,6 +573,15 @@
       && packet.execution.arm_hold_verified === true && packet.execution.arm_motion?.hold?.verified === true
       && packet.capabilities?.arm_reconciliation === 1;
   }
+  function verifiedWarning(packet) {
+    return packet?.status === "warning" && packet.execution?.outcome === "warning"
+      && packet.execution.command_sent === true && packet.execution.arm_reached === false
+      && packet.execution.arm_hold_verified === true && packet.execution.arm_motion?.hold?.verified === true
+      && packet.execution.arm_motion.warning_eligible === true
+      && packet.execution.warning?.code === "arm_target_not_reached"
+      && packet.capabilities?.arm_motion_warning === 1
+      && packet.action_context?.movement_allowed === true && Boolean(packet.observation?.observation_id);
+  }
   function armMotionLines(parent, motion) {
     for (const [name, target] of Object.entries(motion?.targets || {})) {
       const measured = motion?.measured?.[name];
@@ -587,12 +597,25 @@
       card.setAttribute("aria-label", "목표 미도달과 새 경로 재계획");
       $("command-details").before(card);
     }
-    const event = [latestEvent(run, "motion_failure_feedback"), latestEvent(run, "motion_incomplete")]
+    const event = [latestEvent(run, "motion_failure_feedback"), latestEvent(run, "motion_incomplete"), latestEvent(run, "motion_warning")]
       .filter(Boolean).sort((left, right) => right.seq - left.seq)[0];
     const resolved = latestEvent(run, "motion_recovery_completed");
-    card.hidden = !event || Boolean(resolved && resolved.seq > event.seq);
+    const lastResult = latestEvent(run, "action_result");
+    const targetReached = lastResult?.data?.packet?.status === "completed"
+      && lastResult.data.packet.execution?.outcome === "completed" && lastResult.data.packet.execution.arm_reached === true;
+    card.hidden = !event || Boolean(resolved && resolved.seq > event.seq)
+      || Boolean(event.event === "motion_warning" && targetReached && lastResult.seq > event.seq);
     card.replaceChildren();
     if (card.hidden) return;
+    if (event.event === "motion_warning") {
+      card.append(node("strong", "", "목표 오차 · 현재 위치에서 계속"));
+      armMotionLines(card, {targets: event.data?.targets || event.data?.arm_motion?.targets,
+        measured: event.data?.measured_joints || event.data?.arm_motion?.measured});
+      card.append(node("p", "", run?.active ? "현재 관절값과 새 카메라 관찰로 다음 목표를 계산합니다."
+        : "이동 후 관찰을 확인했습니다. 다음 이동은 현재 관절값에서 계산합니다."));
+      card.append(node("small", "", "목표에 정확히 도달한 상태는 아닙니다. 실제 관절값과 목표의 차이를 표시합니다."));
+      return;
+    }
     card.append(node("strong", "", "목표 미도달 · 자세 유지 확인"));
     armMotionLines(card, event.data?.arm_motion);
     const constraints = event.data?.recovery_constraints;
@@ -684,12 +707,14 @@
     const data = event.data || {};
     const finishedStatus = kind === "action_finished" && !("transport_status" in data) && data.status === "completed" && data.result_status ? data.result_status : data.status;
     const rejected = kind === "rejection_feedback" || kind === "action_result" && safeRejection(data.packet);
-    const failedFinish = kind.endsWith("_finished") && ["error", "uncertain_execution", "completed_without_observation"].includes(finishedStatus);
-    const category = rejected ? "rejection" : failedFinish ? "error" : kind === "decision" ? "decision" : kind.startsWith("action") ? "action" : kind === "error" || kind === "decision_rejected" ? "error" : "";
+    const warning = kind === "motion_warning" || kind === "action_result" && verifiedWarning(data.packet)
+      || kind === "action_finished" && finishedStatus === "warning";
+    const failedFinish = kind.endsWith("_finished") && ["error", "uncertain_execution", "completed_without_observation", "warning_without_observation"].includes(finishedStatus);
+    const category = rejected ? "rejection" : warning ? "warning" : failedFinish ? "error" : kind === "decision" ? "decision" : kind.startsWith("action") ? "action" : kind === "error" || kind === "decision_rejected" ? "error" : "";
     const item = node("article", `timeline-event ${category}`);
     const head = node("div", "event-head");
     const finishedPhase = {observe_finished: "관찰", planning_finished: "판단", action_finished: "행동 실행", startup_finished: "작업 준비"}[kind];
-    const interruptedLabel = {cancelled: "취소", error: "실패", uncertain_execution: "결과 미확정", incomplete: "목표 미도달", rejected: "명령 거부", completed_without_observation: "완료 · 재관찰 실패"}[finishedStatus];
+    const interruptedLabel = {cancelled: "취소", error: "실패", uncertain_execution: "결과 미확정", incomplete: "목표 미도달", warning: "목표 오차 경고", warning_without_observation: "목표 오차 · 재관찰 실패", rejected: "명령 거부", completed_without_observation: "완료 · 재관찰 실패"}[finishedStatus];
     head.append(node("strong", "", finishedPhase && interruptedLabel ? `${finishedPhase} ${interruptedLabel}` : eventLabels[kind] || kind));
     if (kind === "decision") head.append(node("span", "event-tag", toolLabels[data.tool] || data.tool));
     const time = node("time", "", timeLabel(event.at));
@@ -724,8 +749,10 @@
         ? recordedRecoveries.filter((recovery) => recovery?.recovery === "verified_readback" && recovery.requested === recovery.read_value
           && [recovery.motor_id, recovery.register, recovery.requested, recovery.read_value].every(Number.isFinite)) : [];
       const message = safeRejection(packet) ? "명령 거부 · 재관찰 후 수정. 이 명령은 로봇에 전송되지 않았습니다."
+        : verifiedWarning(packet) ? "목표 오차 경고 · 현재 위치에서 계속합니다. 새 관찰로 다음 목표를 계산합니다."
         : verifiedIncomplete(packet) ? "목표 미도달 · 측정한 자세 유지를 확인했습니다. 상태 재확인 후 새 요청이 필요합니다."
         : execution.outcome === "uncertain_execution" ? "실행 여부 미확정 · 자동 재실행을 중단했습니다."
+        : ["warning", "warning_without_observation"].includes(packet.status) ? "목표 오차 응답 · 이동 후 상태 확인이 필요합니다."
           : packet.status === "completed" ? recoveries.length ? "통신 응답 오류 · 설정값 재확인 후 완료" : "동작 응답 수신 · 새 관찰로 결과를 확인합니다."
             : packet.error || packet.observation_error || label(packet.status);
       item.append(node("p", "event-body", message));
@@ -736,7 +763,7 @@
         const attempts = Number.isInteger(recovery.read_attempts) ? ` · 읽기 ${recovery.read_attempts}회` : "";
         eventLine(item, "설정 확인", `모터 ${recovery.motor_id} · 레지스터 ${recovery.register} · 요청 ${recovery.requested} / 확인 ${recovery.read_value}${attempts}`);
       }
-      if (typeof execution.arm_reached === "boolean") eventLine(item, "팔 목표", execution.arm_reached ? "엔코더 허용 오차 내 도달" : "도달 미확인");
+      if (typeof execution.arm_reached === "boolean") eventLine(item, "팔 목표", execution.arm_reached ? "엔코더 허용 오차 내 도달" : verifiedWarning(packet) ? "오차 남음 · 현재 관절값 확인" : "도달 미확인");
       if (execution.base_stop_verified === false) eventLine(item, "베이스", "정지 명령 처리 · 실제 이동량·정지 상태는 미측정");
     } else if (kind === "rejection_feedback") {
       item.append(node("p", "event-body", rejectionReason(data)));
@@ -744,6 +771,10 @@
       if (data.error_code === "arm_current_out_of_calibration" && data.error_details?.joint) eventLine(item, "관절 상태", calibrationLine(data.error_details));
       eventLine(item, "수정 지침", rejectionGuidance(data));
       eventLine(item, "거부 명령", commandLabel(data.command));
+    } else if (kind === "motion_warning") {
+      item.append(node("p", "event-body", "목표 오차를 경고로 기록하고 현재 위치에서 다음 행동을 계획합니다."));
+      armMotionLines(item, {targets: data.targets || data.arm_motion?.targets, measured: data.measured_joints || data.arm_motion?.measured});
+      eventLine(item, "실행한 요청", commandLabel(data.command));
     } else if (kind === "motion_incomplete" || kind === "motion_failure_feedback") {
       item.append(node("p", "event-body", "목표에 도달하지 못했으며, 현재 관절값과 자세 유지 결과를 다음 판단에 전달합니다."));
       armMotionLines(item, data.arm_motion);
@@ -961,6 +992,7 @@
     if (remote?.last && key !== manual.lastKey && !manual.busy) {
       manual.lastKey = key; manual.lastRun = remote.last.run_id;
       text("manual-status", `${label(remote.last.status)} · ${remote.last.detail || ""}`);
+      $("manual-status").classList.toggle("warning", remote.last.status === "warning");
       $("manual-history").hidden = !manual.lastRun;
     }
     manualControls();
