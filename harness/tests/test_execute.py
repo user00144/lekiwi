@@ -44,3 +44,22 @@ class ExecuteTest(unittest.IsolatedAsyncioTestCase):
         for action in ('move_arm', 'move_combined', 'unknown'):
             with self.assertRaises(ValueError):
                 await RobotTools(client).execute('kiwi',action=action)
+
+    async def test_guard_metadata_forwarded_and_safe_rejection_preserved(self):
+        client = AsyncMock()
+        client.request.return_value = {'status': 'rejected', 'execution': {
+            'action_id': 'action', 'outcome': 'rejected', 'command_sent': False}}
+        content = await RobotTools(client).execute(
+            'kiwi', x=.1, observation_id='obs', runtime_id='runtime', action_id='action', reason='Current path clear')
+        command = client.request.call_args.kwargs['command']
+        self.assertEqual({key: command[key] for key in ('observation_id', 'runtime_id', 'action_id', 'reason')},
+                         {'observation_id': 'obs', 'runtime_id': 'runtime', 'action_id': 'action', 'reason': 'Current path clear'})
+        self.assertEqual(json.loads(content[0].text)['status'], 'rejected')
+        self.assertNotIn('request_id', command)
+        self.assertEqual(client.request.await_count, 1)
+
+    async def test_partial_guard_metadata_never_falls_back_to_legacy(self):
+        client = AsyncMock()
+        with self.assertRaisesRegex(ValueError, 'All guarded'):
+            await RobotTools(client).execute('kiwi', x=.1, observation_id='obs')
+        client.request.assert_not_awaited()

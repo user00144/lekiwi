@@ -4,6 +4,7 @@ import sys
 import zmq
 
 from .robot import Robot
+from .guard import CAPABILITIES, GUARD_FIELDS, ExecutionGuard
 
 
 class RobotClient:
@@ -11,6 +12,7 @@ class RobotClient:
         self.robot = robot
         self.robot_id = robot_id
         self.endpoint = endpoint
+        self.guard = ExecutionGuard(robot)
 
     def handle(self, request: dict) -> dict:
         request_id = request.get("request_id") if isinstance(request, dict) else None
@@ -21,12 +23,26 @@ class RobotClient:
             print(f"Execution started robot={self.robot_id} request={request_id} action={request.get('action')}", file=sys.stderr, flush=True)
         try:
             if request.get("op") == "observe":
-                reply.update(status="ok", observation=self.robot.observe())
-            elif request.get("op") == "execute" and self.robot.execute(request):
-                reply.update(status="completed", observation=self.robot.observe())
+                reply.update(status="ok", **self.guard.observe())
+            elif request.get("op") == "execute":
+                if GUARD_FIELDS.intersection(request):
+                    reply.update(self.guard.execute(request))
+                else:
+                    # Legacy clients retain the old wire format, but a legacy
+                    # command always invalidates any guarded observation lease.
+                    self.guard.invalidate()
+                    try:
+                        accepted = self.robot.execute(request)
+                    except BaseException:
+                        self.guard.halt()
+                        raise
+                    if accepted:
+                        reply.update(status="completed", observation=self.robot.observe())
         except Exception as exc:
             print(f'Request failed robot={self.robot_id} request={request_id} error={exc}', file=sys.stderr, flush=True)
             reply.update(status="error", error=str(exc))
+            if request.get("op") == "observe":
+                reply.update(capabilities=dict(CAPABILITIES), action_context=self.guard._context())
         if request.get("op") == "execute":
             print(f"Execution finished robot={self.robot_id} request={request_id} status={reply['status']}", file=sys.stderr, flush=True)
         return reply

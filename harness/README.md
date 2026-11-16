@@ -1,7 +1,15 @@
 # Codex Harness
 
-Python Codex runtime → MCP `observe` → ZMQ 서버 → observation → 제어신호 JSON 출력.
-기본 모드는 서버의 현재 관측을 사용합니다. 한 번 실행하며, 실패 기록·목표 평가·로봇 명령 전송은 포함하지 않습니다.
+Python Codex runtime → MCP `observe`/`execute` → ZMQ 서버 → observation.
+기본 모드는 한 번 관측하고 `wait` 제안 JSON을 출력합니다. `harness-run --execute`는 별도의 호스트 루프로 한 행동씩 실행하고 새 관찰을 바탕으로 다시 판단합니다. 실행 모드는 행동·시간·단계 예산과 실행 기록을 관리합니다.
+
+```bash
+uv run --project harness harness-run --execute --robot-id kiwi-01 \
+  --max-actions 20 --max-steps 40 --max-seconds 300 \
+  '현재 관측을 확인하고 100ms 대기한 뒤 결과를 확인해줘.'
+```
+
+실행 모드에는 guarded 실행을 지원하는 runtime이 필요합니다. `--snapshot`과 함께 사용할 수 없습니다. 모델은 한 단계의 계획·근거·명령을 출력하고, 호스트가 관찰 ID와 예산을 검증한 뒤 MCP를 호출합니다. 완료 주장은 재관찰 후 다시 확인하며 물리적 성공 판정과 구분합니다. 상세 흐름, 기존 console loop에서 반영한 부분, 복구 방법은 [에이전트 루프 안내](../docs/agent-loop.md)에 있습니다.
 
 ```bash
 # 터미널 1: 통신 서버
@@ -25,12 +33,14 @@ uv run --project harness harness-run \
 
 - Codex 로그인 필요. 공식 `openai-codex` Python SDK와 번들 runtime 사용.
 - `--server tcp://127.0.0.1:5556`, `--model`로 연결 주소와 모델 지정 가능.
-- `runtime.py`: Codex 실행, MCP 연결, JSON 출력. 모델 미지정 시 Codex 기본 설정 사용.
+- `runtime.py`: 기본 제안 모드와 실행 모드 CLI, JSON 출력.
+- `episode.py`: 행동·판단·시간 예산, 실행 기록, 관찰 검증과 피드백 루프.
+- `episode_runtime.py`: 실행 모드의 Codex 판단과 호스트 MCP 연결. 로그인만 공유하는 임시 Codex 환경을 사용하며 사용자 MCP·도구 설정은 상속하지 않습니다. 실행 모델을 지정하려면 `--model`을 사용합니다.
 - `tools.py`: `observe(robot_id)`와 `execute(robot_id, x, y, theta, duration_ms)` 노출. JPEG는 MCP 이미지로 반환. snapshot 모드에는 observe만 등록합니다.
 - `client.py`: 독립된 ZMQ 서버에 요청. 다른 프로젝트의 Python 코드를 import하지 않음.
 - MCP 관측 성공을 확인하지 못하면 제어신호 출력을 거절함.
 
-ORIN은 `move`, `wait`을 지원합니다. `harness-run`은 기존대로 observe만 허용하는 제어신호 출력 모드이며, 현재 출력 스키마는 wait 전용입니다. 실제 주행은 아래 execute MCP를 직접 호출합니다.
+ORIN은 `move`, `wait`을 지원합니다. `--execute` 없는 기본 `harness-run`은 observe만 허용하며 출력 스키마는 wait 전용입니다. 아래 JSON은 기본 모드의 제안 결과입니다. 실제 실행에는 `--execute` 또는 아래 execute MCP를 사용합니다.
 
 ```json
 {"robot_id":"kiwi-01","command":{"action":"wait","duration_ms":100},"reason":"관측에 기반한 설명"}
@@ -71,7 +81,7 @@ execute MCP 예시(절대 목표값):
 {"robot_id":"kiwi-01","action":"move","joints":{"wrist_roll":10,"gripper":60},"duration_ms":1000}
 ```
 
-관절명은 shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll, gripper입니다. 팔은 도(deg), 그리퍼는 보정된 개폐율(%)입니다. 먼저 observe의 `ego.joints`와 `ego.limits`를 확인합니다. 생략한 관절은 건드리지 않습니다. 이동 중 속도는 관절 30deg/s, 그리퍼 50%/s 이하, 실행 시간은 100–1000ms입니다. 베이스와 팔을 한 요청에서 동시에 제어하지 않습니다.
+관절명은 shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll, gripper입니다. 팔은 도(deg), 그리퍼는 보정된 개폐율(%)입니다. 먼저 observe의 `ego.joints`와 `ego.limits`를 확인합니다. 생략한 관절은 건드리지 않습니다. 이동 중 속도는 관절 30deg/s, 그리퍼 50%/s 이하, 실행 시간은 100–1000ms입니다. 베이스 속도와 팔 목표를 같은 요청에 지정할 수 있습니다.
 
 팔은 목표 도달 피드백을 확인한 후 완료를 반환합니다. `ego.last_motion`에 목표·측정값·허용오차가 포함됩니다. 팔 자세 유지 토크는 자동으로 해제하지 않습니다. 관절 도달과 물체 잡기 성공은 서로 다르며, Cartesian IK·자동 파지 경로 계획은 포함하지 않습니다.
 

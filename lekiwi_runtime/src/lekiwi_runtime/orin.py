@@ -92,3 +92,25 @@ class OrinRobot:
             return False
         time.sleep(duration / 1000)
         return True
+
+    def execute_guarded(self, command: dict) -> dict:
+        """Report what this driver verifies; base pose/stationarity are unknown.
+
+        Exceptions deliberately propagate: a partly transmitted serial command
+        cannot be classified as safe to retry by the network layer.
+        """
+        accepted = self.execute(command)
+        moving = command.get("action") == "move"
+        uses_arm = moving and command.get("joints") is not None
+        uses_base = moving and (not uses_arm or any(command.get(axis, 0) for axis in ("x", "y", "theta")))
+        result = {
+            "outcome": "completed" if accepted else "rejected",
+            "command_sent": bool(accepted and moving),
+            "arm_reached": bool(self.arm.last_motion and self.arm.last_motion.get("reached")) if accepted and uses_arm else None,
+            "base_stop_command_sent": True if accepted and uses_base else None,
+            "base_stop_verified": False if uses_base else None,
+            "simulated": self.mock,
+        }
+        if accepted and uses_arm:
+            result["arm_motion"] = dict(self.arm.last_motion)
+        return result

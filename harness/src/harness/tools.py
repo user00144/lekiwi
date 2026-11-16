@@ -10,6 +10,33 @@ from mcp.types import ImageContent, TextContent
 from .client import ServerClient, SnapshotClient
 
 
+def build_command(action, x, y, theta, duration_ms, joints=None):
+    """Validate the wire command, including callers outside the MCP schema."""
+    if type(duration_ms) is not int or not 1 <= duration_ms <= 1000:
+        raise ValueError("duration_ms must be 1..1000")
+    if not all(type(v) in (int, float) and math.isfinite(v) for v in (x, y, theta)):
+        raise ValueError("Velocity must be finite")
+    command = {"action": action, "duration_ms": duration_ms}
+    if action == "move":
+        if math.hypot(x, y) > .4 or abs(theta) > 150:
+            raise ValueError("Expected hypot(x,y)<=0.4 m/s and abs(theta)<=150 deg/s")
+        command.update(x=x, y=y, theta=theta)
+        if joints is not None:
+            names = {"shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper"}
+            if (duration_ms < 100 or not isinstance(joints, dict) or not joints
+                    or not all(k in names and type(v) in (int, float) and math.isfinite(v)
+                               and (0 <= v <= 100 if k == "gripper" else -180 <= v <= 180)
+                               for k, v in joints.items())):
+                raise ValueError("Invalid arm targets or duration")
+            command["joints"] = joints
+    elif action == "wait":
+        if joints is not None or any((x, y, theta)):
+            raise ValueError("Wait cannot contain motion targets")
+    else:
+        raise ValueError("Unsupported action")
+    return command
+
+
 class RobotTools:
     def __init__(self, client: ServerClient | SnapshotClient):
         self.client = client
@@ -30,6 +57,10 @@ class RobotTools:
                       duration_ms: Annotated[int, Field(strict=True, ge=1, le=1000)] = 500,
                       action: Literal["move", "wait"] = "move",
                       joints: dict[str, Annotated[float, Field(strict=True, allow_inf_nan=False)]] | None = None,
+                      observation_id: str | None = None,
+                      runtime_id: str | None = None,
+                      action_id: str | None = None,
+                      reason: str | None = None,
                       ) -> list[TextContent | ImageContent]:
         """Execute one bounded action. move: x forward/y left m/s, theta CCW deg/s.
         move accepts optional joints: absolute degrees, gripper 0..100%; omitted joints unchanged.
@@ -38,33 +69,19 @@ class RobotTools:
         Arm duration 100..1000ms; speed <=30deg/s or 50%/s, calibrated limits from observe.
         Arm completion includes joint feedback; torque remains on to hold posture.
         Timeout means outcome unknown; do not blindly retry.
+        Guarded episode calls must supply observation_id, runtime_id, action_id and reason together.
         """
         if isinstance(self.client, SnapshotClient):
             raise ValueError("Snapshots cannot execute robot commands")
-        if type(duration_ms) is not int or not 1 <= duration_ms <= 1000:
-            raise ValueError("duration_ms must be 1..1000")
-        if not all(type(v) in (int, float) and math.isfinite(v) for v in (x, y, theta)):
-            raise ValueError("Velocity must be finite")
-        command = {"action": action, "duration_ms": duration_ms}
-        if action == "move":
-            if math.hypot(x, y) > .4 or abs(theta) > 150:
-                raise ValueError("Expected hypot(x,y)<=0.4 m/s and abs(theta)<=150 deg/s")
-            command.update(x=x, y=y, theta=theta)
-            if joints is not None:
-                names = {"shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper"}
-                if (duration_ms < 100 or not isinstance(joints, dict) or not joints
-                        or not all(k in names and type(v) in (int, float) and math.isfinite(v)
-                                   and (0 <= v <= 100 if k == "gripper" else -180 <= v <= 180)
-                                   for k, v in joints.items())):
-                    raise ValueError("Invalid arm targets or duration")
-                command["joints"] = joints
-        elif action == "wait":
-            if joints is not None or any((x, y, theta)):
-                raise ValueError("Wait cannot contain motion targets")
-        else:
-            raise ValueError("Unsupported action")
+        command = build_command(action, x, y, theta, duration_ms, joints)
+        metadata = dict(observation_id=observation_id, runtime_id=runtime_id, action_id=action_id, reason=reason)
+        guarded = any(value is not None for value in metadata.values())
+        if guarded:
+            if not all(isinstance(value, str) and value.strip() for value in metadata.values()):
+                raise ValueError("All guarded execution fields must be nonempty strings")
+            command.update(metadata)
         response = await self.client.request(robot_id, "execute", command=command)
-        if response.get("status") != "completed":
+        if not guarded and response.get("status") != "completed":
             raise RuntimeError(f"Execution not confirmed; do not retry blindly: {response}")
         return self._content(response)
 

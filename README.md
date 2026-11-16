@@ -2,14 +2,14 @@
 
 여러 Lekiwi 로봇의 observation을 ZeroMQ로 수신하고, Codex가 관측을 바탕으로 제어신호를 생성하는 프로젝트입니다.
 
-현재 harness는 **observation 조회와 제어신호 JSON 출력까지만** 수행합니다. 출력한 신호를 로봇에 전송하지 않습니다. 별도 MCP `execute`는 차체 속도 기반 주행을 실행합니다. 런타임은 `move`, `wait`을 지원합니다.
+기본 harness는 observation 조회와 `wait` 제안 JSON 출력까지만 수행합니다. `harness-run --execute`는 관찰 → 한 동작 실행 → 새 관찰 → 재판단을 반복하는 별도 실행 모드입니다. 런타임은 베이스 속도·팔 관절 목표를 받는 `move`와 `wait`을 지원합니다. [에이전트 루프와 복구 안내](docs/agent-loop.md)를 참고하세요.
 
 ## 구성
 
 | 폴더 | 역할 |
 | --- | --- |
 | [server](server/README.md) | 로봇별 observe/execute 요청과 응답을 중계하는 ZeroMQ 서버 |
-| [harness](harness/README.md) | Codex Python runtime, MCP observe 도구, 제어신호 출력 |
+| [harness](harness/README.md) | Codex 판단, MCP observe/execute, 제안 모드와 관찰 기반 실행 루프 |
 | [lekiwi_runtime](lekiwi_runtime/README.md) | ORIN에서 실행하는 DEALER 클라이언트와 센서 드라이버 |
 | `contracts/` | 예약된 빈 폴더 |
 | `utility/` | 예약된 빈 폴더 |
@@ -19,7 +19,7 @@
 
 ```text
 Codex Python runtime
-        │ MCP observe
+        │ MCP observe / execute
         ▼
      harness
         │ REQ → tcp://127.0.0.1:5556

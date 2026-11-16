@@ -1,5 +1,7 @@
 # Local references and captured robot data
 /TEMP/
+/.recovery/
+/runs/
 
 # Python environments and caches
 .venv/

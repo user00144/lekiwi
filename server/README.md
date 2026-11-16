@@ -25,6 +25,8 @@ uv run --project server server
 시각화·MCP·하드웨어·실패 기록은 포함하지 않습니다.
 기존 TEMP 대시보드 서버와 5555 포트를 동시에 사용할 수 없습니다.
 
+관찰 기반 실행 모드도 같은 중계 경로를 사용합니다. `command` 안의 `observation_id`, `runtime_id`, `action_id`, `reason`은 runtime으로 전달하며, 서버가 생성하는 `request_id`와 의미가 다릅니다. 관찰 유효성·중복 행동 검사는 runtime이 맡습니다. 서버 timeout은 물리적 정지 확인이 아니며, 실행 모드는 결과 미확정 시 추가 행동을 중단합니다. [에이전트 루프 안내](../docs/agent-loop.md)
+
 ## 폴더에서 직접 실행
 
 ZeroMQ 중계 서버를 시작합니다.

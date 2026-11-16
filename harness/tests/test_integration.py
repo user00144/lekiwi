@@ -56,18 +56,22 @@ class IntegrationTest(unittest.IsolatedAsyncioTestCase):
 
                 tasks = [asyncio.create_task(robot(s, name)) for s, name in zip(sockets, ("a", "b"))]
                 client = ServerClient(api, timeout=3)
-                # Wait for asynchronous DEALER routing to become available.
-                for _ in range(100):
-                    result = await client.request("a", "observe")
-                    if result["status"] == "ok":
-                        break
-                    await asyncio.sleep(.01)
-                self.assertEqual(result["observation"]["robot"], "a")
+                # Each DEALER has an independent asynchronous handshake. A ready
+                # route for a does not establish that b can receive requests yet.
+                for identity in ("a", "b"):
+                    for _ in range(100):
+                        result = await client.request(identity, "observe")
+                        if result["status"] == "ok":
+                            break
+                        await asyncio.sleep(.01)
+                    self.assertEqual(result["status"], "ok", result)
+                    self.assertEqual(result["observation"]["robot"], identity)
                 stalled, other = await asyncio.gather(
                     client.request("a", "execute", command={"action": "timeout"}),
                     client.request("b", "observe"),
                 )
                 self.assertEqual(stalled["status"], "error")
+                self.assertEqual(other["status"], "ok", other)
                 self.assertEqual(other["observation"]["robot"], "b")
                 rejected = await client.request("a", "execute", command={"op": "observe"})
                 self.assertEqual(rejected["status"], "error")

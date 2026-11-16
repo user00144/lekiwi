@@ -71,6 +71,18 @@ class CodexRuntime:
             raise RuntimeError("No successful MCP observation; control output discarded")
         return json.loads(result.final_response)
 
+    def run_episode(self, robot_id: str, instruction: str, *, run_dir=None,
+                    max_actions=20, max_steps=40, max_seconds=300):
+        """Explicit execution mode; the legacy run() remains proposal-only."""
+        import asyncio
+        from .episode import EpisodeLimits
+        from .episode_runtime import run_episode
+
+        return asyncio.run(run_episode(
+            self.server, self.model, robot_id, instruction, snapshot=self.snapshot,
+            run_dir=run_dir, limits=EpisodeLimits(max_actions, max_steps, max_seconds),
+        ))
+
 
 def main():
     import argparse
@@ -81,6 +93,19 @@ def main():
     parser.add_argument("--server", default="tcp://127.0.0.1:5556")
     parser.add_argument("--model")
     parser.add_argument("--snapshot", type=Path)
+    parser.add_argument("--execute", action="store_true", help="Run a bounded observe/decide/execute episode")
+    parser.add_argument("--max-actions", type=int, default=20)
+    parser.add_argument("--max-steps", type=int, default=40)
+    parser.add_argument("--max-seconds", type=float, default=300)
+    parser.add_argument("--run-dir", type=Path, help="New inspection-only run directory; never resumes motors")
     args = parser.parse_args()
-    result = CodexRuntime(args.server, args.model, args.snapshot).run(args.robot_id, args.instruction)
+    if args.execute and args.snapshot:
+        parser.error("--execute cannot be combined with --snapshot")
+    runtime = CodexRuntime(args.server, args.model, args.snapshot)
+    if args.execute:
+        result = runtime.run_episode(args.robot_id, args.instruction, run_dir=args.run_dir,
+                                     max_actions=args.max_actions, max_steps=args.max_steps,
+                                     max_seconds=args.max_seconds)
+    else:
+        result = runtime.run(args.robot_id, args.instruction)
     print(json.dumps(result, ensure_ascii=False, indent=2))

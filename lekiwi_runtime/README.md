@@ -2,6 +2,8 @@
 
 ORIN에서 카메라 2대, AWR2944 레이더, BMI160 IMU, STS3215 팔 관절을 읽고 ZeroMQ DEALER로 서버 요청에 응답합니다. 하드웨어 코드와 기본 설정을 이 패키지에 포함하므로 외부 ORIN 폴더가 필요하지 않습니다.
 
+관찰 기반 에이전트 실행을 위한 선택적 guarded 명령도 지원합니다. 기존 `move`/`wait` 명령은 유지합니다. [에이전트 루프와 복구 안내](../docs/agent-loop.md)
+
 ## 설치와 실행
 
 저장소 루트에서 실행합니다. Python 3.10 이상을 사용합니다.
@@ -85,6 +87,18 @@ uv run python main.py
 ```
 
 `uv run`이 의존성과 프로젝트 설치를 준비합니다. 이미 설치된 Python 환경에서는 `python main.py`로 실행할 수 있습니다. 기존 CLI 옵션도 그대로 사용할 수 있습니다.
+
+## 관찰과 연결된 실행
+
+`observe` 응답은 `capabilities.guarded_execution: 1`, `observation.observation_id`, `observation.runtime_id`, `action_context`를 추가합니다. guarded `execute`는 기존 명령에 `observation_id`, `runtime_id`, `action_id`, `reason`을 모두 전달합니다. 일부 필드만 보내면 거부합니다.
+
+- 관찰 유효기간은 기본 60초이며 runtime의 monotonic 시계로 검사합니다. 이전 관찰, runtime 재시작 전 관찰, 바뀐 관절 상태로 실행하지 않습니다.
+- 베이스 이동은 최신 전방 이미지, 팔 동작은 최신 손목 이미지와 관절 피드백을 검사합니다. 레이더·IMU를 정확한 위치나 장애물 회피 보장으로 해석하지 않습니다.
+- 같은 행동 ID와 같은 명령은 저장된 결과를 재전송합니다. 다른 명령에 같은 ID를 쓰면 거부합니다. 프로세스당 기본 128개 ID 또는 인코딩된 결과 32MiB까지 저장합니다. 공간이 차면 이전 ID를 지우고 재실행 가능하게 만들지 않고 guarded 실행을 차단합니다.
+- 응답 `execution`은 명령 전송, 팔 도달, 베이스 정지 명령 전송을 구분합니다. 베이스의 실제 정지·거리 도달을 확인했다고 표시하지 않습니다.
+- 관련 카메라가 동작 종료 이후 프레임을 제공할 때까지 제한된 시간 동안 기다립니다. 동작은 끝났지만 관찰이 없으면 `completed_without_observation`으로 알립니다. 실행 여부가 불명확한 오류는 해당 runtime의 guarded 실행을 중단합니다.
+
+guard 필드가 없는 기존 호출은 이전 인터페이스를 사용합니다. 이 호출도 이전 guarded 관찰을 무효화하므로 다른 판단 루프가 오래된 관찰로 이어서 움직일 수 없습니다. 프로세스 재시작과 복구 시 과거 행동은 자동 재생하지 않습니다.
 
 ## 팔 액션
 
