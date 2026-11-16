@@ -31,12 +31,12 @@ class GuiPreviewTest(unittest.IsolatedAsyncioTestCase):
         await self.client.aclose()
         self.temp.cleanup()
 
-    def record(self, joints=None, oid='obs-1'):
+    def record(self, joints=None, oid='obs-1', limits=None):
         record = RunRecord(Path(self.temp.name) / 'saved', 'robot', 'saved goal', EpisodeLimits())
         packet = {'observation': {'observation_id': oid, 'ego': {
             'available': True, 'calibration_id': 'test-calibration',
             'calibration_status': {'valid': True}, 'joints': joints or dict(MODEL_SEED),
-            'limits': {name: {'min': -150., 'max': 150., 'max_speed': 40., 'unit': 'deg'}
+            'limits': limits or {name: {'min': -150., 'max': 150., 'max_speed': 40., 'unit': 'deg'}
                        for name in ARM_JOINTS}}}}
         record.observation(packet, [])
         return record
@@ -115,6 +115,41 @@ class GuiPreviewTest(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(value['result']['success'])
             self.assertEqual(value['state']['fk']['joints_deg']['shoulder_lift'], -100.484)
             self.assertIn('shoulder_lift', value['state']['fk']['urdf_limit_violations'])
+
+    async def test_duration_failure_explained_without_changing_request_or_authorizing_motion(self):
+        joints = dict(zip(ARM_JOINTS, [-3.077, -99.78, 90.33, 70.418, -4.44]))
+        ranges = [120.175824, 106.021978, 95.076923, 101.978022, 180.]
+        limits = {name: {'min': -bound, 'max': bound, 'max_speed': 30., 'unit': 'deg'}
+                  for name, bound in zip(ARM_JOINTS, ranges)}
+        record = self.record(joints, limits=limits)
+        before = record.events.read_bytes()
+        payload = {'source': 'recorded', 'run_id': 'saved', 'duration_ms': 500,
+                   'target': {**TARGET, 'mode': 'absolute', 'xyz_m': [.2, 0., .05]}}
+        value = await self.preview(payload)
+        failed = value['result']
+        self.assertFalse(failed['success'])
+        self.assertEqual(failed['duration_ms'], 500)
+        self.assertAlmostEqual(failed['residual_m'], .00263059, places=6)
+        check = failed['duration_check']
+        self.assertTrue(check['success'])
+        self.assertEqual(check['checked_duration_ms'], 1000)
+        self.assertFalse(check['executable'])
+        self.assertEqual(value['solution_points'], [])
+        self.assertIsNone(failed['solution_runtime_joints_deg'])
+        slower = await self.preview({**payload, 'duration_ms': 1000})
+        self.assertTrue(slower['result']['success'])
+        self.assertLess(slower['result']['residual_m'], 1e-6)
+        self.assertIn('hardware_alignment_unverified', slower['result']['reason_codes'])
+        self.assertNotIn('duration_check', slower['result'])
+        self.assertEqual(record.events.read_bytes(), before)
+
+    async def test_unreachable_goal_does_not_suggest_duration_as_a_fix(self):
+        self.record()
+        value = await self.preview({'source':'recorded', 'run_id':'saved', 'duration_ms':500,
+                                    'target':{**TARGET, 'mode':'absolute', 'xyz_m':[1.,0.,0.]}})
+        self.assertFalse(value['result']['success'])
+        self.assertFalse(value['result']['duration_check']['success'])
+        self.assertFalse(value['result']['executable'])
 
     async def test_unavailable_feedback_gives_clear_empty_preview(self):
         record = self.record()

@@ -414,6 +414,13 @@
     if (data.result) {
       const [summary, tone] = ikStatus(data.result);
       output.append(node("span", `badge ${tone}`, summary));
+      if (data.result.duration_check?.success) {
+        const check = data.result.duration_check;
+        const retry = node("button", "button xyz-secondary", "1초로 바꿔 다시 계산 · 로봇 전송 없음");
+        retry.type = "button";
+        retry.addEventListener("click", () => { $("xyz-duration").value = String(check.checked_duration_ms); requestPreview(true); });
+        output.append(node("p", "kinematics-reason", `${check.requested_duration_ms}ms 제한에서는 오차 ${(data.result.residual_m * 1000).toFixed(2)}mm입니다. 1초로 계산하면 허용 오차 안의 해를 찾습니다.`), retry);
+      }
       ikLines(output, data.result);
     } else kinematicReasons(output, data.state);
     const violations = data.state.fk?.urdf_limit_violations || {};
