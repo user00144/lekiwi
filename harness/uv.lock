@@ -210,6 +210,8 @@ dependencies = [
     { name = "mcp" },
     { name = "openai-codex" },
     { name = "pyzmq" },
+    { name = "starlette" },
+    { name = "uvicorn" },
 ]
 
 [package.metadata]
@@ -217,6 +219,8 @@ requires-dist = [
     { name = "mcp", specifier = ">=1.26,<2" },
     { name = "openai-codex", specifier = ">=0.167.0" },
     { name = "pyzmq", specifier = ">=27.1" },
+    { name = "starlette", specifier = ">=0.49,<2" },
+    { name = "uvicorn", specifier = ">=0.31,<1" },
 ]
 
 [[package]]

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 import json
@@ -100,6 +101,8 @@ class RunRecord:
         self.path.mkdir(parents=True, exist_ok=False)
         (self.path / 'observations').mkdir()
         self.sequence = 0
+        self.event_sequence = 0
+        self.started_monotonic = time.monotonic()
         self.events = self.path / 'events.jsonl'
         atomic_json(self.path / 'run.json', {
             'version': 1, 'robot_id': robot_id, 'instruction': instruction,
@@ -109,8 +112,12 @@ class RunRecord:
         atomic_json(self.path / 'result.json', {'status': 'running', 'automatic_resume': False})
 
     def event(self, kind, data):
+        self.event_sequence += 1
         with self.events.open('a', encoding='utf-8') as stream:
-            stream.write(json.dumps({'at': datetime.now(timezone.utc).isoformat(), 'event': kind,
+            stream.write(json.dumps({'at': datetime.now(timezone.utc).isoformat(),
+                                     'seq': self.event_sequence,
+                                     'elapsed_s': round(time.monotonic() - self.started_monotonic, 3),
+                                     'event': kind,
                                      'data': data}, ensure_ascii=False, allow_nan=False) + '\n')
             stream.flush()
             os.fsync(stream.fileno())
@@ -120,11 +127,20 @@ class RunRecord:
         directory = self.path / 'observations' / f'{self.sequence:04d}'
         directory.mkdir()
         atomic_json(directory / 'observation.json', response)
-        for index, (_, data, mime) in enumerate(images):
+        saved_images = []
+        for index, (label, data, mime) in enumerate(images):
             suffix = '.jpg' if mime == 'image/jpeg' else '.png'
-            (directory / f'image-{index:02d}{suffix}').write_bytes(base64.b64decode(data, validate=True))
+            image_path = directory / f'image-{index:02d}{suffix}'
+            with image_path.open('wb') as stream:
+                stream.write(base64.b64decode(data, validate=True))
+                stream.flush()
+                os.fsync(stream.fileno())
+            saved_images.append({'label': label, 'path': str(image_path.relative_to(self.path)),
+                                 'mime_type': mime})
+        observation_id = response['observation']['observation_id']
+        atomic_json(directory / 'images.json', {'observation_id': observation_id, 'images': saved_images})
         self.event('observation', {'path': str(directory.relative_to(self.path)),
-                                  'observation_id': response['observation']['observation_id']})
+                                  'observation_id': observation_id, 'images': saved_images})
 
 
 def decode_content(content):
@@ -199,6 +215,33 @@ class EpisodeRunner:
         async with asyncio.timeout(self.remaining()):
             return await call()
 
+    @asynccontextmanager
+    async def phase(self, name, **metadata):
+        """Persist public lifecycle progress without observing or calling the model.
+
+        The yielded dict can add result metadata, never model reasoning streams.
+        A file reader can show an active phase before its awaited work finishes.
+        """
+        started = self.clock()
+        data = dict(metadata)
+        self.record.event(name + '_started', {
+            **data, 'steps': self.steps, 'action_attempts': self.actions,
+            'observations': self.record.sequence,
+        })
+        status = 'completed'
+        try:
+            yield data
+        except BaseException as exc:
+            status = 'cancelled' if isinstance(exc, asyncio.CancelledError) else 'error'
+            data['error'] = exc.reason if isinstance(exc, EpisodeStopped) else type(exc).__name__
+            raise
+        finally:
+            self.record.event(name + '_finished', {
+                **data, 'status': status, 'duration_s': round(max(0, self.clock() - started), 3),
+                'steps': self.steps, 'action_attempts': self.actions,
+                'observations': self.record.sequence,
+            })
+
     def _accept_observation(self, packet, images, *, previous_id=None):
         if (packet.get('source') or {}).get('recorded'):
             raise EpisodeStopped('recorded_observation', 'Recorded observations cannot authorize execution')
@@ -231,10 +274,12 @@ class EpisodeRunner:
 
     async def observe(self):
         previous_id = self.packet['observation']['observation_id'] if self.packet else None
-        packet, images = decode_content(await self.bounded(lambda: self.tools.observe(self.robot_id)))
-        if packet.get('status') != 'ok':
-            raise EpisodeStopped('observation_failed', str(packet.get('error', packet.get('status'))))
-        self._accept_observation(packet, images, previous_id=previous_id)
+        async with self.phase('observe', previous_observation_id=previous_id) as phase:
+            packet, images = decode_content(await self.bounded(lambda: self.tools.observe(self.robot_id)))
+            if packet.get('status') != 'ok':
+                raise EpisodeStopped('observation_failed', str(packet.get('error', packet.get('status'))))
+            self._accept_observation(packet, images, previous_id=previous_id)
+            phase['observation_id'] = self.packet['observation']['observation_id']
 
     def _context(self):
         return {
@@ -262,15 +307,17 @@ class EpisodeRunner:
                 image_input = [('CURRENT ' + name, data, mime) for name, data, mime in self.images]
                 image_input += [('BEFORE LAST MOTION ' + name, data, mime)
                                 for name, data, mime in self.before_images]
-                raw = await self.bounded(lambda: self.planner.decide(context, image_input))
-                self.steps += 1
-                try:
-                    decision = Decision.model_validate(raw)
-                    if decision.command is not None:
-                        decision.command.wire()
-                except ValueError as exc:
-                    raise EpisodeStopped('invalid_decision', str(exc)) from exc
-                self.record.event('decision', decision.model_dump())
+                async with self.phase('planning', step=self.steps + 1,
+                                      observation_id=self.packet['observation']['observation_id']):
+                    raw = await self.bounded(lambda: self.planner.decide(context, image_input))
+                    self.steps += 1
+                    try:
+                        decision = Decision.model_validate(raw)
+                        if decision.command is not None:
+                            decision.command.wire()
+                    except ValueError as exc:
+                        raise EpisodeStopped('invalid_decision', str(exc)) from exc
+                    self.record.event('decision', decision.model_dump())
                 self.check_time()
                 if decision.robot_id != self.robot_id:
                     raise EpisodeStopped('invalid_decision', 'Decision targets another robot')
@@ -345,8 +392,11 @@ class EpisodeRunner:
         self.record.event('action_prepared', {'robot_id': self.robot_id, **arguments})
         self.actions += 1
         self.in_flight = action_id
-        packet, images = decode_content(await self.bounded(lambda: self.tools.execute(self.robot_id, **arguments)))
-        self.record.event('action_result', {'action_id': action_id, 'packet': packet})
+        async with self.phase('action', action_id=action_id, observation_id=decision.observation_id,
+                              action_attempt=self.actions) as phase:
+            packet, images = decode_content(await self.bounded(lambda: self.tools.execute(self.robot_id, **arguments)))
+            self.record.event('action_result', {'action_id': action_id, 'packet': packet})
+            phase['result_status'] = packet.get('status')
         execution = packet.get('execution') or {}
         if execution.get('action_id') != action_id:
             raise EpisodeStopped('uncertain_execution', 'Missing or mismatched execution action_id')

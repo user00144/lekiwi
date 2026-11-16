@@ -1,6 +1,6 @@
 """Codex SDK planner and MCP transport for the host-owned episode loop."""
 import asyncio
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from datetime import datetime, timezone
 import json
 import os
@@ -115,21 +115,24 @@ async def run_episode(server, model, robot_id, instruction, *, snapshot=None, ru
         async with isolated_planner_config() as (config, cwd):
             codex = AsyncCodex(config)
             try:
-                async with asyncio.timeout(min(30, runner.remaining())):
-                    await codex.__aenter__()
-                    thread = await codex.thread_start(
-                        model=model, sandbox=Sandbox.read_only, approval_mode=ApprovalMode.deny_all,
-                        ephemeral=True, cwd=str(cwd),
-                        developer_instructions=POLICY + '\nOperator task:\n' + instruction,
-                    )
-                async with stdio_client(params) as (read, write):
-                    async with ClientSession(read, write) as session:
+                async with runner.phase('startup', component='planner', model=model):
+                    async with asyncio.timeout(min(30, runner.remaining())):
+                        await codex.__aenter__()
+                        thread = await codex.thread_start(
+                            model=model, sandbox=Sandbox.read_only, approval_mode=ApprovalMode.deny_all,
+                            ephemeral=True, cwd=str(cwd),
+                            developer_instructions=POLICY + '\nOperator task:\n' + instruction,
+                        )
+                async with AsyncExitStack() as transport:
+                    async with runner.phase('startup', component='transport'):
+                        read, write = await transport.enter_async_context(stdio_client(params))
+                        session = await transport.enter_async_context(ClientSession(read, write))
                         await runner.bounded(session.initialize)
-                        runner.planner, runner.tools = CodexPlanner(thread), MCPRobotTools(session)
-                        runner.record.event('planner_started', {'thread_id': thread.id, 'model': model})
-                        episode_started = True
-                        result = await runner.run()
-                        return result
+                    runner.planner, runner.tools = CodexPlanner(thread), MCPRobotTools(session)
+                    runner.record.event('planner_started', {'thread_id': thread.id, 'model': model})
+                    episode_started = True
+                    result = await runner.run()
+                    return result
             finally:
                 try:
                     await asyncio.wait_for(codex.close(), timeout=5)

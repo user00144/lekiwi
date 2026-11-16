@@ -4,6 +4,8 @@
 
 기본 harness는 observation 조회와 `wait` 제안 JSON 출력까지만 수행합니다. `harness-run --execute`는 관찰 → 한 동작 실행 → 새 관찰 → 재판단을 반복하는 별도 실행 모드입니다. 런타임은 베이스 속도·팔 관절 목표를 받는 `move`와 `wait`을 지원합니다. [에이전트 루프와 복구 안내](docs/agent-loop.md)를 참고하세요.
 
+화면에서 지시와 진행 상황을 보려면 서버·runtime 실행 후 `uv run --project harness harness-gui`를 실행하고 http://127.0.0.1:8765 를 엽니다. 터미널 실행과 같은 루프의 계획·판단 근거·카메라 전후 이미지·실행 결과를 표시합니다. 로봇·모델 없이 화면만 확인하려면 `uv run --project harness harness-gui --demo --port 8766`을 사용합니다. [GUI 실행 안내](harness/README.md#gui에서-실행)
+
 ## 구성
 
 | 폴더 | 역할 |

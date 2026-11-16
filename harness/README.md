@@ -11,6 +11,32 @@ uv run --project harness harness-run --execute --robot-id kiwi-01 \
 
 실행 모드에는 guarded 실행을 지원하는 runtime이 필요합니다. `--snapshot`과 함께 사용할 수 없습니다. 모델은 한 단계의 계획·근거·명령을 출력하고, 호스트가 관찰 ID와 예산을 검증한 뒤 MCP를 호출합니다. 완료 주장은 재관찰 후 다시 확인하며 물리적 성공 판정과 구분합니다. 상세 흐름, 기존 console loop에서 반영한 부분, 복구 방법은 [에이전트 루프 안내](../docs/agent-loop.md)에 있습니다.
 
+## GUI에서 실행
+
+server와 runtime을 켠 뒤, 터미널의 `harness-run --execute` 대신 다음을 실행합니다.
+
+```bash
+cd /home/jwshin/Lekiwi
+uv run --project harness harness-gui \
+  --server tcp://127.0.0.1:5556 --robot-id kiwi-01
+```
+
+브라우저에서 **http://127.0.0.1:8765**를 열고 지시·예산을 입력한 뒤 실행합니다. GUI도 `harness-run --execute`와 같은 루프를 호출합니다. 모델의 단계별 계획·판단 근거 요약·예상 변화·측정 피드백, 전방/손목 관찰 이미지와 이전 동작 전 이미지를 보여줍니다. 모델 판단 중에는 진행 단계와 경과 시간을 표시합니다.
+
+모델·로봇 없이 화면을 확인하려면:
+
+```bash
+uv run --project harness harness-gui --demo --port 8766
+```
+
+이 경우 **http://127.0.0.1:8766**에서 고정된 합성 데이터와 스크립트 판단으로 같은 루프를 시연합니다. 입력한 지시를 모델이 수행하는 모드는 아닙니다.
+
+한 번에 하나의 실행만 허용합니다. **루프 중지**는 모델 대기를 취소하고 다음 행동을 막지만, 이미 전송한 동작을 즉시 멈추는 비상정지는 아닙니다. 브라우저 탭을 닫아도 GUI 서버의 루프는 계속되므로 중지 버튼을 사용합니다. 실행 기록은 기본 `runs/`에 보관하며 화면을 새로 열어도 조회할 수 있습니다. 과거 기록은 자동 재개하지 않습니다. `--runs-dir`로 기록 루트, `--model`로 기본 모델을 지정할 수 있습니다.
+
+GUI는 localhost에서만 열립니다. 기존 TEMP GUI가 8765를 사용하면 다른 포트를 지정하세요. TEMP GUI와 외부 lekiwi-console은 수정하지 않았습니다. 새 GUI의 화면 갱신은 실행 기록만 읽으며 별도의 로봇 관찰 요청을 보내지 않습니다.
+
+## 기본 제안 모드
+
 ```bash
 # 터미널 1: 통신 서버
 uv run --project server server

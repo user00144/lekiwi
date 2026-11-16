@@ -38,6 +38,8 @@ uv run --project harness harness-run --execute \
 
 실물 runtime에 연결된 `--execute`는 실제 동작을 허용합니다. 기본 모드와 `--snapshot`은 관측·제안용이며, 저장된 관찰로 실행하는 것은 허용하지 않습니다. 실행 기록은 기본 `runs/` 아래에 저장하고 `--run-dir`로 경로를 지정합니다. 기록을 읽는 것은 가능하지만, 과거 행동을 자동 재개하거나 재생하지 않습니다.
 
+`uv run --project harness harness-gui`로 로컬 GUI를 열면 브라우저에서 같은 실행 루프를 시작·중지할 수 있습니다. 기본 주소는 http://127.0.0.1:8765 입니다. GUI는 실행 기록을 읽어 단계별 계획·판단 근거 요약·예상 변화·피드백·관찰 이미지를 표시합니다. 별도의 관찰 polling으로 실행 중인 관찰 ID를 바꾸지 않습니다. 과거 기록도 읽기 전용으로 조회합니다. `--demo`는 실제 모델·로봇 없이 고정된 모의 루프를 보여줍니다.
+
 실행 모드의 모델은 로그인만 공유하는 임시 Codex 환경에서 동작합니다. 기존 사용자 MCP·플러그인·셸 설정은 상속하지 않습니다. `--model`로 실행 모델을 지정할 수 있습니다. `--max-actions`는 전송을 시도한 행동 수, `--max-steps`는 모델 판단 수, `--max-seconds`는 초기 연결을 포함한 실행 시간 예산입니다. SDK 초기화에는 최대 30초, 종료 정리에는 별도 유예 시간을 둡니다.
 
 ## 콘솔 loop에서 반영한 부분
@@ -86,7 +88,7 @@ guarded 관찰은 JSON 인코딩 기준 2MiB 이하로 제한합니다. 더 큰 
 
 ## 검증 범위
 
-2026-11-16 기준 runtime 테스트 72개, harness 테스트 40개를 통과했습니다. 실제 MCP stdio·ZeroMQ server·mock runtime을 연결해 관찰 ID, 중복 실행 방지, 동작 이후 프레임과 에피소드 기록을 검증했습니다. 설치된 SDK의 격리 환경 초기화와 빈 스레드 생성도 확인했습니다. 실제 모델 판단과 실물 로봇 동작은 시험하지 않았습니다.
+2026-11-16 기준 runtime 테스트 72개, GUI 추가 후 harness 테스트 66개를 통과했습니다. 실제 MCP stdio·ZeroMQ server·mock runtime을 연결해 관찰 ID, 중복 실행 방지, 동작 이후 프레임과 에피소드 기록을 검증했습니다. GUI는 고정 데모로 브라우저에서 실행·중지·기록 조회·관찰 이미지 비교를 확인했습니다. 설치된 SDK의 격리 환경 초기화와 빈 스레드 생성도 확인했습니다. 실제 모델 판단과 실물 로봇 동작은 시험하지 않았습니다.
 
 ```bash
 uv run --project lekiwi_runtime python -m unittest discover -s lekiwi_runtime/tests -v
@@ -98,3 +100,5 @@ uv run --project harness python -m unittest discover -s harness/tests -v
 작업 전 기준 커밋은 `06b996dc46ce31684f07cec7660db48c32628065`이며, 작업 브랜치는 `codex/observation-action-loop`입니다. 적용 전 추적 파일과 사용자의 미커밋 변경은 `.recovery/agent-loop-20261116-171242/`의 `before.tar.gz`, `working-tree.patch`, `manifest.json`에 보존했습니다. `Developement_log.md`의 기존 수정은 이번 변경에 포함하지 않습니다.
 
 변경을 되돌릴 때는 이 기능을 추가한 커밋을 `git revert <기능-커밋>`으로 되돌릴 수 있습니다. 이후 작성한 파일을 덮어쓸 수 있으므로 백업 압축파일을 현재 디렉터리에 무조건 풀거나 `git reset --hard`를 사용하지 않습니다.
+
+GUI는 에이전트 루프 커밋 `9e42025` 위에 별도 커밋으로 추가합니다. GUI 커밋만 되돌리면 기존 CLI 루프는 유지됩니다. 두 기능을 모두 되돌릴 때는 GUI 커밋을 먼저, `9e42025`를 다음으로 revert합니다. 실행 기록은 별도 `runs/` 디렉터리에 남습니다.

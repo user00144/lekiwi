@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>LeKiwi · Agent console</title>
+  <link rel="stylesheet" href="/static/console.css">
+  <script src="/static/console.js" defer></script>
+</head>
+<body>
+  <header class="app-header">
+    <a class="brand" href="/" aria-label="LeKiwi 콘솔 홈"><span class="brand-mark" aria-hidden="true">L<span>↗</span></span><span><b>LeKiwi</b><small>AGENT CONSOLE</small></span></a>
+    <div class="header-right"><span class="connection" id="connection"><i aria-hidden="true"></i>GUI 연결 중</span><span class="badge" id="mode-badge">LOCAL</span></div>
+  </header>
+
+  <main class="workspace">
+    <div class="page-heading"><div><p class="eyebrow">OBSERVE · DECIDE · ACT · REVIEW</p><h1>판단부터 결과까지, 한눈에.</h1><p class="subtitle">작업을 지시하고, 로봇의 계획과 관찰 변화를 확인하세요.</p></div><span class="local-note"><span aria-hidden="true">⌘</span> 로컬 작업 공간</span></div>
+    <div id="notice" class="notice" role="alert" hidden></div>
+    <div id="history-notice" class="history-notice" hidden><span>저장된 실행 기록을 보고 있습니다.</span><button id="back-live" type="button">현재 실행으로 돌아가기 ↗</button></div>
+
+    <div class="workspace-grid">
+      <aside class="sidebar">
+        <section class="panel task-panel" aria-labelledby="task-title">
+          <div class="section-heading"><h2 id="task-title">새 작업</h2><span class="section-index">01</span></div>
+          <form id="task-form">
+            <label for="instruction">로봇에게 할 일을 알려주세요.</label>
+            <textarea id="instruction" name="instruction" rows="5" maxlength="8000" required placeholder="예: 전방과 손목 카메라를 확인하고, 물체를 잡기 위한 다음 동작을 진행해줘."></textarea>
+            <div class="field-row"><div class="field"><label for="robot-id">로봇 ID</label><input id="robot-id" name="robot_id" value="kiwi-01" maxlength="128" autocomplete="off" required></div><div class="field"><label for="model">모델 <span class="optional">선택</span></label><input id="model" name="model" placeholder="기본 모델" maxlength="128" autocomplete="off"></div></div>
+            <details class="settings" open><summary>실행 한도 <span>행동 · 판단 · 시간</span></summary><div class="budget-inputs"><div class="field"><label for="max-actions">최대 행동</label><div class="unit-input"><input id="max-actions" type="number" min="1" max="100" value="20" required><span>회</span></div></div><div class="field"><label for="max-steps">최대 판단</label><div class="unit-input"><input id="max-steps" type="number" min="1" max="200" value="40" required><span>회</span></div></div><div class="field"><label for="max-seconds">시간 한도</label><div class="unit-input"><input id="max-seconds" type="number" min="1" max="3600" value="300" required><span>초</span></div></div></div></details>
+            <button class="button primary start-button" id="start" type="submit"><span class="play-icon" aria-hidden="true"></span><span id="start-label">에이전트 실행</span><span class="button-arrow" aria-hidden="true">↗</span></button>
+            <button class="button stop-button" id="stop" type="button" disabled><span class="stop-icon" aria-hidden="true"></span>루프 중지</button>
+            <p class="control-note" id="stop-note">루프 중지는 다음 명령을 막습니다. 이미 전송된 동작의 즉시 정지를 보장하지 않습니다.</p>
+            <p class="control-note" id="live-note" hidden>실행하면 연결된 runtime을 통해 실제 로봇이 움직일 수 있습니다.</p>
+            <p class="demo-note" id="demo-note" hidden>데모는 입력한 지시와 무관한 고정 예시를 실행합니다. 모델과 로봇에는 연결하지 않습니다.</p>
+          </form>
+        </section>
+
+        <section class="panel history-panel" aria-labelledby="history-title"><div class="section-heading"><h2 id="history-title">실행 기록</h2><button class="icon-button" id="refresh-history" type="button" title="실행 기록 새로고침" aria-label="실행 기록 새로고침">↻</button></div><p class="section-note">지난 작업의 관찰과 판단을 다시 확인합니다.</p><div id="history-list" class="history-list"><p class="empty-small">저장된 실행을 불러오는 중입니다.</p></div></section>
+        <div class="sidebar-foot"><span class="mini-mark">L↗</span><p>한 번에 한 행동.<br>새 관찰로 다음 판단.</p></div>
+      </aside>
+
+      <div class="main-column">
+        <section class="panel status-panel" aria-labelledby="status-title">
+          <div class="status-top"><div class="status-heading"><span id="status-light" class="status-light" aria-hidden="true"></span><div><p class="eyebrow" id="run-label">READY FOR YOUR NEXT TASK</p><h2 id="status-title">작업을 기다리고 있습니다</h2></div></div><div class="status-badges"><span class="badge" id="run-mode" hidden></span><span class="badge neutral" id="result-badge">대기</span></div></div>
+          <div class="run-task" id="run-task" hidden><p id="run-instruction"></p><span id="run-context"></span></div>
+          <div class="metrics"><div><span>경과 시간</span><strong id="elapsed">00:00</strong></div><div><span>행동 실행</span><strong><span id="action-count">0</span><small id="action-limit"> / 20</small></strong></div><div><span>판단 단계</span><strong><span id="step-count">0</span><small id="step-limit"> / 40</small></strong></div><div><span>현재 관찰</span><strong class="observation-label" id="observation-id">—</strong></div></div>
+          <ol class="phase-track" aria-label="에이전트 진행 단계"><li data-phase="observing"><span>01</span>관찰</li><li data-phase="thinking"><span>02</span>판단</li><li data-phase="executing"><span>03</span>실행</li><li data-phase="reviewing"><span>04</span>결과 확인</li></ol>
+          <p id="run-summary" class="run-summary" hidden></p>
+        </section>
+
+        <section class="panel observation-panel" aria-labelledby="observation-title"><div class="section-heading"><div><h2 id="observation-title">로봇의 시야</h2><p class="section-note">각 판단에 사용한 관찰 이미지입니다.</p></div><div class="segmented" role="group" aria-label="관찰 비교 모드"><button type="button" data-view="current" class="selected" aria-pressed="true">현재</button><button type="button" data-view="compare" aria-pressed="false">동작 전후 비교</button></div></div>
+          <div class="camera-grid" id="camera-grid">
+            <article class="camera-unit" data-camera="front"><div class="camera-head"><h3><span class="camera-dot" aria-hidden="true"></span>전방 카메라</h3><span>FRONT</span></div><div class="camera-pair"><figure class="camera-frame before-frame" hidden><img id="front-before" alt="직전 동작 전 전방 카메라 관찰" hidden><div class="camera-empty"><span aria-hidden="true">◫</span><p>동작 전 관찰이 없습니다</p></div><figcaption>직전 동작 전</figcaption></figure><figure class="camera-frame current-frame"><img id="front-current" alt="현재 전방 카메라 관찰" hidden><div class="camera-empty"><span aria-hidden="true">◫</span><p>첫 관찰을 기다리고 있습니다</p></div><figcaption><span>현재 관찰</span><time id="front-time">—</time></figcaption></figure></div></article>
+            <article class="camera-unit" data-camera="wrist"><div class="camera-head"><h3><span class="camera-dot" aria-hidden="true"></span>손목 카메라</h3><span>WRIST</span></div><div class="camera-pair"><figure class="camera-frame before-frame" hidden><img id="wrist-before" alt="직전 동작 전 손목 카메라 관찰" hidden><div class="camera-empty"><span aria-hidden="true">◫</span><p>동작 전 관찰이 없습니다</p></div><figcaption>직전 동작 전</figcaption></figure><figure class="camera-frame current-frame"><img id="wrist-current" alt="현재 손목 카메라 관찰" hidden><div class="camera-empty"><span aria-hidden="true">◫</span><p>첫 관찰을 기다리고 있습니다</p></div><figcaption><span>현재 관찰</span><time id="wrist-time">—</time></figcaption></figure></div></article>
+          </div>
+          <div class="observation-footer"><span id="camera-source">관찰 대기 · 실시간 영상 스트림이 아닙니다</span><span class="badge subtle" id="sensor-badge">센서 대기</span></div><div id="joint-values" class="joint-values" hidden></div>
+        </section>
+
+        <section class="panel decision-panel" aria-labelledby="decision-title"><div class="section-heading"><div><h2 id="decision-title">지금의 판단</h2><p class="section-note">에이전트가 출력한 계획과 공개 판단 근거입니다.</p></div><span class="badge neutral" id="decision-tool">판단 대기</span></div>
+          <div class="decision-content"><div class="reason-column"><p class="label-caps">판단 근거</p><p id="decision-reason" class="reason-text empty-text">관찰을 읽고 다음 행동을 정하면, 그 근거가 여기에 표시됩니다.</p><div class="expected-block"><p class="label-caps">예상 변화</p><p id="decision-expected">—</p></div></div><div class="plan-column"><p class="label-caps">작업 계획</p><ol id="decision-plan" class="plan-list"><li class="empty-text">아직 작성된 계획이 없습니다.</li></ol></div></div>
+          <div class="feedback-row"><span class="feedback-label">피드백</span><span id="decision-feedback" class="badge neutral">대기</span><p id="decision-evidence">실행 후 관찰과 측정값을 바탕으로 확인합니다.</p></div>
+          <details class="command-details" id="command-details" hidden><summary>명령과 측정 결과 보기</summary><pre id="command-json"></pre></details>
+        </section>
+
+        <section class="panel timeline-panel" aria-labelledby="timeline-title"><div class="section-heading"><div><h2 id="timeline-title">실행 타임라인</h2><p class="section-note">관찰, 판단, 명령과 결과가 순서대로 쌓입니다.</p></div><span class="event-count" id="event-count">0 EVENTS</span></div><div id="timeline" class="timeline"><div class="timeline-empty"><span aria-hidden="true">↳</span><p>첫 작업을 시작해보세요.<small>이곳에서 전체 실행 흐름을 확인할 수 있습니다.</small></p></div></div></section>
+      </div>
+    </div>
+    <footer class="page-footer"><span>LEKIWI / LOCAL AGENT WORKSPACE</span><span id="endpoint-label">관찰 → 판단 → 행동 → 재관찰</span></footer>
+  </main>
+  <div class="sr-only" id="announcer" aria-live="polite" aria-atomic="true"></div>
+</body>
+</html>
