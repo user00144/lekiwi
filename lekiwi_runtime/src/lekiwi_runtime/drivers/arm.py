@@ -18,7 +18,7 @@ ARM_JOINTS = (
 )
 PRESENT_POSITION = 56
 ARM_FEEDBACK_TIMEOUT_S = 2.0
-ARM_CONTROL_REVISION = 'verified-arm-reconcile-v3'
+ARM_CONTROL_REVISION = 'arm-only-reconcile-v4'
 HOLD_STABILITY_INTERVAL_S = .2
 HOLD_STABILITY_SAMPLES = 3
 
@@ -276,21 +276,23 @@ class ArmController:
         self._pending.clear()
         return held_goals
 
-    def verify_hold(self, held_goals: dict, *, certificate=None):
+    def verify_hold(self, held_goals: dict, *, certificate=None, passive_reference=None):
         """Read-only certificate for a calibrated, healthy and stable measured hold.
 
         The initial hold writes only the interrupted command's pending joints.
         This verification reads all six joints without enabling any idle motor,
-        changing a goal, or relaxing tolerances. An unpowered joint therefore
-        conservatively prevents automatic reconciliation.
+        changing a goal, or relaxing arm tolerances. An uncommanded, unpowered
+        gripper is checked as passive feedback, not as a powered position hold.
         """
         names = {name for name, _ in ARM_JOINTS}
         if self.mock or not self.enabled or self.bus.port_handler is None:
             raise OSError('Arm hold requires acknowledged servo feedback')
         if (not isinstance(held_goals, dict) or not held_goals or not set(held_goals) <= names
-                or any(type(raw) is not int or not self.calibration[name]['range_min'] <= raw <= self.calibration[name]['range_max']
-                       for name, raw in held_goals.items())):
+                or any(type(raw) is not int or not 0 <= raw <= 4095 for raw in held_goals.values())):
             raise OSError('Invalid measured arm hold goals')
+        commanded = set(held_goals)
+        expected_passive = None
+        passive_anchor = {}
         reference = None
         if certificate is not None:
             if (not isinstance(certificate, dict) or certificate.get('verified') is not True
@@ -302,6 +304,20 @@ class ArmController:
             if (not isinstance(reference, dict) or set(reference) != names
                     or any(type(value) not in (int, float) or not math.isfinite(value) for value in reference.values())):
                 raise OSError('Arm hold certificate has invalid measured positions')
+            commanded_list, passive_list = certificate.get('commanded_joints'), certificate.get('passive_joints')
+            if (not isinstance(commanded_list, list) or not commanded_list
+                    or any(not isinstance(name, str) or name not in names for name in commanded_list)
+                    or len(set(commanded_list)) != len(commanded_list)
+                    or not isinstance(passive_list, list) or passive_list not in ([], ['gripper'])):
+                raise OSError('Arm hold certificate has invalid command scope')
+            commanded, expected_passive = set(commanded_list), set(passive_list)
+            passive_anchor = certificate.get('passive_reference')
+            if (commanded & expected_passive or not isinstance(passive_anchor, dict)
+                    or set(passive_anchor) != expected_passive
+                    or any(type(value) not in (int, float) or not math.isfinite(value)
+                           or not 0 <= value <= 100 for value in passive_anchor.values())):
+                raise OSError('Arm hold certificate has invalid passive reference')
+            passive_anchor = dict(passive_anchor)
         expected = dict(held_goals)
         samples, stamps, health = [], [], {}
         for index in range(HOLD_STABILITY_SAMPLES):
@@ -310,35 +326,49 @@ class ArmController:
                 # from servo-read latency or a number of polling iterations.
                 due = stamps[0] + HOLD_STABILITY_INTERVAL_S * index / (HOLD_STABILITY_SAMPLES - 1)
                 time.sleep(max(0., due - time.monotonic()))
-            measured_raw = {}
+            measured_raw, passive = {}, set()
             for name, motor_id in ARM_JOINTS:
                 goal = self._read(motor_id, 42)
                 if name not in expected:
                     expected[name] = goal
-                if type(goal) is not int or goal != expected[name]:
+                if type(goal) is not int or not 0 <= goal <= 4095 or goal != expected[name]:
                     raise OSError(f'{name}: arm hold goal readback changed')
-                if not self.calibration[name]['range_min'] <= goal <= self.calibration[name]['range_max']:
-                    raise OSError(f'{name}: arm hold goal outside calibration')
                 torque, mode = self._read(motor_id, 40, 1), self._read(motor_id, 33, 1)
                 status, temperature = self._read(motor_id, 65, 1), self._read(motor_id, 63, 1)
                 encoded_offset = self._read(motor_id, 31)
                 offset = -(encoded_offset & 0x7ff) if encoded_offset & 0x800 else encoded_offset
-                if torque != 1 or mode != 0 or status != 0 or temperature >= 65:
+                is_passive = name == 'gripper' and name not in commanded and torque == 0
+                if is_passive:
+                    passive.add(name)
+                if (torque != 1 and not is_passive) or mode != 0 or status != 0 or temperature >= 65:
                     raise OSError(f'{name}: arm hold health not verified '
                                   f'(torque={torque}, mode={mode}, status={status}, temperature={temperature})')
                 if offset != self.calibration[name].get('homing_offset'):
                     raise OSError(f'{name}: arm hold homing offset changed')
-                health[name] = {'torque_enabled': True, 'mode': mode, 'status': status,
+                if not is_passive and not self.calibration[name]['range_min'] <= goal <= self.calibration[name]['range_max']:
+                    raise OSError(f'{name}: arm hold goal outside calibration')
+                health[name] = {'torque_enabled': torque == 1, 'passive': is_passive, 'mode': mode, 'status': status,
                                 'temperature_c': temperature, 'homing_offset': offset}
                 measured_raw[name] = self._read(motor_id, PRESENT_POSITION)
+            if expected_passive is None:
+                expected_passive = passive
+                if passive:
+                    anchor = passive_reference.get('gripper') if isinstance(passive_reference, dict) else None
+                    if type(anchor) not in (int, float) or not math.isfinite(anchor) or not 0 <= anchor <= 100:
+                        raise OSError('Passive gripper requires its pre-motion measured position')
+                    passive_anchor['gripper'] = anchor
+            elif passive != expected_passive:
+                raise OSError('Arm hold torque state changed during verification')
             if self.calibration_status(measured_raw).get('valid') is not True:
                 raise OSError('Arm hold encoder feedback outside calibration')
             measured = {name: raw_to_unit(raw, name, self.calibration[name]) for name, raw in measured_raw.items()}
             goals = {name: raw_to_unit(raw, name, self.calibration[name]) for name, raw in expected.items()}
             for name in names:
                 tolerance = 5. if name == 'gripper' else 2.
-                if abs(measured[name] - goals[name]) > tolerance:
+                if name not in passive and abs(measured[name] - goals[name]) > tolerance:
                     raise OSError(f'{name}: arm hold did not reach measured goal')
+                if name in passive and abs(measured[name] - passive_anchor[name]) > 2.:
+                    raise OSError('Passive gripper moved from its pre-motion measured position')
                 if reference is not None and abs(measured[name] - reference[name]) > tolerance:
                     raise OSError(f'{name}: arm moved away from hold certificate')
             samples.append(measured)
@@ -351,6 +381,8 @@ class ArmController:
         if any(drift[name] > drift_limits[name] for name in names):
             raise OSError('Arm hold position is not stable')
         return {'verified': True, 'revision': ARM_CONTROL_REVISION, 'calibration_id': self.calibration_id,
+                'commanded_joints': sorted(commanded), 'passive_joints': sorted(expected_passive),
+                'passive_reference': passive_anchor,
                 'timestamp': time.time(), 'held_goal_raw': expected, 'goals': goals,
                 'measured_raw': measured_raw, 'measured': samples[-1], 'health': health,
                 'stability': {'sample_count': len(samples), 'interval_s': interval,
@@ -510,7 +542,7 @@ class ArmController:
                     self.last_motion.update(recovery_reason=reason, progress=progress)
                     if eligible:
                         try:
-                            certificate = self.verify_hold(held_goals)
+                            certificate = self.verify_hold(held_goals, passive_reference=before['joints'])
                         except Exception as verification_failure:
                             self.last_motion.update(recovery_reason='hold_verification_failed',
                                                     hold_error=str(verification_failure))

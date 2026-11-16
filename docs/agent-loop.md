@@ -131,7 +131,7 @@ uv run --project harness python -m harness.kinematics \
 
 이 복구는 runtime당 최대 두 번이며 호스트의 행동·판단·시간 예산도 계속 적용됩니다. 바로 다음 팔 동작은 현재 측정 위치에서 각 관절 최대 3도, 최소 3초로 제한하고 베이스·그리퍼는 제외합니다. 원래 명령을 그대로 보내거나 요청 ID만 바꾸는 것으로 제한을 해제할 수 없습니다. 진행이 없거나 반대 방향으로 움직인 실패, 통신·hold·상태 검증 오류는 이 복구를 허용하지 않습니다. 자세 유지 확인은 장애물 없음의 증명이 아니므로 모델은 새 카메라 영상에서 이동 경로도 다시 판단해야 합니다.
 
-이 변경을 적용하려면 ORIN의 `lekiwi_runtime`과 워크스테이션의 `server`·`harness`를 업데이트하고 각 프로세스를 다시 실행해야 합니다. 관찰의 `ego.control.revision: verified-arm-reconcile-v3`, `capabilities.arm_reconciliation: 1`로 적용 여부를 확인합니다. 기존 버전이 이미 `uncertain_execution`으로 중단한 runtime은 새 관찰만으로 해제되지 않습니다. 로봇 상태를 확인하고 팔을 지지한 뒤 runtime을 정상 종료·재시작하세요(종료 시 팔 토크가 해제됩니다). 과거 실행 기록은 자동 재생하지 않습니다.
+이 변경을 적용하려면 ORIN의 `lekiwi_runtime`과 워크스테이션의 `server`·`harness`를 업데이트하고 각 프로세스를 다시 실행해야 합니다. 관찰의 `ego.control.revision: arm-only-reconcile-v4`, `capabilities.arm_reconciliation: 1`로 적용 여부를 확인합니다. 기존 버전이 이미 `uncertain_execution`으로 중단한 runtime은 새 관찰만으로 해제되지 않습니다. 로봇 상태를 확인하고 팔을 지지한 뒤 runtime을 정상 종료·재시작하세요(종료 시 팔 토크가 해제됩니다). 과거 실행 기록은 자동 재생하지 않습니다.
 
 같은 `action_id`와 같은 명령을 다시 보내면 runtime은 저장된 결과를 반환합니다. 같은 ID에 다른 명령을 넣으면 거부합니다. 이 기록은 runtime 프로세스 동안 유지되며, 재시작하면 `runtime_id`가 바뀝니다. 이전 관찰·명령으로 새 프로세스에서 실행하지 않습니다.
 
