@@ -82,4 +82,5 @@ class ArmMotionTest(unittest.TestCase):
         with patch('time.sleep'), patch('time.monotonic',side_effect=lambda: next(clock)):
             with self.assertRaisesRegex(OSError,'not reached'):
                 arm.move({'wrist_roll':10},1000)
-        self.assertIsNone(arm.last_motion)
+        self.assertFalse(arm.last_motion['reached'])
+        self.assertEqual(arm.last_motion['outcome'], 'target_not_reached')

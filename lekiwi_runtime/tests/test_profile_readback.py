@@ -237,4 +237,7 @@ class ProfileReadbackTest(unittest.TestCase):
             result = client.handle(command)
         self.assertEqual(result['execution']['outcome'], 'uncertain_execution')
         self.assertIn('not reached', result['error'])
-        self.assertIsNone(arm.last_motion)
+        self.assertFalse(arm.last_motion['reached'])
+        self.assertEqual(arm.last_motion['outcome'], 'target_not_reached')
+        self.assertEqual(arm.last_motion['failed_joints'], ['wrist_roll'])
+        self.assertEqual(arm.last_motion['communication_recoveries'][0]['recovery'], 'verified_readback')

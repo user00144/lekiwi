@@ -151,7 +151,7 @@ class GuiController:
         reference = build_pose_reference(packet, self.kinematics_config)
         run_id = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ') + '-pose-' + uuid4().hex[:8]
         record = RunRecord(self.runs_dir / run_id, self.robot_id,
-                           '현재 파지 자세 ↔ 기본 자세 · 관절/XYZ 비교', EpisodeLimits())
+                           '측정 자세 ↔ 기본 자세 · 관절/XYZ 비교', EpisodeLimits())
         metadata = read_json(record.path / 'run.json')
         atomic_json(record.path / 'run.json', {**metadata, 'mode': 'reference', 'execute': False})
         record.observation(packet, images)

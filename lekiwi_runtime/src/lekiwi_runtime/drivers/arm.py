@@ -1,6 +1,7 @@
 """STS3215 calibrated joint feedback and bounded position trajectories."""
 
 from contextlib import nullcontext
+from copy import deepcopy
 from hashlib import sha256
 import json
 import math
@@ -16,6 +17,8 @@ ARM_JOINTS = (
     ("wrist_flex", 4), ("wrist_roll", 5), ("gripper", 6),
 )
 PRESENT_POSITION = 56
+ARM_FEEDBACK_TIMEOUT_S = 2.0
+ARM_CONTROL_REVISION = 'bounded-settling-v2'
 
 
 class ArmTransportError(OSError):
@@ -28,6 +31,20 @@ class ArmTransportError(OSError):
         self.device_error = device_error
         super().__init__(f"Arm {motor_id} {operation} {register}: "
                          f"communication={communication}, device={device_error}")
+
+
+class ArmTargetNotReached(OSError):
+    """Endpoint feedback captured before an error handler changes the goal."""
+    def __init__(self, feedback):
+        self.feedback = deepcopy(feedback)
+        details = []
+        for name in feedback['failed_joints']:
+            unit = feedback['units'][name]
+            details.append(f"{name}: target={feedback['targets'][name]:.3f} {unit}, "
+                           f"measured={feedback['measured'][name]:.3f} {unit}, "
+                           f"error={feedback['errors'][name]:+.3f} {unit}, "
+                           f"tolerance={feedback['tolerances'][name]:g} {unit}")
+        super().__init__("Arm target not reached within feedback tolerance: " + "; ".join(details))
 
 
 def load_calibration(path: str) -> dict:
@@ -99,6 +116,9 @@ class ArmController:
         result = {"available": False, "port": ("mock" if self.mock else self.bus.port), "joints": {}, "angles": [],
                   "joint_names": names, "raw": {}, "timestamp": None, "error": None,
                   "limits": self.limits(), "last_motion": self.last_motion, "calibration_id": self.calibration_id,
+                  "control": {"revision": ARM_CONTROL_REVISION, "max_duration_ms": ARM_MAX_DURATION_MS,
+                              "feedback_timeout_s": ARM_FEEDBACK_TIMEOUT_S, "tolerance_deg": 2,
+                              "tolerance_percent": 5},
                   "calibration_status": self.calibration_status({}, available=False)}
         if not self.enabled:
             return {**result, "error": "disabled"}
@@ -319,16 +339,39 @@ class ArmController:
                             initial = before["raw"][name]
                             self._write(ids[name], 42, round(initial + (goal - initial) * step / steps))
                         time.sleep(max(0, started + step * seconds / steps - time.monotonic()))
-                deadline = time.monotonic() + .5
+                settling_started = time.monotonic()
+                deadline = settling_started + ARM_FEEDBACK_TIMEOUT_S
                 while True:
-                    measured = {name: raw_to_unit(self._read(ids[name], PRESENT_POSITION), name, self.calibration[name])
-                                for name in joints}
+                    measured_raw = {name: self._read(ids[name], PRESENT_POSITION) for name in joints}
+                    measured = {name: raw_to_unit(raw, name, self.calibration[name])
+                                for name, raw in measured_raw.items()}
                     if all(abs(measured[name] - target) <= (5 if name == "gripper" else 2)
                            for name, target in joints.items()):
                         break
-                    if time.monotonic() >= deadline:
-                        raise OSError("Arm target not reached within feedback tolerance")
-                    time.sleep(.05)
+                    sampled_at = time.monotonic()
+                    if sampled_at >= deadline:
+                        # Preserve the endpoint reading before hold() replaces
+                        # the goal with another measured position. This is a
+                        # failed motion record, never a completion certificate.
+                        errors = {name: measured[name] - target for name, target in joints.items()}
+                        tolerances = {name: 5 if name == "gripper" else 2 for name in joints}
+                        self.last_motion = {
+                            'targets': dict(joints), 'target_raw': dict(goals),
+                            'measured': dict(measured), 'measured_raw': dict(measured_raw),
+                            'errors': errors, 'tolerances': tolerances,
+                            'units': {name: '%' if name == 'gripper' else 'deg' for name in joints},
+                            'failed_joints': [name for name in joints if abs(errors[name]) > tolerances[name]],
+                            'reached': False, 'outcome': 'target_not_reached', 'measurement_phase': 'before_hold',
+                            'duration_ms': duration_ms, 'interpolation_elapsed_s': settling_started - started,
+                            'settling_elapsed_s': sampled_at - settling_started,
+                            'feedback_timeout_s': ARM_FEEDBACK_TIMEOUT_S,
+                            'tolerance_deg': 2, 'tolerance_percent': 5, 'timestamp': time.time(),
+                            'communication_recoveries': deepcopy(communication_recoveries),
+                        }
+                        raise ArmTargetNotReached(self.last_motion)
+                    # Retain the final goal while checking feedback. No goal,
+                    # profile or torque writes are repeated during settling.
+                    time.sleep(min(.05, max(0, deadline - sampled_at)))
             except BaseException:
                 self.hold()
                 raise

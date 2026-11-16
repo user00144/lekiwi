@@ -445,7 +445,7 @@
     const header = node("tr");
     for (const title of ["자세", "X", "Y", "Z"]) header.append(node("th", "", title));
     const head = node("thead"), body = node("tbody"); head.append(header);
-    for (const [key, label] of [["current", "현재 파지"], ["default", "GUI 기본"], ["zero", "모두 0°"]]) {
+    for (const [key, label] of [["current", "측정 자세"], ["default", "GUI 기본"], ["zero", "모두 0°"]]) {
       const pose = reference.poses?.[key], row = node("tr");
       row.append(node("th", "", label));
       for (let i = 0; i < 3; i++) row.append(node("td", "", Number.isFinite(pose?.xyz_m?.[i]) ? pose.xyz_m[i].toFixed(5) : "—"));
