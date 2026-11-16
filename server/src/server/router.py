@@ -9,10 +9,13 @@ import zmq
 import zmq.asyncio
 
 
+DEFAULT_TIMEOUT_S = 20.0
+
+
 class RobotServer:
     """One event loop owns the ROUTER; replies are matched by robot and request ID."""
 
-    def __init__(self, endpoint: str = "tcp://*:5555", timeout: float = 10):
+    def __init__(self, endpoint: str = "tcp://*:5555", timeout: float = DEFAULT_TIMEOUT_S):
         if timeout <= 0:
             raise ValueError("timeout must be positive")
         self.endpoint = endpoint

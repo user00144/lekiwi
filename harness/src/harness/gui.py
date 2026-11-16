@@ -18,10 +18,13 @@ from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse
 from starlette.routing import Route
 
-from .episode import EpisodeLimits, atomic_json
+from .episode import EpisodeLimits, RunRecord, atomic_json, decode_content
+from .client import ServerClient
 from .episode_runtime import run_episode
 from .gui_preview import PreviewInput, calculate_preview
 from .manual_xyz import ExecuteInput, ManualBusy, ManualXYZ, PrepareInput
+from .pose_reference import build_pose_reference
+from .tools import RobotTools
 
 
 DEFAULT_LIMITS = {'max_actions': 20, 'max_steps': 40, 'max_seconds': 300}
@@ -118,6 +121,7 @@ class GuiController:
         self.stopping = False
         self.requests = {}
         self.preview_lock = asyncio.Lock()
+        self.reference_busy = False
         self.manual = ManualXYZ(self.runs_dir, self.server, self.kinematics_config)
 
     def preview(self, request):
@@ -132,7 +136,49 @@ class GuiController:
             observed = self._observation(request.run_id, event) if event else None
             if observed is None:
                 raise ValueError('이 실행에 사용할 저장 관찰이 없습니다. URDF 예시 자세로 먼저 확인할 수 있습니다.')
-        return calculate_preview(request, observed=observed, config=self.kinematics_config)
+        value = calculate_preview(request, observed=observed, config=self.kinematics_config)
+        if observed is not None:
+            reference = read_json(path / 'pose_reference.json')
+            # A reference must belong to the exact observation being displayed.
+            if (reference.get('provenance', {}).get('observation_id') == observed['observation_id']
+                    and reference.get('mapping_id') == value['state'].get('mapping_id')
+                    and reference.get('model_hash') == value['state'].get('model_hash')):
+                value['pose_reference'] = reference
+        return value
+
+    def save_pose_reference(self, packet, images):
+        """Persist a read-only capture; no runnable action is created."""
+        reference = build_pose_reference(packet, self.kinematics_config)
+        run_id = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ') + '-pose-' + uuid4().hex[:8]
+        record = RunRecord(self.runs_dir / run_id, self.robot_id,
+                           '현재 파지 자세 ↔ 기본 자세 · 관절/XYZ 비교', EpisodeLimits())
+        metadata = read_json(record.path / 'run.json')
+        atomic_json(record.path / 'run.json', {**metadata, 'mode': 'reference', 'execute': False})
+        record.observation(packet, images)
+        atomic_json(record.path / 'pose_reference.json', reference)
+        record.event('pose_reference', reference)
+        atomic_json(record.path / 'result.json', {
+            'status': 'reference_saved', 'detail': '관절·XYZ 기준 자세 저장 · 이동 명령 없음',
+            'automatic_resume': False, 'physical_success_verified': False, 'action_attempts': 0,
+            'steps': 0, 'observations': 1, 'executed': False,
+        })
+        return {'run_id': run_id, 'pose_reference': reference, 'executed': False}
+
+    async def capture_pose(self):
+        if self.mode != 'live':
+            raise ValueError('데모 GUI는 실제 로봇에 연결하지 않습니다.')
+        if (self.reference_busy or self.manual.reserved()
+                or self.task is not None and not self.task.done()):
+            raise BusyError('진행 중인 관찰·에이전트·수동 이동을 마친 후 자세를 읽어주세요.')
+        # Reserve before the first await so a start/prepare cannot invalidate a capture.
+        self.reference_busy = True
+        try:
+            packet, images = decode_content(await RobotTools(ServerClient(self.server)).observe(self.robot_id))
+            if packet.get('status') != 'ok':
+                raise ValueError(packet.get('error') or '로봇 관찰을 읽지 못했습니다.')
+            return await asyncio.to_thread(self.save_pose_reference, packet, images)
+        finally:
+            self.reference_busy = False
 
     def _run_path(self, run_id, *, exists=True):
         if not RUN_ID.fullmatch(run_id) or run_id in ('.', '..'):
@@ -152,7 +198,7 @@ class GuiController:
             request = request.model_copy(update={'model': self.model})
         if self.task is not None and not self.task.done():
             raise BusyError('An episode is already active; wait for its cleanup to finish')
-        if self.manual.reserved():
+        if self.reference_busy or self.manual.reserved():
             raise BusyError('수동 XYZ 이동을 계산/실행 중입니다. 먼저 실행 또는 취소해주세요.')
         run_id = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ') + '-' + uuid4().hex[:8]
         pending = request.model_dump()
@@ -329,7 +375,7 @@ class GuiController:
         run_mode = request.get('mode', record.get('mode', 'execute'))
         kinematics = next((event['data'] for event in reversed(events)
                            if event.get('event') == 'kinematics_state'), None)
-        return {'id': run_id, 'active': active, 'mode': 'demo' if run_mode == 'demo' else 'live',
+        return {'id': run_id, 'active': active, 'mode': run_mode if run_mode in ('demo', 'reference') else 'live',
                 'request': {'robot_id': request.get('robot_id'), 'instruction': request.get('instruction'),
                             'model': model, 'limits': request.get('limits', DEFAULT_LIMITS)},
                 'result': result, 'status': status, 'phase': phase, 'events': events,
@@ -358,13 +404,15 @@ class GuiController:
                     status = 'interrupted_unknown'
                 runs.append({'id': run_id, 'instruction': record.get('instruction', ''),
                              'started_at': record.get('started_at'), 'status': status, 'active': active,
-                             'mode': 'demo' if record.get('mode') == 'demo' else 'live'})
+                             'mode': record.get('mode') if record.get('mode') in ('demo', 'reference') else 'live'})
             except (FileNotFoundError, OSError):
                 continue
         return {'mode': self.mode, 'config': {'server': self.server, 'robot_id': self.robot_id,
                                             'model': self.model, 'limits': dict(DEFAULT_LIMITS),
                                             'kinematics_configured': self.kinematics_config is not None},
-                'capabilities': {'xyz_preview': 1, 'manual_xyz': 1 if self.mode == 'live' else 0},
+                'capabilities': {'xyz_preview': 1, 'manual_xyz': 1 if self.mode == 'live' else 0,
+                                 'pose_capture': 1 if self.mode == 'live' else 0},
+                'pose_capture_busy': self.reference_busy,
                 'active_run_id': active_id, 'runs': runs,
                 'active': self.run_view(active_id) if active_id is not None else None}
 
@@ -437,6 +485,8 @@ def create_app(controller=None, *, port=8765, static_dir=None):
                 return JSONResponse(controller.manual.cancel())
             if controller.task is not None and not controller.task.done():
                 raise ManualBusy('에이전트 작업이 실행 중입니다. 종료 후 수동 실험을 시작해주세요.')
+            if controller.reference_busy:
+                raise ManualBusy('현재 기준 자세를 읽는 중입니다. 완료 후 수동 실험을 시작해주세요.')
             if operation == 'prepare':
                 return JSONResponse(await controller.manual.prepare(PrepareInput.model_validate(payload)))
             if operation == 'execute':
@@ -467,6 +517,18 @@ def create_app(controller=None, *, port=8765, static_dir=None):
             return JSONResponse({'error': '기록 또는 설정 파일을 찾을 수 없습니다.'}, 404)
         except (ValueError, TypeError, OSError) as exc:
             return JSONResponse({'error': str(exc)}, 400)
+
+    async def capture(request):
+        try:
+            if await json_body(request):
+                raise ValueError('자세 읽기는 추가 필드를 받지 않습니다.')
+            return JSONResponse(await controller.capture_pose())
+        except BusyError as exc:
+            return JSONResponse({'error': str(exc)}, 409)
+        except (ValueError, TypeError, OSError) as exc:
+            return JSONResponse({'error': str(exc)}, 400)
+        except Exception as exc:
+            return JSONResponse({'error': str(exc) or type(exc).__name__}, 503)
 
     async def start(request):
         try:
@@ -516,6 +578,7 @@ def create_app(controller=None, *, port=8765, static_dir=None):
     app = Starlette(lifespan=lifespan, routes=[
         Route('/api/state', state), Route('/api/runs', start, methods=['POST']),
         Route('/api/kinematics/preview', preview, methods=['POST']),
+        Route('/api/kinematics/capture', capture, methods=['POST']),
         Route('/api/manual-xyz/{operation}', manual, methods=['POST']),
         Route('/api/runs/{run_id}/stop', stop, methods=['POST']),
         Route('/api/runs/{run_id}/files/{path:path}', files), Route('/api/runs/{run_id}', detail),

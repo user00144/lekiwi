@@ -10,12 +10,19 @@ from mcp.types import ImageContent, TextContent
 from .client import ServerClient, SnapshotClient
 
 
+BASE_MAX_DURATION_MS = 1000
+ARM_MIN_DURATION_MS = 100
+ARM_MAX_DURATION_MS = 10000
+
+
 def build_command(action, x, y, theta, duration_ms, joints=None):
     """Validate the wire command, including callers outside the MCP schema."""
-    if type(duration_ms) is not int or not 1 <= duration_ms <= 1000:
-        raise ValueError("duration_ms must be 1..1000")
     if not all(type(v) in (int, float) and math.isfinite(v) for v in (x, y, theta)):
         raise ValueError("Velocity must be finite")
+    arm_only = action == 'move' and isinstance(joints, dict) and bool(joints) and not any((x, y, theta))
+    maximum = ARM_MAX_DURATION_MS if arm_only else BASE_MAX_DURATION_MS
+    if type(duration_ms) is not int or not 1 <= duration_ms <= maximum:
+        raise ValueError(f"duration_ms must be 1..{maximum}; only arm-only targets allow more than 1000ms")
     command = {"action": action, "duration_ms": duration_ms}
     if action == "move":
         if math.hypot(x, y) > .4 or abs(theta) > 150:
@@ -23,7 +30,7 @@ def build_command(action, x, y, theta, duration_ms, joints=None):
         command.update(x=x, y=y, theta=theta)
         if joints is not None:
             names = {"shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper"}
-            if (duration_ms < 100 or not isinstance(joints, dict) or not joints
+            if (duration_ms < ARM_MIN_DURATION_MS or not isinstance(joints, dict) or not joints
                     or not all(k in names and type(v) in (int, float) and math.isfinite(v)
                                and (0 <= v <= 100 if k == "gripper" else -180 <= v <= 180)
                                for k, v in joints.items())):
@@ -54,7 +61,7 @@ class RobotTools:
                       x: Annotated[float, Field(strict=True, ge=-0.4, le=0.4, allow_inf_nan=False)] = 0,
                       y: Annotated[float, Field(strict=True, ge=-0.4, le=0.4, allow_inf_nan=False)] = 0,
                       theta: Annotated[float, Field(strict=True, ge=-150, le=150, allow_inf_nan=False)] = 0,
-                      duration_ms: Annotated[int, Field(strict=True, ge=1, le=1000)] = 500,
+                      duration_ms: Annotated[int, Field(strict=True, ge=1, le=ARM_MAX_DURATION_MS)] = 500,
                       action: Literal["move", "wait"] = "move",
                       joints: dict[str, Annotated[float, Field(strict=True, allow_inf_nan=False)]] | None = None,
                       observation_id: str | None = None,
@@ -66,7 +73,8 @@ class RobotTools:
         move accepts optional joints: absolute degrees, gripper 0..100%; omitted joints unchanged.
         Omitted base velocities default to zero. Supply both to move base and arm together.
         wait pauses without motion targets.
-        Arm duration 100..1000ms; speed <=30deg/s or 50%/s, calibrated limits from observe.
+        Arm-only duration 100..10000ms when x=y=theta=0; base/wait/combined duration <=1000ms.
+        Choose enough arm time for the joint distance; speed <=30deg/s or 50%/s, calibrated limits from observe.
         Arm completion includes joint feedback; torque remains on to hold posture.
         Timeout means outcome unknown; do not blindly retry.
         Guarded episode calls must supply observation_id, runtime_id, action_id and reason together.

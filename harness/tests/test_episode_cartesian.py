@@ -5,7 +5,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from harness.episode import Command, EpisodeRunner
+from harness.episode import Command, EpisodeLimits, EpisodeRunner
 from harness.episode_runtime import planner_decision_schema
 from harness.kinematics import ARM_JOINTS, CartesianController
 from harness.tools import RobotTools
@@ -113,6 +113,37 @@ class CartesianEpisodeTest(unittest.IsolatedAsyncioTestCase):
 
     def events(self):
         return [json.loads(line) for line in (self.path / 'events.jsonl').read_text().splitlines()]
+
+    async def test_three_second_cartesian_move_uses_same_guarded_loop_and_budget(self):
+        controller = CountingController(configuration())
+        target_joints = {name: 60. if name == 'shoulder_pan' else 0. for name in ARM_JOINTS}
+        target = controller.geometry.forward(target_joints)['xyz_m']
+
+        def longer(context):
+            value = decide(context, 'execute', cartesian=xyz(target))
+            value['command']['duration_ms'] = 3000
+            return value
+
+        result = await self.run_case(Planner(longer, 'task_complete', 'task_complete'), controller)
+        self.assertEqual(result['status'], 'completion_claim')
+        self.assertEqual(len(self.tools.calls), 1)
+        self.assertEqual(self.tools.calls[0]['duration_ms'], 3000)
+        self.assertEqual(controller.solves[0][2], 3000)
+        self.assertNotIn('cartesian', self.tools.calls[0])
+        self.assertEqual(set(self.tools.calls[0]['joints']), set(ARM_JOINTS))
+        self.assertTrue(self.tools.calls[0]['action_id'])
+        self.assertTrue(self.tools.calls[0]['observation_id'])
+
+    async def test_longer_arm_duration_still_requires_remaining_episode_budget(self):
+        def longer(context):
+            value = decide(context, 'execute', cartesian=xyz([0., 0., 0.], 'relative'))
+            value['command']['duration_ms'] = 3000
+            return value
+
+        result = await self.run_case(Planner(longer), CountingController(configuration()),
+                                    limits=EpisodeLimits(max_seconds=2.))
+        self.assertEqual(result['status'], 'budget_seconds')
+        self.assertEqual(self.tools.calls, [])
 
     async def test_real_ik_endpoint_sends_only_guarded_joint_command_then_reobserves(self):
         controller = CountingController(configuration())

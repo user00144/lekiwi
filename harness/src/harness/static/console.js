@@ -8,9 +8,9 @@
     timelineKey: null, historyKey: null, imageView: "current", announcement: null,
   };
   const manual = {view: null, busy: false, dirty: false, key: null, lastKey: null, lastRun: null, visualReady: false};
-  const preview = {data: null, busy: false, initialized: false, runsKey: null};
+  const preview = {data: null, busy: false, capturing: false, initialized: false, runsKey: null};
   const statusLabels = {
-    idle: "대기", running: "실행 중", starting: "준비 중", stopping: "중지 중",
+    idle: "대기", reference_saved: "기준 자세 저장", running: "실행 중", starting: "준비 중", stopping: "중지 중",
     interrupted: "중지됨", stopped: "중지됨", completion_claim: "완료 주장",
     blocked: "작업 보류", budget_actions: "행동 한도", budget_steps: "판단 한도",
     budget_seconds: "시간 한도", uncertain_execution: "실행 미확정",
@@ -26,7 +26,7 @@
   const eventLabels = {
     startup: "작업 준비", startup_started: "작업 준비", startup_finished: "준비 완료", demo_started: "데모 시작",
     planner_started: "에이전트 연결", observe_started: "새 관찰 요청", observe_finished: "관찰 수신",
-    observation: "관찰 저장", kinematics_state: "현재 팔 위치 계산", ik_result: "XYZ 목표 변환 결과", planning_started: "다음 행동 판단 중", planning_finished: "판단 수신",
+    observation: "관찰 저장", pose_reference: "현재 ↔ 기본 자세 비교", kinematics_state: "현재 팔 위치 계산", ik_result: "XYZ 목표 변환 결과", planning_started: "다음 행동 판단 중", planning_finished: "판단 수신",
     decision: "에이전트 판단", decision_rejected: "판단 보류", action_prepared: "명령 준비",
     action_started: "행동 실행", action_finished: "행동 응답", action_result: "실행 결과",
     motion_feedback: "실행 전후 비교", rejection_feedback: "명령 거부 · 재관찰 후 수정", completion_candidate: "완료 주장 · 재관찰 요청",
@@ -34,6 +34,7 @@
     manual_operator_confirmation: "사용자 1회 이동 확인", error: "오류",
   };
   const jointLabels = {shoulder_pan: "어깨 회전", shoulder_lift: "어깨 높이", elbow_flex: "팔꿈치", wrist_flex: "손목 굽힘", wrist_roll: "손목 회전", gripper: "그리퍼"};
+  const armJoints = Object.keys(jointLabels).filter(name => name !== "gripper");
   const rejectionLabels = {
     arm_current_out_of_calibration: "현재 관절 위치가 보정 범위를 벗어났습니다.",
     arm_target_out_of_range: "목표 관절값이 허용 범위를 벗어났습니다.",
@@ -121,7 +122,7 @@
     const activeId = state.server?.active_run_id;
     const readingOther = state.selectedId && state.selectedId !== activeId;
     const active = Boolean(activeId);
-    $("start").disabled = !state.connected || active || state.busy || manual.busy || Boolean(state.server?.manual_xyz?.busy || state.server?.manual_xyz?.prepared);
+    $("start").disabled = !state.connected || active || state.busy || manual.busy || preview.capturing || state.server?.pose_capture_busy || Boolean(state.server?.manual_xyz?.busy || state.server?.manual_xyz?.prepared);
     $("stop").disabled = !state.connected || !active || Boolean(readingOther) || state.stoppingId === activeId || state.busy;
     const mode = state.server?.mode;
     text("start-label", state.busy ? "작업 시작 중…" : mode === "demo" ? "데모 루프 실행" : "로봇 에이전트 실행");
@@ -181,7 +182,7 @@
     badge("result-badge", label(status), statusTone(status));
     $("status-light").className = `status-light ${run?.active ? "running" : statusTone(status) === "error" ? "error" : ""}`;
     $("run-mode").hidden = !run;
-    if (run) badge("run-mode", run.mode === "demo" ? "데모 기록" : run.mode === "live" ? "로봇 실행" : "실행 기록", run.mode === "demo" ? "demo" : "neutral");
+    if (run) badge("run-mode", run.mode === "demo" ? "데모 기록" : run.mode === "reference" ? "관찰만 저장" : run.mode === "live" ? "로봇 실행" : "실행 기록", run.mode === "demo" ? "demo" : "neutral");
     document.querySelectorAll(".phase-track li").forEach((element) => {
       const selected = Boolean(run?.active && element.dataset.phase === phase);
       element.classList.toggle("active", selected);
@@ -380,6 +381,8 @@
     $("xyz-duration").disabled ||= $("xyz-source").value === "model";
     $("xyz-solve").textContent = preview.busy ? "계산 중…" : "XYZ 미리보기 계산";
     $("xyz-joint-editor").hidden = $("xyz-source").value !== "model";
+    $("xyz-capture").disabled = !enabled || state.server?.capabilities?.pose_capture !== 1 || preview.busy || preview.capturing || state.server?.pose_capture_busy || Boolean(state.server?.active_run_id || state.server?.manual_xyz?.busy || state.server?.manual_xyz?.prepared);
+    $("xyz-capture").textContent = preview.capturing ? "현재 관절을 읽어 비교하는 중…" : "현재 로봇 자세 읽고 기본 자세와 비교";
     $("xyz-availability").hidden = enabled;
     text("xyz-availability", state.connected
       ? "실행 중인 GUI 서버가 이전 버전입니다. GUI 터미널에서 Ctrl+C 후 같은 harness-gui 명령으로 다시 실행해주세요."
@@ -406,20 +409,22 @@
   function renderPreview() {
     const data = preview.data, output = $("xyz-output");
     output.replaceChildren();
+    renderPoseReference(data?.pose_reference);
     if (!data) { output.append(node("p", "kinematics-note", "자세를 불러와 현재 XYZ를 확인하세요.")); drawPreview(); return; }
     text("xyz-provenance", data.source.kind === "model"
       ? "입력 기준: URDF 예시 관절각 · 로봇에 연결하지 않은 모델 계산"
-      : `입력 기준: 저장 관찰 ${shortId(data.source.observation_id)} · ${historyDate(data.source.at)} · 선택한 기록의 최신 관찰은 ‘자세 불러오기’로 갱신하세요.`);
+      : `입력 기준: 저장 관찰 ${shortId(data.source.observation_id)} · ${historyDate(data.source.observed_at || data.source.at)} · 선택한 기록의 최신 관찰은 ‘자세 불러오기’로 갱신하세요.`);
     eventLine(output, "시작 XYZ", vectorLabel(data.state.current_xyz_m) || "관절 정보를 읽을 수 없습니다.");
+    if (data.state.fk?.kinematics_library) eventLine(output, "계산 라이브러리", `Pinocchio ${data.state.fk.kinematics_version} · IK: OSQP`);
     if (data.result) {
       const [summary, tone] = ikStatus(data.result);
       output.append(node("span", `badge ${tone}`, summary));
       if (data.result.duration_check?.success) {
         const check = data.result.duration_check;
-        const retry = node("button", "button xyz-secondary", "1초로 바꿔 다시 계산 · 로봇 전송 없음");
+        const retry = node("button", "button xyz-secondary", `${check.checked_duration_ms / 1000}초로 바꿔 다시 계산 · 로봇 전송 없음`);
         retry.type = "button";
         retry.addEventListener("click", () => { $("xyz-duration").value = String(check.checked_duration_ms); requestPreview(true); });
-        output.append(node("p", "kinematics-reason", `${check.requested_duration_ms}ms 제한에서는 오차 ${(data.result.residual_m * 1000).toFixed(2)}mm입니다. 1초로 계산하면 허용 오차 안의 해를 찾습니다.`), retry);
+        output.append(node("p", "kinematics-reason", `${check.requested_duration_ms}ms 제한에서는 오차 ${(data.result.residual_m * 1000).toFixed(2)}mm입니다. ${check.checked_duration_ms / 1000}초로 계산하면 허용 오차 안의 해를 찾습니다.`), retry);
       }
       ikLines(output, data.result);
     } else kinematicReasons(output, data.state);
@@ -428,6 +433,57 @@
       output.append(node("p", "kinematics-reason", `${jointLabels[name] || name}: ${range.value_deg.toFixed(2)}° / URDF 범위 ${range.lower_deg.toFixed(2)} ~ ${range.upper_deg.toFixed(2)}°. 범위를 벗어난 시작 자세는 IK를 계산하지 않습니다.`));
     }
     drawPreview();
+  }
+
+  function renderPoseReference(reference) {
+    const panel = $("xyz-reference");
+    panel.replaceChildren(); panel.hidden = !reference;
+    if (!reference) return;
+    panel.append(node("strong", "", "측정한 현재 자세 ↔ 기본 자세"));
+    panel.append(node("p", "kinematics-note", `관찰 ${shortId(reference.provenance?.observation_id)} · ${historyDate(reference.provenance?.timestamp)} · 팔 장착부 기준, 단위 m`));
+    const table = node("table", "pose-reference-table");
+    const header = node("tr");
+    for (const title of ["자세", "X", "Y", "Z"]) header.append(node("th", "", title));
+    const head = node("thead"), body = node("tbody"); head.append(header);
+    for (const [key, label] of [["current", "현재 파지"], ["default", "GUI 기본"], ["zero", "모두 0°"]]) {
+      const pose = reference.poses?.[key], row = node("tr");
+      row.append(node("th", "", label));
+      for (let i = 0; i < 3; i++) row.append(node("td", "", Number.isFinite(pose?.xyz_m?.[i]) ? pose.xyz_m[i].toFixed(5) : "—"));
+      body.append(row);
+    }
+    table.append(head, body); panel.append(table);
+    eventLine(panel, "현재 − 기본", vectorLabel(reference.delta?.current_minus_default_xyz_m));
+    const joints = reference.provenance?.joints || {};
+    eventLine(panel, "측정 관절 (°)", armJoints.map(name => `${jointLabels[name]} ${Number.isFinite(joints[name]) ? joints[name].toFixed(3) : "—"}`).join(" · "));
+    for (const [key, label] of [["current_round_trip", "현재 자세 재계산"], ["current_to_default", "현재 관절 → 기본 XYZ"], ["default_to_current", "기본 관절 → 현재 XYZ"]]) {
+      const check = reference.checks?.[key];
+      eventLine(panel, label, check?.success ? `IK 성공 · 오차 ${(check.residual_m * 1000).toFixed(4)} mm` : "IK 확인 불가 · 이벤트 데이터에서 원인 확인");
+    }
+    panel.append(node("p", "kinematics-note", "위 비교는 관절 가동범위 안에서의 기하학 계산입니다. 이동 시간·속도를 적용한 실제 명령이 아닙니다. GUI 기본은 (0°, −15°, 35°, −20°, 0°) 예시이며 로봇 홈 자세가 아닙니다."));
+    panel.append(node("p", "kinematics-reason", "이 값은 URDF가 계산한 팔 끝 좌표입니다. 큐브 중심의 실측 좌표가 아니며, 한 자세의 비교만으로 실물 영점·회전 방향을 보정할 수 없습니다."));
+    if (!reference.reference_valid) kinematicReasons(panel, reference);
+    const useDefault = node("button", "button xyz-secondary", "기본 자세 XYZ를 목표에 넣기 · 계산만");
+    useDefault.type = "button";
+    useDefault.disabled = !reference.poses?.default?.xyz_m;
+    useDefault.addEventListener("click", () => {
+      $("xyz-mode").value = "absolute";
+      ["x", "y", "z"].forEach((axis, index) => { $(`xyz-${axis}`).value = reference.poses.default.xyz_m[index]; });
+      requestPreview(true);
+    });
+    panel.append(useDefault);
+  }
+
+  async function capturePose() {
+    if ($("xyz-capture").disabled) return;
+    preview.capturing = true; preview.busy = true; previewControls(); updateControls();
+    try {
+      const saved = await api("/api/kinematics/capture", {method: "POST", body: "{}", signal: AbortSignal.timeout(30000)});
+      state.server = await api("/api/state"); updatePreviewSources();
+      $("xyz-source").value = saved.run_id;
+      preview.data = await api("/api/kinematics/preview", {method: "POST", body: JSON.stringify({source: "recorded", run_id: saved.run_id})});
+      renderPreview(); notice("");
+    } catch (error) { notice(error.message); }
+    finally { preview.capturing = false; preview.busy = false; previewControls(); updateControls(); }
   }
 
   async function requestPreview(solve) {
@@ -776,6 +832,7 @@
   $("xyz-form").addEventListener("submit", event => { event.preventDefault(); requestPreview(true); });
   $("xyz-load").addEventListener("click", () => requestPreview(false));
   $("xyz-source").addEventListener("change", () => { preview.data = null; renderPreview(); requestPreview(false); });
+  $("xyz-capture").addEventListener("click", capturePose);
   $("xyz-view").addEventListener("change", drawPreview);
   $("xyz-display").addEventListener("change", drawPreview);
   $("xyz-form").addEventListener("input", event => {
@@ -789,7 +846,7 @@
   });
 
   function manualControls() {
-    const remote = state.server?.manual_xyz, busy = manual.busy || remote?.busy;
+    const remote = state.server?.manual_xyz, busy = manual.busy || remote?.busy || preview.capturing || state.server?.pose_capture_busy;
     const enabled = state.connected && state.server?.capabilities?.manual_xyz === 1;
     const agentActive = Boolean(state.server?.active_run_id);
     text("manual-availability", !state.connected ? "GUI 연결을 기다리고 있습니다." : !enabled

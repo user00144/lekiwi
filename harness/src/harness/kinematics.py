@@ -1,4 +1,4 @@
-"""Bounded SO-101 endpoint IK, adapted from the local console geometry preview.
+"""SO-101 endpoint IK using Pinocchio kinematics and bounded OSQP steps.
 
 This module never sends robot commands. Runtime degrees are explicitly mapped to
 the URDF; execution readiness is tied to an independently verified mapping and the
@@ -6,7 +6,6 @@ current calibration fingerprint. XYZ means the fixed arm mount frame, not camera
 world or mobile-base odometry. Endpoint IK does not implement Cartesian MoveL or
 collision avoidance. The optional approach axis constrains two orientation DOFs.
 """
-from dataclasses import dataclass
 import hashlib
 import json
 import math
@@ -14,6 +13,9 @@ from pathlib import Path
 import xml.etree.ElementTree as ET
 
 import numpy as np
+import osqp
+import pinocchio as pin
+from scipy import sparse
 
 
 ARM_JOINTS = ('shoulder_pan', 'shoulder_lift', 'elbow_flex', 'wrist_flex', 'wrist_roll')
@@ -22,6 +24,9 @@ APPROACH_TOLERANCE_DEG = 5.0
 AXIS_RESIDUAL_SCALE_M = .05
 MAX_IK_STARTS = 4
 MAX_IK_NFEV_PER_START = 100
+MAX_QP_ITERATIONS = 2000
+MAX_IK_STEP_RAD = math.radians(10.)
+MAX_CARTESIAN_DURATION_MS = 10000
 SEED_REGULARIZATION_M_PER_RAD = .0001
 DATA_DIR = Path(__file__).with_name('data')
 DEFAULT_URDF = DATA_DIR / 'so101_new_calib.urdf'
@@ -63,34 +68,13 @@ def _xml_vector(value, label, default):
     return np.array(values, dtype=float)
 
 
-def _axis_rotation(axis, angle):
-    x, y, z = axis
-    skew = np.array([[0, -z, y], [z, 0, -x], [-y, x, 0]])
-    return np.eye(3) + math.sin(angle) * skew + (1 - math.cos(angle)) * (skew @ skew)
-
-
-def _origin(element):
-    xyz = _xml_vector(element.get('xyz') if element is not None else None, 'origin xyz', '0 0 0')
-    roll, pitch, yaw = _xml_vector(element.get('rpy') if element is not None else None, 'origin rpy', '0 0 0')
-    # URDF fixed-axis roll/pitch/yaw: Rz(yaw) @ Ry(pitch) @ Rx(roll).
-    rotation = (_axis_rotation((0, 0, 1), yaw) @ _axis_rotation((0, 1, 0), pitch)
-                @ _axis_rotation((1, 0, 0), roll))
-    transform = np.eye(4)
-    transform[:3, :3] = rotation
-    transform[:3, 3] = xyz
-    return transform
-
-
-@dataclass(frozen=True)
-class _Segment:
-    name: str
-    origin: np.ndarray
-    axis: np.ndarray | None
-    index: int | None
-
-
 class RobotGeometry:
-    """URDF base_link → gripper_frame_link geometry with a bounded preview IK solver."""
+    """Pinocchio base_link → gripper_frame_link FK and bounded differential IK.
+
+    Pinocchio Data objects are local to each evaluation so one geometry can safely
+    serve concurrent preview workers. Only the five arm coordinates participate;
+    the separate jaw joint stays at Pinocchio's neutral configuration.
+    """
 
     def __init__(self, urdf_path):
         raw = Path(urdf_path).read_bytes()
@@ -123,11 +107,14 @@ class RobotGeometry:
             chain.append(joint)
             link = joint.find('parent').get('link')
         chain.reverse()
-        segments, names, limits = [], [], {}
+        names, limits = [], {}
         for joint in chain:
             name, kind = joint.get('name'), joint.get('type')
+            origin = joint.find('origin')
+            for component in ('xyz', 'rpy'):
+                _xml_vector(origin.get(component) if origin is not None else None,
+                            'origin ' + component, '0 0 0')
             if kind == 'fixed':
-                segments.append(_Segment(name or 'fixed', _origin(joint.find('origin')), None, None))
                 continue
             if kind != 'revolute' or name not in ARM_JOINTS or name in names:
                 raise ValueError('체인에는 팔 5개의 유한 범위 revolute 관절만 허용합니다.')
@@ -144,30 +131,63 @@ class RobotGeometry:
             if not math.isfinite(low) or not math.isfinite(high) or low >= high:
                 raise ValueError('URDF 팔 관절 범위가 잘못되었습니다.')
             limits[name] = (low, high)
-            segments.append(_Segment(name, _origin(joint.find('origin')), axis / norm, ARM_JOINTS.index(name)))
         if tuple(names) != ARM_JOINTS:
             raise ValueError('SO-101 팔 5관절 순서가 일치하지 않습니다.')
-        self._segments = tuple(segments)
         self._limits_rad = np.array([limits[name] for name in ARM_JOINTS], dtype=float)
+        try:
+            self._model = pin.buildModelFromXML(raw.decode('utf-8'))
+        except Exception as exc:
+            raise ValueError('Pinocchio가 URDF 모델을 읽지 못했습니다.') from exc
+        self._tip_id = self._model.getFrameId('gripper_frame_link')
+        self._base_id = self._model.getFrameId('base_link')
+        if (self._tip_id >= self._model.nframes or self._base_id >= self._model.nframes
+                or self._model.frames[self._base_id].parentJoint != 0):
+            raise ValueError('고정 base_link와 gripper_frame_link가 필요합니다.')
+        self._joint_ids = [self._model.getJointId(name) for name in ARM_JOINTS]
+        if any(index == 0 or index >= self._model.njoints for index in self._joint_ids):
+            raise ValueError('Pinocchio 모델에서 팔 관절을 찾지 못했습니다.')
+        joints = [self._model.joints[index] for index in self._joint_ids]
+        if any(joint.nq != 1 or joint.nv != 1 for joint in joints):
+            raise ValueError('팔 관절은 각각 하나의 각도와 속도 좌표가 필요합니다.')
+        self._q_indices = np.array([joint.idx_q for joint in joints])
+        self._v_indices = np.array([joint.idx_v for joint in joints])
+        self._neutral = pin.neutral(self._model)
 
     def _metadata(self):
         return {'mode': 'preview', 'frame': 'urdf_base_link', 'tip_frame': 'gripper_frame_link',
                 'model_hash': self.model_hash, 'model_name': self.model_name,
                 'joint_units': 'degrees', 'position_units': 'metres',
+                'kinematics_library': 'pinocchio', 'kinematics_version': pin.__version__,
                 'hardware_alignment_verified': False, 'executable': False, 'collision_checked': False,
                 'mapping_note': '입력 각도를 URDF 관절각으로 사용한 계산입니다. 실물 축 방향·영점·카메라 좌표 정합은 검증되지 않았습니다.'}
 
-    def _transform(self, radians):
-        result = np.eye(4)
-        for segment in self._segments:
-            result = result @ segment.origin
-            if segment.index is not None:
-                rotation = np.eye(4)
-                rotation[:3, :3] = _axis_rotation(segment.axis, radians[segment.index])
-                result = result @ rotation
-        if not np.isfinite(result).all():
+    def _configuration(self, radians):
+        q = self._neutral.copy()
+        q[self._q_indices] = radians
+        return q
+
+    def _kinematics(self, radians, *, jacobian=False):
+        q = self._configuration(radians)
+        data = self._model.createData()
+        pin.framesForwardKinematics(self._model, data, q)
+        base_inverse = data.oMf[self._base_id].inverse()
+        transform = np.array((base_inverse * data.oMf[self._tip_id]).homogeneous)
+        if not np.isfinite(transform).all():
             raise ValueError('URDF 변환 계산 결과가 유한하지 않습니다.')
-        return result
+        if not jacobian:
+            return transform, None
+        world_jacobian = pin.computeFrameJacobian(
+            self._model, data, q, self._tip_id, pin.ReferenceFrame.LOCAL_WORLD_ALIGNED)
+        # The origin is the tip, with axes expressed in the fixed arm base frame.
+        rotation = np.array(base_inverse.rotation)
+        arm_jacobian = np.vstack((rotation @ world_jacobian[:3, self._v_indices],
+                                  rotation @ world_jacobian[3:, self._v_indices]))
+        if not np.isfinite(arm_jacobian).all():
+            raise ValueError('Pinocchio Jacobian 계산 결과가 유한하지 않습니다.')
+        return transform, arm_jacobian
+
+    def _transform(self, radians):
+        return self._kinematics(radians)[0]
 
     def forward(self, joints):
         """Compute preview FK even outside URDF limits, reporting every violation explicitly."""
@@ -183,31 +203,29 @@ class RobotGeometry:
                 'urdf_limit_violations': violations}
 
     def joint_points(self, joints):
-        """Joint origins and tool tip for a schematic; no mesh or collision model."""
-        radians = np.deg2rad(_joints(joints))
-        transform = np.eye(4)
+        """Joint origins and tool tip from the same Pinocchio FK as the solver."""
+        data = self._model.createData()
+        pin.framesForwardKinematics(self._model, data, self._configuration(np.deg2rad(_joints(joints))))
+        base_inverse = data.oMf[self._base_id].inverse()
         points = [{'name': 'base_link', 'xyz_m': [0., 0., 0.]}]
-        for segment in self._segments:
-            transform = transform @ segment.origin
-            if segment.index is not None:
-                points.append({'name': segment.name, 'xyz_m': transform[:3, 3].tolist()})
-                rotation = np.eye(4)
-                rotation[:3, :3] = _axis_rotation(segment.axis, radians[segment.index])
-                transform = transform @ rotation
-        points.append({'name': 'gripper_frame_link', 'xyz_m': transform[:3, 3].tolist()})
+        for name, joint_id in zip(ARM_JOINTS, self._joint_ids):
+            points.append({'name': name, 'xyz_m': (base_inverse * data.oMi[joint_id]).translation.tolist()})
+        points.append({'name': 'gripper_frame_link',
+                       'xyz_m': (base_inverse * data.oMf[self._tip_id]).translation.tolist()})
         return points
 
     def solve_position(self, target_xyz_m, seed_joints, hardware_limits=None, approach_axis=None):
-        """IK preview, optionally constraining the tip's local +Z axis in the base frame.
+        """Bounded differential IK, optionally constraining the tip's local +Z axis.
 
-        The optional axis constrains two orientation DOFs, not a full 6DOF pose.
-        There is no collision test, hardware alignment verification, or motor action.
+        Pinocchio supplies FK and analytic LOCAL_WORLD_ALIGNED frame Jacobians.
+        OSQP minimizes a damped linearized task error inside hard joint and step
+        bounds. A line search accepts only decreasing nonlinear task costs. The
+        optional axis constrains two orientation DOFs, not a full 6DOF pose.
 
         Invalid seeds are rejected, never clipped. Supplied hardware limits must
         include all five named arm joints in degrees. Equal limits lock a joint.
-        Four deterministic starts and 100 least-squares evaluations per start bound
-        optimization work. Finite-difference Jacobian probes add at most five
-        residual calls per evaluation; their counts are reported separately.
+        At most four deterministic starts use 100 FK evaluations each. This is an
+        endpoint solver, not Cyclo's live controller or collision-avoidance system.
         """
         target = _input_vector(target_xyz_m, '목표 위치(m)')
         if math.hypot(*target) >= 2:
@@ -239,59 +257,125 @@ class RobotGeometry:
         seed = np.deg2rad(seed_deg)
         bounds = np.deg2rad(bounds_deg)
         free = bounds[:, 0] < bounds[:, 1]
+        residual_calls = 0
 
-        def evaluate(values):
-            transform = self._transform(values)
-            error = float(np.linalg.norm(transform[:3, 3] - target))
+        def evaluate(values, *, jacobian=False):
+            nonlocal residual_calls
+            residual_calls += 1
+            transform, frame_jacobian = self._kinematics(values, jacobian=jacobian)
+            position_error = transform[:3, 3] - target
+            error = float(np.linalg.norm(position_error))
             angle = (math.degrees(math.acos(float(np.clip(np.dot(transform[:3, 2], axis), -1, 1))))
                      if axis is not None else None)
             feasible = error <= POSITION_TOLERANCE_M and (angle is None or angle <= APPROACH_TOLERANCE_DEG)
-            cost = error ** 2 + SEED_REGULARIZATION_M_PER_RAD ** 2 * float(np.sum((values - seed) ** 2))
+            residual = position_error
+            task_jacobian = frame_jacobian[:3] if jacobian else None
             if axis is not None:
-                cost += AXIS_RESIDUAL_SCALE_M ** 2 * float(np.sum((transform[:3, 2] - axis) ** 2))
-            return error, angle, feasible, cost
+                direction = transform[:3, 2]
+                residual = np.concatenate((residual, AXIS_RESIDUAL_SCALE_M * (direction - axis)))
+                if jacobian:
+                    # d(R*z)/dq = omega x (R*z); no finite-difference probes.
+                    axis_jacobian = -pin.skew(direction) @ frame_jacobian[3:]
+                    task_jacobian = np.vstack((task_jacobian, AXIS_RESIDUAL_SCALE_M * axis_jacobian))
+            cost = float(residual @ residual) + SEED_REGULARIZATION_M_PER_RAD ** 2 * float(np.sum((values - seed) ** 2))
+            return transform, residual, task_jacobian, error, angle, feasible, cost
 
         best = seed.copy()
-        best_error, best_angle, success, best_cost = evaluate(best)
-        attempts, residual_calls = [], 0
+        initial = evaluate(best)
+        best_error, best_angle, success, best_cost = initial[3:]
+        attempts = []
         if not success and np.any(free):
-            try:
-                from scipy.optimize import least_squares
-            except ImportError as exc:
-                raise RuntimeError('위치 IK 미리보기에는 scipy가 필요합니다.') from exc
             lower, upper = bounds[:, 0], bounds[:, 1]
             span = upper - lower
             starts = [seed, (lower + upper) / 2,
                       lower + span * np.array([.65, .25, .75, .35, .55]),
                       lower + span * np.array([.35, .75, .25, .65, .45])]
-
-            def residual(values):
-                nonlocal residual_calls
-                residual_calls += 1
-                full = seed.copy()
-                full[free] = values
-                transform = self._transform(full)
-                parts = [transform[:3, 3] - target, SEED_REGULARIZATION_M_PER_RAD * (full - seed)]
-                if axis is not None:
-                    parts.append(AXIS_RESIDUAL_SCALE_M * (transform[:3, 2] - axis))
-                return np.concatenate(parts)
-
             for start in starts[:MAX_IK_STARTS]:
-                fit = least_squares(residual, start[free], bounds=(lower[free], upper[free]),
-                                    max_nfev=MAX_IK_NFEV_PER_START, ftol=1e-10, xtol=1e-10, gtol=1e-10)
-                candidate = seed.copy()
-                candidate[free] = fit.x
-                error, angle, feasible, cost = evaluate(candidate)
-                attempts.append({'nfev': int(fit.nfev), 'solver_converged': bool(fit.success),
-                                 'residual_m': error, 'orientation_error_deg': angle})
-                # Satisfying both tolerances takes priority over regularization cost.
+                candidate = start.copy()
+                before = residual_calls
+                count, qp_iterations, status, stop_reason = 0, 0, None, 'evaluation_budget'
+                damping = 1e-6
+                current = evaluate(candidate, jacobian=True)
+                while residual_calls - before < MAX_IK_NFEV_PER_START:
+                    _, residual, jacobian, error, angle, feasible, cost = current
+                    if (feasible and not success) or (feasible == success and cost < best_cost):
+                        best, best_error, best_angle, success, best_cost = candidate.copy(), error, angle, feasible, cost
+                    # Refine successful solutions well inside user-facing tolerances.
+                    if error <= 1e-6 and (angle is None or angle <= 1e-3):
+                        stop_reason = 'target_converged'
+                        break
+                    if jacobian is None:
+                        if residual_calls - before >= MAX_IK_NFEV_PER_START - 1:
+                            break
+                        current = evaluate(candidate, jacobian=True)
+                        _, residual, jacobian, error, angle, feasible, cost = current
+                    step_lower = np.maximum(lower - candidate, -MAX_IK_STEP_RAD)
+                    step_upper = np.minimum(upper - candidate, MAX_IK_STEP_RAD)
+                    regularizer = SEED_REGULARIZATION_M_PER_RAD ** 2
+                    # Common scaling improves OSQP accuracy for metre-sized tasks;
+                    # it does not change the minimizer or loosen hard bounds.
+                    hessian = jacobian.T @ jacobian + (damping + regularizer) * np.eye(5)
+                    gradient = jacobian.T @ residual + regularizer * (candidate - seed)
+                    qp = osqp.OSQP()
+                    qp.setup(P=sparse.csc_matrix(np.triu(2. * hessian * 100.)),
+                             q=2. * gradient * 100., A=sparse.eye(5, format='csc'),
+                             l=step_lower, u=step_upper, verbose=False,
+                             eps_abs=1e-9, eps_rel=1e-9, max_iter=MAX_QP_ITERATIONS,
+                             polishing=False, warm_starting=False)
+                    solution = qp.solve(raise_error=False)
+                    count += 1
+                    status = str(solution.info.status)
+                    qp_iterations += int(solution.info.iter)
+                    step = solution.x
+                    # A non-converged QP is not used, including 'solved inaccurate'.
+                    if solution.info.status_val != 1:
+                        stop_reason = 'qp_' + status.replace(' ', '_')
+                        break
+                    if step is None or not np.isfinite(step).all():
+                        stop_reason = 'qp_nonfinite_solution'
+                        break
+                    # OSQP is a numerical solver: tolerate only tiny roundoff and
+                    # project that roundoff into the exact *step* box. The measured
+                    # initial joint state is never clipped or otherwise repaired.
+                    if np.any(step < step_lower - 1e-8) or np.any(step > step_upper + 1e-8):
+                        stop_reason = 'qp_constraint_violation'
+                        break
+                    step = np.minimum(np.maximum(step, step_lower), step_upper)
+                    if float(np.linalg.norm(step)) < 1e-10:
+                        stop_reason = 'stationary'
+                        break
+                    accepted = False
+                    for scale in (1., .5, .25, .125, .0625):
+                        if residual_calls - before >= MAX_IK_NFEV_PER_START:
+                            break
+                        trial = candidate + scale * step
+                        # Rounding an increment at a bound must not violate the
+                        # original degree-domain execution check by a single ulp.
+                        trial = np.minimum(np.maximum(trial, lower), upper)
+                        trial_result = evaluate(trial)
+                        if trial_result[-1] < cost - 1e-15:
+                            candidate, current = trial, trial_result
+                            accepted = True
+                            damping = max(1e-9, damping / 3.)
+                            break
+                    if not accepted:
+                        if damping >= 1e-1:
+                            stop_reason = 'stationary'
+                            break
+                        damping *= 10.
+                # Retain a final accepted point even if it consumed the FK budget.
+                _, _, _, error, angle, feasible, cost = current
                 if (feasible and not success) or (feasible == success and cost < best_cost):
-                    best, best_error, best_angle, success, best_cost = candidate, error, angle, feasible, cost
+                    best, best_error, best_angle, success, best_cost = candidate.copy(), error, angle, feasible, cost
+                attempts.append({'nfev': residual_calls - before, 'qp_solves': count,
+                                 'qp_iterations': qp_iterations, 'qp_status': status,
+                                 'stop_reason': stop_reason, 'solver_converged': stop_reason == 'target_converged',
+                                 'residual_m': error, 'orientation_error_deg': angle})
                 if success:
                     break
         achieved_transform = self._transform(best)
         solved = dict(zip(ARM_JOINTS, np.rad2deg(best).tolist()))
-        return {**self._metadata(), 'success': success, 'target_xyz_m': target.tolist(),
+        return {**self._metadata(), 'success': bool(success), 'target_xyz_m': target.tolist(),
                 'solution_joints_deg': solved if success else None, 'best_candidate_joints_deg': solved,
                 'seed_joints_deg': dict(zip(ARM_JOINTS, seed_deg.tolist())),
                 'achieved_xyz_m': achieved_transform[:3, 3].tolist(),
@@ -301,9 +385,13 @@ class RobotGeometry:
                 'achieved_approach_axis': achieved_transform[:3, 2].tolist(),
                 'orientation_error_deg': best_angle, 'orientation_checked': axis is not None,
                 'orientation_tolerance_deg': APPROACH_TOLERANCE_DEG if axis is not None else None,
-                'orientation_constrained': axis is not None, 'solver': 'scipy.optimize.least_squares',
+                'orientation_constrained': axis is not None, 'solver': 'pinocchio+osqp',
+                'qp_library': 'osqp', 'qp_version': osqp.__version__,
+                'jacobian': 'pinocchio.LOCAL_WORLD_ALIGNED.analytic',
+                'algorithm': 'bounded_damped_differential_ik',
                 'attempts': attempts, 'residual_calls': residual_calls,
                 'max_starts': MAX_IK_STARTS, 'max_nfev_per_start': MAX_IK_NFEV_PER_START,
+                'max_qp_iterations': MAX_QP_ITERATIONS, 'max_step_deg': math.degrees(MAX_IK_STEP_RAD),
                 'note': ('URDF 내 수치 해를 찾은 미리보기입니다. 선택한 +Z 접근 방향 외 전체 자세·충돌·실물 도달은 검증되지 않았습니다.'
                          if success else '제한된 최적화에서 요청한 허용 오차 내 해를 찾지 못했습니다. 수학적 도달 불가능의 증명은 아닙니다.')}
 
@@ -482,8 +570,8 @@ class CartesianController:
         if request.get('frame') != 'arm_base' or request.get('mode') not in ('absolute', 'relative'):
             raise ValueError('Cartesian request requires arm_base and absolute/relative mode')
         target = _input_vector(request.get('xyz_m'), 'xyz_m')
-        if type(duration_ms) is not int or not 100 <= duration_ms <= 1000:
-            raise ValueError('Cartesian duration_ms must be an integer from 100 to 1000')
+        if type(duration_ms) is not int or not 100 <= duration_ms <= MAX_CARTESIAN_DURATION_MS:
+            raise ValueError(f'Cartesian duration_ms must be an integer from 100 to {MAX_CARTESIAN_DURATION_MS}')
         axis = request.get('approach_axis')
         if axis is not None:
             axis = _input_vector(axis, 'approach_axis')

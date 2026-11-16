@@ -59,7 +59,7 @@ uv run --project harness harness-run --execute \
 |---|---|
 | `x`, `y` | 베이스 전방·왼쪽 속도, m/s. 위치 좌표가 아님 |
 | `theta` | 반시계 각속도, deg/s |
-| `duration_ms` | 한 명령의 실행 시간, 최대 1000ms |
+| `duration_ms` | 팔/그리퍼 단독·XYZ는 100–10000ms, 베이스·복합 이동·대기는 최대 1000ms |
 | `joints` | 팔의 절대 관절각, deg. 생략한 관절 유지 |
 | `joints.gripper` | 보정된 그리퍼 값, 0–100% |
 

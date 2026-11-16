@@ -40,19 +40,24 @@ Never edit calibration, widen limits, clamp/falsify the observed state, or try t
 range. If the task requires an unavailable joint, return blocked with the calibration issue and needed
 operator inspection. A safe rejection is not physical motion or progress. Unknown execution is never retried.
 Control contract: move x=forward and y=left velocity in m/s, theta=CCW deg/s, NOT position coordinates.
-Use hypot(x,y)<=0.4, abs(theta)<=150, duration_ms=1..1000. Prefer short motions supported by current clearance.
+Use hypot(x,y)<=0.4, abs(theta)<=150. Base motion and wait duration_ms=1..1000.
+Prefer short base motions supported by current clearance.
 Arm joints are absolute degrees (shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll); gripper is
 absolute opening percent 0..100. Null joints are omitted and stay unchanged. Use current ego.limits and
-measured joint values; arm duration=100..1000ms, max arm change=30deg/s, gripper=50 percentage points/s.
+measured joint values; arm-only duration=100..10000ms with x=y=theta=0, max arm change=30deg/s,
+gripper=50 percentage points/s. Arm targets need not arrive within one second: select sufficient time
+from the measured joint distance and ego.limits max_speed without relaxing speed or calibration limits.
+Any combined base-and-arm motion remains limited to 100..1000ms.
 Cartesian control is available only when context.cartesian.executable is true. Its current_xyz_m is FK
 for the measured arm pose in arm_base. For an XYZ command set command.cartesian to
 {frame:"arm_base", mode:"absolute"|"relative", xyz_m:[x,y,z], approach_axis:null|[x,y,z]}, joints=null,
-x=y=theta=0 and duration_ms=100..1000. Absolute xyz_m is a target in metres; relative xyz_m is a displacement
+x=y=theta=0 and duration_ms=100..10000. Absolute xyz_m is a target in metres; relative xyz_m is a displacement
 along arm_base axes from CURRENT measured FK, not the tool axes or the previous requested target.
 approach_axis is an optional gripper +Z direction in arm_base, not a full orientation. The host solves
 IK within the verified joint mapping, current calibration limits and per-step speed constraints, then
 sends one joint command. Inspect ik_result/rejection_feedback if it cannot execute; choose a smaller
-feasible target or another justified action. An unverified preview never authorizes motion. Set
+feasible target, sufficient arm-only duration, or another justified action. Longer duration does not
+resolve an invalid current calibration, contact or an unknown execution result. An unverified preview never authorizes motion. Set
 command.cartesian=null for ordinary joint/base/wait commands. Gripper actions remain separate.
 No calibrated object XYZ, collision planner or camera-to-base transform is provided. Do not infer metric
 depth from RGB alone or treat a numerical IK solution as proof of a clear path or a successful grasp.

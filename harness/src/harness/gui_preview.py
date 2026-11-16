@@ -17,7 +17,7 @@ class PreviewInput(BaseModel):
     observation_id: str | None = Field(default=None, min_length=1, max_length=256)
     joints_deg: dict[str, float] | None = None
     target: CartesianTarget | None = None
-    duration_ms: int = Field(default=1000, ge=100, le=1000)
+    duration_ms: int = Field(default=3000, ge=100, le=10000)
 
     @model_validator(mode='after')
     def source_fields(self):
@@ -63,23 +63,30 @@ def calculate_preview(request, *, observed=None, config=None):
         controller = CartesianController(config)
         geometry = controller.geometry
         state = controller.evaluate(packet)
-        source.update(observation_id=observed['observation_id'], at=observed['at'])
+        source.update(observation_id=observed['observation_id'], at=observed['at'],
+                      observed_at=packet.get('observation', {}).get('timestamp'))
         result = (controller.solve(packet, request.target.model_dump(), request.duration_ms)
                   if request.target is not None else None)
-        if (result is not None and not result['success'] and request.duration_ms < 1000
+        if (result is not None and not result['success'] and request.duration_ms < 10000
                 and 'ik_no_solution' in result.get('reason_codes', [])):
             # Diagnose a tighter time/speed bound without replacing the requested
             # result, changing motor limits, or creating an executable command.
-            slower = controller.solve(packet, request.target.model_dump(), 1000)
+            for checked_duration in (1000, 2000, 3000, 5000, 10000):
+                if checked_duration <= request.duration_ms:
+                    continue
+                slower = controller.solve(packet, request.target.model_dump(), checked_duration)
+                if slower['success']:
+                    break
             result['duration_check'] = {
-                'requested_duration_ms': request.duration_ms, 'checked_duration_ms': 1000,
+                'requested_duration_ms': request.duration_ms, 'checked_duration_ms': checked_duration,
                 'success': slower['success'], 'residual_m': slower.get('residual_m'),
                 'preview_only': True, 'executable': False,
             }
             if slower['success']:
                 result['reasons'].append(
                     f'{request.duration_ms}ms의 시간·속도 제한에서는 해를 찾지 못했지만 '
-                    '1,000ms 미리보기에서는 해를 찾았습니다. 이동 시간을 1,000ms로 바꿔 다시 계산하세요.')
+                    f'{checked_duration:,}ms 미리보기에서는 해를 찾았습니다. '
+                    f'이동 시간을 {checked_duration:,}ms로 바꿔 다시 계산하세요.')
         fk = state.get('fk')
     points = geometry.joint_points(fk['joints_deg']) if fk else []
     solution_points = []

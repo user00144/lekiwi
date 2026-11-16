@@ -10,7 +10,7 @@ import math
 import time
 from uuid import uuid4
 
-from .robot import PreDispatchRejected
+from .robot import ARM_MAX_DURATION_MS, BASE_MAX_DURATION_MS, PreDispatchRejected
 
 
 GUARD_FIELDS = frozenset({"observation_id", "runtime_id", "action_id", "reason"})
@@ -258,14 +258,17 @@ class ExecutionGuard:
         if command.get("action") not in ("move", "wait"):
             return "unsupported_action"
         duration = command.get("duration_ms")
-        if type(duration) is not int or not (0 if command["action"] == "wait" else 1) <= duration <= 1000:
-            return "invalid_duration"
         values = [command.get(axis, 0) for axis in ("x", "y", "theta")]
+        joints = command.get("joints")
+        arm_only = (command["action"] == "move" and isinstance(joints, dict) and bool(joints)
+                    and all(_number(value) and value == 0 for value in values))
+        maximum = ARM_MAX_DURATION_MS if arm_only else BASE_MAX_DURATION_MS
+        if type(duration) is not int or not (0 if command["action"] == "wait" else 1) <= duration <= maximum:
+            return "invalid_duration"
         if not all(_number(value) for value in values):
             return "invalid_velocity"
         if math.hypot(*values[:2]) > .4 or abs(values[2]) > 150:
             return "velocity_limit"
-        joints = command.get("joints")
         if command["action"] == "wait" and (joints is not None or any(values)):
             return "wait_cannot_move"
         if joints is not None and (not isinstance(joints, dict) or not joints or len(joints) > 6

@@ -9,6 +9,7 @@ from .drivers.servo import ServoBus
 from .drivers.wheels import WheelDrive, valid_motion
 from .drivers.camera import CameraStream
 from .drivers.radar import RadarStream
+from .robot import BASE_MAX_DURATION_MS
 
 
 class OrinRobot:
@@ -71,16 +72,20 @@ class OrinRobot:
         if command.get("action") == "move":
             motion = {key: command.get(key, 0) for key in ("x", "y", "theta")}
             duration = command.get("duration_ms")
-            if not valid_motion({**motion, "duration_ms": duration}):
-                return False
             joints = command.get("joints")
             if joints is not None:
-                if not self.arm.valid_target(joints, duration):
+                # Validate velocity independently: arm-only interpolation may
+                # take up to 10 s, while any base motion still stops within 1 s.
+                if (not valid_motion({**motion, "duration_ms": 1})
+                        or not self.arm.valid_target(joints, duration)
+                        or any(motion.values()) and duration > BASE_MAX_DURATION_MS):
                     return False
                 # One bus and thread; wheels run only during arm interpolation.
                 base_motion = self.wheels.driving(**motion) if any(motion.values()) else None
                 self.arm.move(joints, duration, base_motion=base_motion)
             else:
+                if not valid_motion({**motion, "duration_ms": duration}):
+                    return False
                 self.wheels.move(motion["x"], motion["y"], motion["theta"], duration)
             return True
         if command.get("action") != "wait":

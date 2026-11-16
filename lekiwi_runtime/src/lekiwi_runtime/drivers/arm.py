@@ -9,7 +9,7 @@ from pathlib import Path
 import time
 
 from .servo import ServoBus
-from ..robot import PreDispatchRejected
+from ..robot import ARM_MAX_DURATION_MS, BASE_MAX_DURATION_MS, PreDispatchRejected
 
 ARM_JOINTS = (
     ("shoulder_pan", 1), ("shoulder_lift", 2), ("elbow_flex", 3),
@@ -160,7 +160,7 @@ class ArmController:
                 for name, cal in self.calibration.items()}
 
     def valid_target(self, joints, duration_ms) -> bool:
-        if not self.enabled or type(duration_ms) is not int or not 100 <= duration_ms <= 1000:
+        if not self.enabled or type(duration_ms) is not int or not 100 <= duration_ms <= ARM_MAX_DURATION_MS:
             return False
         if not isinstance(joints, dict) or not joints:
             return False
@@ -249,6 +249,8 @@ class ArmController:
     def move(self, joints: dict, duration_ms: int, base_motion=None):
         if not self.valid_target(joints, duration_ms):
             raise PreDispatchRejected("invalid_arm_targets", "Invalid arm targets or duration")
+        if base_motion is not None and duration_ms > BASE_MAX_DURATION_MS:
+            raise PreDispatchRejected("base_duration_limit", "Combined base and arm motion is limited to 1000 ms")
         self.last_motion = None
         communication_recoveries = []
         before = self.read_ego()

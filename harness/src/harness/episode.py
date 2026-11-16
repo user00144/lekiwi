@@ -16,7 +16,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from .tools import build_command
+from .tools import ARM_MAX_DURATION_MS, ARM_MIN_DURATION_MS, build_command
 
 
 class JointTargets(BaseModel):
@@ -43,16 +43,20 @@ class Command(BaseModel):
     x: float
     y: float
     theta: float
-    duration_ms: int
+    duration_ms: int = Field(ge=1, le=ARM_MAX_DURATION_MS,
+                             description='Arm-only targets: 100..10000ms; base, wait or combined motion: at most 1000ms')
     joints: JointTargets | None
     cartesian: CartesianTarget | None = None
 
     @model_validator(mode='after')
-    def cartesian_is_arm_only(self):
+    def motion_duration_matches_command(self):
         if self.cartesian is not None and (self.action != 'move' or self.joints is not None
                                           or any((self.x, self.y, self.theta))
-                                          or not 100 <= self.duration_ms <= 1000):
-            raise ValueError('Cartesian move requires zero base velocity, joints=null and duration_ms=100..1000')
+                                          or not ARM_MIN_DURATION_MS <= self.duration_ms <= ARM_MAX_DURATION_MS):
+            raise ValueError('Cartesian move requires zero base velocity, joints=null and duration_ms=100..10000')
+        if self.cartesian is None:
+            joints = self.joints.model_dump(exclude_none=True) if self.joints else None
+            build_command(self.action, self.x, self.y, self.theta, self.duration_ms, joints)
         return self
 
     def request(self):
@@ -598,7 +602,8 @@ class EpisodeRunner:
             'failed_observation_id': decision.observation_id, 'current_observation_id': None,
             'repeat_block_count': self.repeat_block_count,
             'guidance': 'No motor command was sent. Inspect the IK error and fresh observation; revise the XYZ '
-                        'target, use a feasible joint action, observe, or report blocked. Never invent mapping '
+                        'target or choose sufficient arm-only duration within the existing speed limits, '
+                        'use a feasible joint action, observe, or report blocked. Never invent mapping '
                         'verification, calibration identity, camera depth, or loosen limits to make a solution pass.',
         }
         self.previous_result = {'status': 'rejected', **self.rejection_feedback}
