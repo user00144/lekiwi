@@ -20,6 +20,7 @@ from starlette.routing import Route
 
 from .episode import EpisodeLimits, atomic_json
 from .episode_runtime import run_episode
+from .gui_preview import PreviewInput, calculate_preview
 
 
 DEFAULT_LIMITS = {'max_actions': 20, 'max_steps': 40, 'max_seconds': 300}
@@ -115,6 +116,21 @@ class GuiController:
         self.task = None
         self.stopping = False
         self.requests = {}
+        self.preview_lock = asyncio.Lock()
+
+    def preview(self, request):
+        observed = None
+        if request.source == 'recorded':
+            path = self._run_path(request.run_id)
+            events = read_events(path / 'events.jsonl')
+            event = next((event for event in reversed(events)
+                          if event.get('event') == 'observation' and
+                          (request.observation_id is None or
+                           event['data'].get('observation_id') == request.observation_id)), None)
+            observed = self._observation(request.run_id, event) if event else None
+            if observed is None:
+                raise ValueError('이 실행에 사용할 저장 관찰이 없습니다. URDF 예시 자세로 먼저 확인할 수 있습니다.')
+        return calculate_preview(request, observed=observed, config=self.kinematics_config)
 
     def _run_path(self, run_id, *, exists=True):
         if not RUN_ID.fullmatch(run_id) or run_id in ('.', '..'):
@@ -341,6 +357,7 @@ class GuiController:
         return {'mode': self.mode, 'config': {'server': self.server, 'robot_id': self.robot_id,
                                             'model': self.model, 'limits': dict(DEFAULT_LIMITS),
                                             'kinematics_configured': self.kinematics_config is not None},
+                'capabilities': {'xyz_preview': 1},
                 'active_run_id': active_id, 'runs': runs,
                 'active': self.run_view(active_id) if active_id is not None else None}
 
@@ -405,6 +422,18 @@ def create_app(controller=None, *, port=8765, static_dir=None):
         except (FileNotFoundError, OSError):
             return JSONResponse({'error': 'Run not found'}, 404)
 
+    async def preview(request):
+        try:
+            payload = PreviewInput.model_validate(await json_body(request))
+            if controller.preview_lock.locked():
+                return JSONResponse({'error': '다른 미리보기 계산이 진행 중입니다. 잠시 후 다시 시도해주세요.'}, 409)
+            async with controller.preview_lock:
+                return JSONResponse(await asyncio.to_thread(controller.preview, payload))
+        except FileNotFoundError:
+            return JSONResponse({'error': '기록 또는 설정 파일을 찾을 수 없습니다.'}, 404)
+        except (ValueError, TypeError, OSError) as exc:
+            return JSONResponse({'error': str(exc)}, 400)
+
     async def start(request):
         try:
             return JSONResponse(await controller.start(await json_body(request)), 202)
@@ -440,6 +469,7 @@ def create_app(controller=None, *, port=8765, static_dir=None):
 
     app = Starlette(lifespan=lifespan, routes=[
         Route('/api/state', state), Route('/api/runs', start, methods=['POST']),
+        Route('/api/kinematics/preview', preview, methods=['POST']),
         Route('/api/runs/{run_id}/stop', stop, methods=['POST']),
         Route('/api/runs/{run_id}/files/{path:path}', files), Route('/api/runs/{run_id}', detail),
         Route('/', assets), Route('/console.css', assets), Route('/console.js', assets),

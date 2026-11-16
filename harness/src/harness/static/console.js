@@ -7,6 +7,7 @@
     started: false, busy: false, stoppingId: null, connected: false,
     timelineKey: null, historyKey: null, imageView: "current", announcement: null,
   };
+  const preview = {data: null, busy: false, initialized: false, runsKey: null};
   const statusLabels = {
     idle: "대기", running: "실행 중", starting: "준비 중", stopping: "중지 중",
     interrupted: "중지됨", stopped: "중지됨", completion_claim: "완료 주장",
@@ -101,6 +102,7 @@
     target.replaceChildren(node("i"), document.createTextNode(connected ? "GUI 연결됨" : "GUI 연결 끊김"));
     target.firstChild.setAttribute("aria-hidden", "true");
     updateControls();
+    previewControls();
   }
 
   function initialize(config) {
@@ -339,6 +341,129 @@
     eventLine(parent, "명령 전송", data.success === true && data.executable === true
       ? "IK 검사 통과 · 실제 전송과 도달 여부는 실행 결과에서 확인" : "이 XYZ 요청은 미전송 · 미리보기 또는 제한 조건 확인 필요");
     kinematicReasons(parent, data);
+  }
+
+  function svgNode(tag, attributes, content) {
+    const element = document.createElementNS("http://www.w3.org/2000/svg", tag);
+    for (const [key, value] of Object.entries(attributes)) element.setAttribute(key, String(value));
+    if (content) element.textContent = content;
+    return element;
+  }
+
+  function drawPreview() {
+    const svg = $("xyz-plot");
+    svg.replaceChildren();
+    const data = preview.data;
+    const current = data?.current_points || [];
+    const solved = data?.solution_points || [];
+    const target = data?.result?.target_xyz_m;
+    const view = $("xyz-view").value;
+    const projection = ([x, y, z]) => view === "xz" ? [x, -z] : view === "xy" ? [x, -y]
+      : view === "yz" ? [y, -z] : [(x - y) * 0.86, (x + y) * 0.38 - z];
+    const axis = [[.1, 0, 0], [0, .1, 0], [0, 0, .1]];
+    const vectors = [[0, 0, 0], ...axis, ...current.map(p => p.xyz_m), ...solved.map(p => p.xyz_m)];
+    if (vectorLabel(target)) vectors.push(target);
+    const projected = vectors.map(projection);
+    const low = [Math.min(...projected.map(p => p[0])), Math.min(...projected.map(p => p[1]))];
+    const high = [Math.max(...projected.map(p => p[0])), Math.max(...projected.map(p => p[1]))];
+    const scale = Math.min(320 / Math.max(.2, high[0] - low[0]), 210 / Math.max(.2, high[1] - low[1]));
+    const screen = v => { const p = projection(v); return [210 + (p[0] - (low[0] + high[0]) / 2) * scale, 155 + (p[1] - (low[1] + high[1]) / 2) * scale]; };
+    for (let x = 20; x < 420; x += 20) svg.append(svgNode("line", {x1: x, y1: 0, x2: x, y2: 310, stroke: "#edf0e8"}));
+    for (let y = 15; y < 310; y += 20) svg.append(svgNode("line", {x1: 0, y1: y, x2: 420, y2: y, stroke: "#edf0e8"}));
+    const origin = screen([0, 0, 0]);
+    axis.forEach((value, i) => {
+      const end = screen(value);
+      if (Math.hypot(end[0] - origin[0], end[1] - origin[1]) < 1) return;
+      svg.append(svgNode("line", {x1: origin[0], y1: origin[1], x2: end[0], y2: end[1], stroke: "#aeb8ad", "stroke-dasharray": "3 3"}));
+      svg.append(svgNode("text", {x: end[0] + 5, y: end[1] - 5, fill: "#738078", "font-size": 11}, ["X", "Y", "Z"][i]));
+    });
+    const arm = (points, color, dashed) => {
+      if (!points.length) return;
+      svg.append(svgNode("polyline", {points: points.map(p => screen(p.xyz_m).join(",")).join(" "), fill: "none", stroke: color, "stroke-width": 5, "stroke-linecap": "round", "stroke-linejoin": "round", ...(dashed ? {"stroke-dasharray": "7 5"} : {})}));
+      points.forEach(point => {
+        const [cx, cy] = screen(point.xyz_m);
+        const circle = svgNode("circle", {cx, cy, r: 4, fill: "white", stroke: color, "stroke-width": 2});
+        circle.append(svgNode("title", {}, `${point.name}: ${vectorLabel(point.xyz_m)}`));
+        svg.append(circle);
+      });
+    };
+    arm(current, "#98a49a", true); arm(solved, "#326a4e", false);
+    if (vectorLabel(target)) {
+      const [x, y] = screen(target);
+      svg.append(svgNode("path", {d: `M${x - 7},${y}h14 M${x},${y - 7}v14`, stroke: "#b87e32", "stroke-width": 2.5}));
+    }
+    svg.append(svgNode("text", {x: 15, y: 292, fill: "#738078", "font-size": 10}, "기준축 길이 0.1 m · 화면 크기에 맞춰 표시"));
+  }
+
+  function previewControls() {
+    const enabled = state.server?.capabilities?.xyz_preview === 1 && state.connected;
+    for (const element of $("xyz-form").querySelectorAll("input, select, button")) element.disabled = preview.busy || !enabled;
+    $("xyz-duration").disabled ||= $("xyz-source").value === "model";
+    $("xyz-solve").textContent = preview.busy ? "계산 중…" : "XYZ 미리보기 계산";
+    $("xyz-joint-editor").hidden = $("xyz-source").value !== "model";
+    $("xyz-availability").hidden = enabled;
+    text("xyz-availability", state.connected
+      ? "실행 중인 GUI 서버가 이전 버전입니다. GUI 터미널에서 Ctrl+C 후 같은 harness-gui 명령으로 다시 실행해주세요."
+      : "GUI 연결을 기다리고 있습니다.");
+  }
+
+  function updatePreviewSources() {
+    const runs = state.server?.runs || [];
+    const key = JSON.stringify(runs.map(run => [run.id, run.instruction]));
+    if (key !== preview.runsKey) {
+      preview.runsKey = key;
+      const select = $("xyz-source"), selected = select.value;
+      select.replaceChildren(new Option("URDF 예시 자세 · 로봇 연결 불필요", "model"));
+      for (const run of runs) select.add(new Option(`기록 ${run.id} · ${(run.instruction || "작업").slice(0, 30)}`, run.id));
+      if ([...select.options].some(option => option.value === selected)) select.value = selected;
+    }
+    previewControls();
+    if (!preview.initialized && state.server?.capabilities?.xyz_preview === 1 && state.connected) {
+      preview.initialized = true;
+      requestPreview(false);
+    }
+  }
+
+  function renderPreview() {
+    const data = preview.data, output = $("xyz-output");
+    output.replaceChildren();
+    if (!data) { output.append(node("p", "kinematics-note", "자세를 불러와 현재 XYZ를 확인하세요.")); drawPreview(); return; }
+    text("xyz-provenance", data.source.kind === "model"
+      ? "입력 기준: URDF 예시 관절각 · 로봇에 연결하지 않은 모델 계산"
+      : `입력 기준: 저장 관찰 ${shortId(data.source.observation_id)} · ${historyDate(data.source.at)} · 새 관찰을 사용하려면 ‘자세 불러오기’를 누르세요.`);
+    eventLine(output, "시작 XYZ", vectorLabel(data.state.current_xyz_m) || "관절 정보를 읽을 수 없습니다.");
+    if (data.result) {
+      const [summary, tone] = ikStatus(data.result);
+      output.append(node("span", `badge ${tone}`, summary));
+      ikLines(output, data.result);
+    } else kinematicReasons(output, data.state);
+    const violations = data.state.fk?.urdf_limit_violations || {};
+    for (const [name, range] of Object.entries(violations)) {
+      output.append(node("p", "kinematics-reason", `${jointLabels[name] || name}: ${range.value_deg.toFixed(2)}° / URDF 범위 ${range.lower_deg.toFixed(2)} ~ ${range.upper_deg.toFixed(2)}°. 범위를 벗어난 시작 자세는 IK를 계산하지 않습니다.`));
+    }
+    drawPreview();
+  }
+
+  async function requestPreview(solve) {
+    if (preview.busy || state.server?.capabilities?.xyz_preview !== 1 || !state.connected) return;
+    if (!$("xyz-form").reportValidity()) return;
+    const selected = $("xyz-source").value, model = selected === "model";
+    const payload = {source: model ? "model" : "recorded", duration_ms: Number($("xyz-duration").value)};
+    if (model) payload.joints_deg = Object.fromEntries([...$("xyz-joint-inputs").querySelectorAll("input")].map(input => [input.dataset.joint, Number(input.value)]));
+    else {
+      payload.run_id = selected;
+      if (solve && preview.data?.source.run_id === selected) payload.observation_id = preview.data.source.observation_id;
+    }
+    if (solve) payload.target = {frame: "arm_base", mode: $("xyz-mode").value, xyz_m: ["x", "y", "z"].map(axis => Number($(`xyz-${axis}`).value)), approach_axis: null};
+    preview.busy = true; previewControls();
+    try {
+      preview.data = await api("/api/kinematics/preview", {method: "POST", body: JSON.stringify(payload)});
+      renderPreview();
+    } catch (error) {
+      preview.data = null; renderPreview();
+      text("xyz-provenance", "미리보기 계산을 완료하지 못했습니다.");
+      $("xyz-output").replaceChildren(node("p", "kinematics-reason", error.message));
+    } finally { preview.busy = false; previewControls(); }
   }
   function renderKinematics(run) {
     let current = $("kinematics-current");
@@ -612,6 +737,7 @@
     renderRun(state.selectedId ? state.selectedRun : state.currentRun);
     renderHistory(state.server?.runs || []);
     updateControls();
+    updatePreviewSources();
   }
 
   async function poll() {
@@ -651,6 +777,25 @@
       announce("새 에이전트 작업을 시작했습니다."); render();
     } catch (error) { notice(error.message); }
     finally { state.busy = false; updateControls(); }
+  });
+
+  for (const [name, value] of Object.entries({shoulder_pan: 0, shoulder_lift: -15, elbow_flex: 35, wrist_flex: -20, wrist_roll: 0})) {
+    const field = node("div", "field"), title = node("label", "", jointLabels[name]), input = node("input");
+    input.id = `xyz-joint-${name}`; input.dataset.joint = name; input.type = "number"; input.step = "any"; input.value = value; input.required = true;
+    title.htmlFor = input.id; field.append(title, input); $("xyz-joint-inputs").append(field);
+  }
+  $("xyz-form").addEventListener("submit", event => { event.preventDefault(); requestPreview(true); });
+  $("xyz-load").addEventListener("click", () => requestPreview(false));
+  $("xyz-source").addEventListener("change", () => { preview.data = null; renderPreview(); requestPreview(false); });
+  $("xyz-view").addEventListener("change", drawPreview);
+  $("xyz-form").addEventListener("input", event => {
+    if (event.target.id === "xyz-source") return;
+    if (preview.data) {
+      if (event.target.dataset.joint) preview.data = null;
+      else { preview.data.result = null; preview.data.solution_points = []; }
+      renderPreview();
+      text("xyz-provenance", "입력값이 바뀌었습니다. 미리보기 계산을 눌러 결과를 갱신하세요.");
+    }
   });
 
   $("stop").addEventListener("click", async () => {

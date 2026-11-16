@@ -182,6 +182,21 @@ class RobotGeometry:
                 'urdf_limits_deg': {name: limits[i].tolist() for i, name in enumerate(ARM_JOINTS)},
                 'urdf_limit_violations': violations}
 
+    def joint_points(self, joints):
+        """Joint origins and tool tip for a schematic; no mesh or collision model."""
+        radians = np.deg2rad(_joints(joints))
+        transform = np.eye(4)
+        points = [{'name': 'base_link', 'xyz_m': [0., 0., 0.]}]
+        for segment in self._segments:
+            transform = transform @ segment.origin
+            if segment.index is not None:
+                points.append({'name': segment.name, 'xyz_m': transform[:3, 3].tolist()})
+                rotation = np.eye(4)
+                rotation[:3, :3] = _axis_rotation(segment.axis, radians[segment.index])
+                transform = transform @ rotation
+        points.append({'name': 'gripper_frame_link', 'xyz_m': transform[:3, 3].tolist()})
+        return points
+
     def solve_position(self, target_xyz_m, seed_joints, hardware_limits=None, approach_axis=None):
         """IK preview, optionally constraining the tip's local +Z axis in the base frame.
 

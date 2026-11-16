@@ -49,6 +49,25 @@
           <p id="run-summary" class="run-summary" hidden></p>
         </section>
 
+        <section class="panel xyz-panel" aria-labelledby="xyz-title">
+          <div class="section-heading"><div><h2 id="xyz-title">XYZ 미리보기</h2><p class="section-note">좌표를 입력하면 팔의 끝점과 관절 해를 계산합니다. 로봇에는 전송하지 않습니다.</p></div><span class="badge neutral">계산 전용</span></div>
+          <p id="xyz-availability" class="kinematics-reason" hidden></p>
+          <div class="xyz-workspace">
+            <form id="xyz-form">
+              <label for="xyz-source">시작 자세</label><select id="xyz-source"><option value="model">URDF 예시 자세 · 로봇 연결 불필요</option></select>
+              <details id="xyz-joint-editor" class="settings"><summary>예시 관절각 수정 <span>URDF 기준 · °</span></summary><div id="xyz-joint-inputs" class="xyz-joint-inputs"></div></details>
+              <button type="button" id="xyz-load" class="button xyz-secondary">자세 불러오기 · FK 계산</button>
+              <div class="field-row"><div class="field"><label for="xyz-mode">목표 방식</label><select id="xyz-mode"><option value="relative">현재 위치 + 이동량</option><option value="absolute">절대 좌표</option></select></div><div class="field"><label for="xyz-duration">동작 시간 (기록의 속도 제한)</label><select id="xyz-duration"><option value="500">500 ms</option><option value="1000">1,000 ms</option><option value="100">100 ms</option></select></div></div>
+              <div class="xyz-inputs"><div class="field"><label for="xyz-x">X (m)</label><input id="xyz-x" type="number" step="any" min="-1.99" max="1.99" value="0" required></div><div class="field"><label for="xyz-y">Y (m)</label><input id="xyz-y" type="number" step="any" min="-1.99" max="1.99" value="0" required></div><div class="field"><label for="xyz-z">Z (m)</label><input id="xyz-z" type="number" step="any" min="-1.99" max="1.99" value="0.01" required></div></div>
+              <p class="kinematics-note">0.01 m = 1 cm · 원점은 팔 장착부입니다.</p>
+              <button type="submit" id="xyz-solve" class="button primary">XYZ 미리보기 계산</button>
+            </form>
+            <div class="xyz-visual"><div class="xyz-visual-head"><strong>팔 관절 도식</strong><select id="xyz-view" aria-label="팔 도식 시점"><option value="iso">입체 투영</option><option value="xz">옆면 XZ</option><option value="xy">윗면 XY</option><option value="yz">정면 YZ</option></select></div><svg id="xyz-plot" viewBox="0 0 420 310" role="img" aria-label="팔의 시작 자세와 계산된 목표 자세"></svg><div class="xyz-legend"><span>● 시작 자세</span><span>● 계산된 자세</span><span>＋ 목표 위치</span></div><p class="kinematics-note">관절을 선으로 연결한 도식입니다. 직선 이동 경로·충돌·실물 축 정합을 검증하지 않습니다.</p></div>
+          </div>
+          <p id="xyz-provenance" class="kinematics-note">URDF 예시 자세를 불러오는 중입니다.</p>
+          <div id="xyz-output" class="kinematics-panel" aria-live="polite"><p>시작 자세를 불러오면 현재 XYZ가 표시됩니다.</p></div>
+        </section>
+
         <section class="panel observation-panel" aria-labelledby="observation-title"><div class="section-heading"><div><h2 id="observation-title">로봇의 시야</h2><p class="section-note">각 판단에 사용한 관찰 이미지입니다.</p></div><div class="segmented" role="group" aria-label="관찰 비교 모드"><button type="button" data-view="current" class="selected" aria-pressed="true">현재</button><button type="button" data-view="compare" aria-pressed="false">동작 전후 비교</button></div></div>
           <div class="camera-grid" id="camera-grid">
             <article class="camera-unit" data-camera="front"><div class="camera-head"><h3><span class="camera-dot" aria-hidden="true"></span>전방 카메라</h3><span>FRONT</span></div><div class="camera-pair"><figure class="camera-frame before-frame" hidden><img id="front-before" alt="직전 동작 전 전방 카메라 관찰" hidden><div class="camera-empty"><span aria-hidden="true">◫</span><p>동작 전 관찰이 없습니다</p></div><figcaption>직전 동작 전</figcaption></figure><figure class="camera-frame current-frame"><img id="front-current" alt="현재 전방 카메라 관찰" hidden><div class="camera-empty"><span aria-hidden="true">◫</span><p>첫 관찰을 기다리고 있습니다</p></div><figcaption><span>현재 관찰</span><time id="front-time">—</time></figcaption></figure></div></article>
