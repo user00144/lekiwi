@@ -57,6 +57,20 @@ class RobotTools:
             raise RuntimeError(f"Observation unavailable: {response}")
         return self._content(response)
 
+    async def reconcile(self, robot_id: str, runtime_id: str, failed_action_id: str) -> list[TextContent | ImageContent]:
+        """Read and verify a runtime-certified held arm after known incomplete motion.
+
+        This sends no motor target. Only the host may request it for the exact
+        failed action and runtime; it cannot recover unknown execution outcomes.
+        """
+        if isinstance(self.client, SnapshotClient):
+            raise ValueError('Snapshots cannot reconcile robot state')
+        if not all(isinstance(value, str) and value.strip() for value in (robot_id, runtime_id, failed_action_id)):
+            raise ValueError('Reconciliation requires robot_id, runtime_id and failed_action_id')
+        response = await self.client.request(robot_id, 'reconcile', runtime_id=runtime_id,
+                                             failed_action_id=failed_action_id)
+        return self._content(response)
+
     async def execute(self, robot_id: str,
                       x: Annotated[float, Field(strict=True, ge=-0.4, le=0.4, allow_inf_nan=False)] = 0,
                       y: Annotated[float, Field(strict=True, ge=-0.4, le=0.4, allow_inf_nan=False)] = 0,

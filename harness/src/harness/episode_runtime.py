@@ -39,6 +39,19 @@ Other joints or base motion are alternatives only if they can safely advance the
 Never edit calibration, widen limits, clamp/falsify the observed state, or try to force a joint back into
 range. If the task requires an unavailable joint, return blocked with the calibration issue and needed
 operator inspection. A safe rejection is not physical motion or progress. Unknown execution is never retried.
+motion_failure_feedback describes a distinct, known partial arm motion whose measured hold was verified.
+The host alone may recheck that held state with a bounded read-only reconciliation (at most twice),
+then supply a fresh observation and recovery_constraints. Do not replay the failed command or assume
+that partial movement completed the task. Compare its requested and measured joints, errors, hold
+diagnostics, current images and swept-path clearance, then propose ONE changed command with a new reason.
+While recovery_constraints is present, command only the five arm joints (no gripper or base),
+duration_ms at least min_duration_ms (normally 3000), and every target within max_joint_delta_deg
+(at most 3 degrees) of CURRENT measured joints. Choose a smaller or slower revised request supported
+by the evidence; changing duration is permitted only if the target also satisfies this small measured delta.
+Do not declare task_complete until a revised action has reached its target with fresh feedback.
+An error, communication ambiguity, unverified hold, stale feedback, or exhausted reconciliation remains
+stopped; it must never be relabelled as recoverable from its error text. Reconciliation is not permission
+to bypass calibration, speed, collision, camera, episode-budget, or runtime limits.
 Control contract: move x=forward and y=left velocity in m/s, theta=CCW deg/s, NOT position coordinates.
 Use hypot(x,y)<=0.4, abs(theta)<=150. Base motion and wait duration_ms=1..1000.
 Prefer short base motions supported by current clearance.

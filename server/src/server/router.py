@@ -57,6 +57,13 @@ class RobotServer:
             raise ValueError("command cannot override op or request_id")
         return await self._request(robot_id, {**command, "op": "execute"})
 
+    async def reconcile(self, robot_id: str, runtime_id: str, failed_action_id: str) -> dict:
+        if any(not isinstance(value, str) or not value.strip() or len(value) > 128
+               for value in (runtime_id, failed_action_id)):
+            raise ValueError("runtime_id and failed_action_id must be nonempty strings of at most 128 characters")
+        return await self._request(robot_id, {"op": "reconcile", "runtime_id": runtime_id,
+                                              "failed_action_id": failed_action_id})
+
     async def _request(self, robot_id: str, payload: dict) -> dict:
         lock = self._locks.setdefault(robot_id, asyncio.Lock())
         if lock.locked():

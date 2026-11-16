@@ -14,6 +14,8 @@
     interrupted: "중지됨", stopped: "중지됨", completion_claim: "완료 주장",
     blocked: "작업 보류", budget_actions: "행동 한도", budget_steps: "판단 한도",
     budget_seconds: "시간 한도", uncertain_execution: "실행 미확정",
+    incomplete: "목표 미도달 · 재계획 필요", recovery_exhausted: "상태 재확인 한도",
+    reconciliation_failed: "상태 재확인 실패",
     post_motion_observation_failed: "재관찰 실패", observation_failed: "관찰 실패",
     observation_invalid: "관찰 확인 필요", guarded_execution_unavailable: "실행 미지원",
     recorded_observation: "기록 실행 불가", runtime_changed: "로봇 연결 변경",
@@ -30,6 +32,10 @@
     decision: "에이전트 판단", decision_rejected: "판단 보류", action_prepared: "명령 준비",
     action_started: "행동 실행", action_finished: "행동 응답", action_result: "실행 결과",
     motion_feedback: "실행 전후 비교", rejection_feedback: "명령 거부 · 재관찰 후 수정", completion_candidate: "완료 주장 · 재관찰 요청",
+    motion_incomplete: "목표 미도달 · 자세 유지 확인", reconcile_started: "상태 재확인",
+    reconcile_finished: "상태 재확인 응답", reconcile_result: "상태 재확인 결과",
+    motion_failure_feedback: "미도달 원인과 현재 관절", motion_replanning: "새 경로 재계획",
+    motion_recovery_completed: "수정한 팔 목표 도달",
     episode_finished: "작업 종료", stopping: "루프 중지 요청", stop_requested: "루프 중지 요청",
     manual_operator_confirmation: "사용자 1회 이동 확인", error: "오류",
   };
@@ -48,6 +54,7 @@
     no_fresh_camera: "사용할 수 있는 최신 카메라 관찰이 없습니다.",
     imu_stale: "IMU 관찰이 오래되어 베이스 명령을 보내지 않았습니다.",
     repeated_failed_action: "거부된 명령이 수정 없이 반복되었습니다.",
+    arm_recovery_constraints: "재확인한 현재 관절값에 맞게 작은 팔 동작으로 수정해야 합니다.",
   };
 
   function node(tag, className, text) {
@@ -73,8 +80,8 @@
   function label(status) { return statusLabels[status] || status || "대기"; }
   function statusTone(status) {
     if (["running", "starting", "completion_claim"].includes(status)) return "good";
-    if (["host_error", "gui_error", "startup_error", "error", "uncertain_execution", "post_motion_observation_failed", "observation_failed"].includes(status)) return "error";
-    if (["blocked", "stopping", "budget_actions", "budget_steps", "budget_seconds", "repeated_failed_action"].includes(status)) return "warning";
+    if (["host_error", "gui_error", "startup_error", "error", "uncertain_execution", "post_motion_observation_failed", "observation_failed", "reconciliation_failed"].includes(status)) return "error";
+    if (["blocked", "stopping", "budget_actions", "budget_steps", "budget_seconds", "repeated_failed_action", "incomplete", "recovery_exhausted"].includes(status)) return "warning";
     return "neutral";
   }
   function badge(id, value, tone = "neutral") { text(id, value); $(id).className = `badge ${tone}`; }
@@ -140,6 +147,8 @@
     const phase = String(run?.phase || "").toLowerCase();
     if (phase === "prepared") return ["reviewing", "수동 XYZ 목표 확인을 기다립니다"];
     if (phase === "preparing") return ["observing", "수동 XYZ 이동을 위한 관찰과 계산 중입니다"];
+    if (phase === "reconciling") return ["observing", "목표 미도달 후 관절과 자세 유지를 다시 확인합니다"];
+    if (phase === "replanning") return ["thinking", "현재 관절값으로 새 경로를 재계획합니다"];
     if (run?.status === "stopping" || state.stoppingId === run?.id) return ["reviewing", "다음 행동을 중지하고 있습니다"];
     if (/action|execut|mov/.test(phase)) return ["executing", "로봇이 한 행동을 실행하고 있습니다"];
     if (/plan|thinking|decid|decision/.test(phase)) return ["thinking", "관찰을 바탕으로 다음 행동을 판단합니다"];
@@ -196,6 +205,7 @@
     renderObservations(run);
     renderDecision(decision, latestEvent(run, "motion_feedback")?.data);
     renderRejection(run);
+    renderMotionFailure(run);
     renderKinematics(run);
     renderTimeline(run);
   }
@@ -556,6 +566,41 @@
   function safeRejection(packet) {
     return packet?.status === "rejected" && packet.execution?.outcome === "rejected" && packet.execution?.command_sent === false;
   }
+  function verifiedIncomplete(packet) {
+    return packet?.status === "incomplete" && packet.execution?.outcome === "incomplete"
+      && packet.execution.command_sent === true && packet.execution.arm_reached === false
+      && packet.execution.arm_hold_verified === true && packet.execution.arm_motion?.hold?.verified === true
+      && packet.capabilities?.arm_reconciliation === 1;
+  }
+  function armMotionLines(parent, motion) {
+    for (const [name, target] of Object.entries(motion?.targets || {})) {
+      const measured = motion?.measured?.[name];
+      if (!Number.isFinite(target) || !Number.isFinite(measured)) continue;
+      const unit = name === "gripper" ? "%" : "°";
+      eventLine(parent, jointLabels[name] || name, `목표 ${target.toFixed(2)}${unit} · 실제 ${measured.toFixed(2)}${unit} · 차이 ${(measured - target).toFixed(2)}${unit}`);
+    }
+  }
+  function renderMotionFailure(run) {
+    let card = $("motion-failure-card");
+    if (!card) {
+      card = node("section", "rejection-card"); card.id = "motion-failure-card";
+      card.setAttribute("aria-label", "목표 미도달과 새 경로 재계획");
+      $("command-details").before(card);
+    }
+    const event = [latestEvent(run, "motion_failure_feedback"), latestEvent(run, "motion_incomplete")]
+      .filter(Boolean).sort((left, right) => right.seq - left.seq)[0];
+    const resolved = latestEvent(run, "motion_recovery_completed");
+    card.hidden = !event || Boolean(resolved && resolved.seq > event.seq);
+    card.replaceChildren();
+    if (card.hidden) return;
+    card.append(node("strong", "", "목표 미도달 · 자세 유지 확인"));
+    armMotionLines(card, event.data?.arm_motion);
+    const constraints = event.data?.recovery_constraints;
+    card.append(node("p", "", constraints
+      ? `상태 재확인 후 새 경로를 판단합니다. 현재 관절에서 최대 ${constraints.max_joint_delta_deg}°씩, ${constraints.min_duration_ms / 1000}초 이상으로 수정합니다.`
+      : "일부 이동했지만 목표에 도달하지 못했습니다. 새 관찰과 재계획이 필요합니다."));
+    card.append(node("small", "", "이전 명령을 그대로 다시 보내지 않으며, 부분 이동을 작업 완료로 처리하지 않습니다."));
+  }
   function rejectionReason(data) {
     const code = data.error_code || data.error;
     return rejectionLabels[code] || data.error || "실행 전 검사에서 명령을 거부했습니다.";
@@ -644,7 +689,7 @@
     const item = node("article", `timeline-event ${category}`);
     const head = node("div", "event-head");
     const finishedPhase = {observe_finished: "관찰", planning_finished: "판단", action_finished: "행동 실행", startup_finished: "작업 준비"}[kind];
-    const interruptedLabel = {cancelled: "취소", error: "실패", uncertain_execution: "결과 미확정", rejected: "명령 거부", completed_without_observation: "완료 · 재관찰 실패"}[finishedStatus];
+    const interruptedLabel = {cancelled: "취소", error: "실패", uncertain_execution: "결과 미확정", incomplete: "목표 미도달", rejected: "명령 거부", completed_without_observation: "완료 · 재관찰 실패"}[finishedStatus];
     head.append(node("strong", "", finishedPhase && interruptedLabel ? `${finishedPhase} ${interruptedLabel}` : eventLabels[kind] || kind));
     if (kind === "decision") head.append(node("span", "event-tag", toolLabels[data.tool] || data.tool));
     const time = node("time", "", timeLabel(event.at));
@@ -679,12 +724,14 @@
         ? recordedRecoveries.filter((recovery) => recovery?.recovery === "verified_readback" && recovery.requested === recovery.read_value
           && [recovery.motor_id, recovery.register, recovery.requested, recovery.read_value].every(Number.isFinite)) : [];
       const message = safeRejection(packet) ? "명령 거부 · 재관찰 후 수정. 이 명령은 로봇에 전송되지 않았습니다."
+        : verifiedIncomplete(packet) ? "목표 미도달 · 측정한 자세 유지를 확인했습니다. 상태 재확인 후 새 요청이 필요합니다."
         : execution.outcome === "uncertain_execution" ? "실행 여부 미확정 · 자동 재실행을 중단했습니다."
           : packet.status === "completed" ? recoveries.length ? "통신 응답 오류 · 설정값 재확인 후 완료" : "동작 응답 수신 · 새 관찰로 결과를 확인합니다."
             : packet.error || packet.observation_error || label(packet.status);
       item.append(node("p", "event-body", message));
       if (safeRejection(packet)) eventLine(item, "거부 원인", rejectionReason(packet));
       else if (execution.outcome === "uncertain_execution") eventLine(item, "오류", packet.error);
+      if (execution.arm_motion?.reached === false) armMotionLines(item, execution.arm_motion);
       for (const recovery of recoveries) {
         const attempts = Number.isInteger(recovery.read_attempts) ? ` · 읽기 ${recovery.read_attempts}회` : "";
         eventLine(item, "설정 확인", `모터 ${recovery.motor_id} · 레지스터 ${recovery.register} · 요청 ${recovery.requested} / 확인 ${recovery.read_value}${attempts}`);
@@ -697,6 +744,15 @@
       if (data.error_code === "arm_current_out_of_calibration" && data.error_details?.joint) eventLine(item, "관절 상태", calibrationLine(data.error_details));
       eventLine(item, "수정 지침", rejectionGuidance(data));
       eventLine(item, "거부 명령", commandLabel(data.command));
+    } else if (kind === "motion_incomplete" || kind === "motion_failure_feedback") {
+      item.append(node("p", "event-body", "목표에 도달하지 못했으며, 현재 관절값과 자세 유지 결과를 다음 판단에 전달합니다."));
+      armMotionLines(item, data.arm_motion);
+      eventLine(item, "실패한 요청", commandLabel(data.failed_command));
+      if (data.recovery_constraints) eventLine(item, "수정 범위", `현재 관절에서 ${data.recovery_constraints.max_joint_delta_deg}° 이내 · ${data.recovery_constraints.min_duration_ms / 1000}초 이상 · 그리퍼와 베이스 제외`);
+    } else if (kind === "motion_replanning") {
+      item.append(node("p", "event-body", "새 관찰을 기준으로 작은 팔 이동을 다시 계획합니다. 새 판단마다 새 행동 ID를 사용합니다."));
+    } else if (kind === "motion_recovery_completed") {
+      item.append(node("p", "event-body", "수정한 팔 목표에 도달했고 새 관찰을 받았습니다. 물체 파지와 전체 작업 완료는 별도로 확인합니다."));
     } else if (kind === "motion_feedback") {
       const deltas = Object.entries(data.joint_delta || {}).filter(([, value]) => typeof value === "number");
       item.append(node("p", "event-body", deltas.length ? deltas.map(([name, value]) => `${jointLabels[name] || name} ${value >= 0 ? "+" : ""}${value.toFixed(1)}${name === "gripper" ? "%p" : "°"}`).join(" · ") : "동작 전후 관찰이 다음 판단에 전달됩니다."));

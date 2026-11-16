@@ -65,7 +65,7 @@ class GuardTest(unittest.TestCase):
 
     def test_observation_identity_and_capability(self):
         response = self.observe()
-        self.assertEqual(response["capabilities"], {"guarded_execution": 1})
+        self.assertEqual(response["capabilities"], {"guarded_execution": 1, "arm_reconciliation": 1})
         for name in ("runtime_id", "observation_id"):
             self.assertEqual(response["observation"][name], response["action_context"][name])
         self.assertTrue(response["action_context"]["movement_allowed"])

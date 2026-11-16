@@ -14,7 +14,10 @@ from .robot import ARM_MAX_DURATION_MS, BASE_MAX_DURATION_MS, PreDispatchRejecte
 
 
 GUARD_FIELDS = frozenset({"observation_id", "runtime_id", "action_id", "reason"})
-CAPABILITIES = {"guarded_execution": 1}
+CAPABILITIES = {"guarded_execution": 1, "arm_reconciliation": 1}
+MAX_ARM_RECONCILIATIONS = 2
+RECOVERY_MAX_JOINT_DELTA_DEG = 3.0
+RECOVERY_MIN_DURATION_MS = 3000
 MAX_OBSERVATION_BYTES = 2 * 1024 * 1024
 JOINT_NAMES = frozenset({"shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper"})
 
@@ -49,6 +52,10 @@ class ExecutionGuard:
         self._cache = {}
         self._cache_bytes = 0
         self._halt_reason = None
+        self._arm_failure = None
+        self._recovery_constraints = None
+        self._reconciliations = 0
+        self._preflight_joints = None
 
     def invalidate(self):
         self._baseline = None
@@ -56,6 +63,24 @@ class ExecutionGuard:
     def halt(self, reason="uncertain_execution"):
         self.invalidate()
         self._halt_reason = reason
+        if reason != "arm_reconciliation_required":
+            self._arm_failure = None
+
+    @property
+    def legacy_block_reason(self):
+        return self._halt_reason or ("arm_recovery_constrained" if self._recovery_constraints else None)
+
+    def _remaining_reconciliations(self):
+        return max(0, MAX_ARM_RECONCILIATIONS - self._reconciliations)
+
+    def _recovery(self):
+        failure = self._arm_failure
+        return {"eligible": bool(failure and self._halt_reason == "arm_reconciliation_required"
+                                 and self._remaining_reconciliations()
+                                 and time.monotonic() - failure["created"] <= self.max_age_s),
+                "failed_action_id": failure["command"]["action_id"] if failure else None,
+                "runtime_id": self.runtime_id,
+                "attempts_remaining": self._remaining_reconciliations()}
 
     def _context(self, reason=None):
         baseline = self._baseline
@@ -76,7 +101,142 @@ class ExecutionGuard:
         }
         if reason:
             context["reason"] = reason
+        if self._recovery_constraints:
+            context["recovery_constraints"] = {
+                "max_joint_delta_deg": RECOVERY_MAX_JOINT_DELTA_DEG,
+                "min_duration_ms": RECOVERY_MIN_DURATION_MS,
+                "remaining": self._remaining_reconciliations(),
+                "failed_action_id": self._recovery_constraints["action_id"],
+                "runtime_id": self.runtime_id,
+            }
         return context
+
+    @staticmethod
+    def _arm_only(command):
+        joints = command.get("joints")
+        return (command.get("action") == "move" and isinstance(joints, dict) and bool(joints)
+                and set(joints) <= JOINT_NAMES - {"gripper"}
+                and all(_number(value) for value in joints.values())
+                and all(command.get(axis, 0) == 0 for axis in ("x", "y", "theta")))
+
+    @staticmethod
+    def _hold_problem(certificate):
+        if not isinstance(certificate, dict) or certificate.get("verified") is not True:
+            return "arm_hold_unverified"
+        if not isinstance(certificate.get("calibration_id"), str) or not certificate["calibration_id"]:
+            return "arm_hold_calibration_invalid"
+        if not _number(certificate.get("timestamp")):
+            return "arm_hold_timestamp_invalid"
+        measured = certificate.get("measured")
+        if (not isinstance(measured, dict) or set(measured) != JOINT_NAMES
+                or not all(_number(value) for value in measured.values())):
+            return "arm_hold_measurements_invalid"
+        goals = certificate.get("held_goal_raw")
+        if (not isinstance(goals, dict) or set(goals) != JOINT_NAMES
+                or any(type(value) is not int for value in goals.values())):
+            return "arm_hold_goals_invalid"
+        return None
+
+    def _record_incomplete(self, command, execution):
+        motion = execution.get("arm_motion")
+        hold = motion.get("hold") if isinstance(motion, dict) else None
+        if (not self._arm_only(command) or execution.get("command_sent") is not True
+                or execution.get("arm_reached") is not False
+                or execution.get("arm_hold_verified") is not True
+                or not isinstance(motion, dict) or motion.get("recovery_eligible") is not True
+                or self._hold_problem(hold)
+                or not callable(getattr(self.robot, "reconcile_arm_hold", None))):
+            raise ValueError("Invalid incomplete arm execution result")
+        if not -.1 <= time.time() - hold["timestamp"] <= 1.0:
+            raise ValueError("Incomplete arm hold certificate is stale")
+        # Retain the original command and certificate independently of the
+        # immutable action journal, even when the caller modifies its response.
+        self._arm_failure = {"command": deepcopy(command), "hold": deepcopy(hold),
+                             "created": time.monotonic(), "finished_at": time.time()}
+        self.halt("arm_reconciliation_required")
+        execution["motion_finished_at"] = self._arm_failure["finished_at"]
+
+    def reconcile(self, request):
+        """Recheck a known, verified hold without sending any motor command."""
+        def reject(reason):
+            return {"status": "rejected", "error": reason,
+                    "capabilities": dict(CAPABILITIES), "action_context": self._context(),
+                    "recovery": self._recovery()}
+
+        if set(request) - {"op", "request_id", "runtime_id", "failed_action_id"}:
+            return reject("unknown_reconcile_fields")
+        if any(not isinstance(request.get(key), str) or not request[key].strip()
+               or len(request[key]) > 128 for key in ("runtime_id", "failed_action_id")):
+            return reject("reconcile_identity_required")
+        if request["runtime_id"] != self.runtime_id:
+            return reject("runtime_mismatch")
+        failure = self._arm_failure
+        if self._halt_reason != "arm_reconciliation_required" or failure is None:
+            return reject("arm_reconciliation_not_available")
+        if request["failed_action_id"] != failure["command"]["action_id"]:
+            return reject("failed_action_mismatch")
+        if time.monotonic() - failure["created"] > self.max_age_s:
+            return reject("arm_reconciliation_expired")
+        if not self._remaining_reconciliations():
+            return reject("arm_reconciliation_limit")
+        if len(self._cache) >= self.max_actions or self._cache_bytes >= self.max_cache_bytes:
+            self.halt("action_cache_full")
+            return reject("action_cache_full")
+
+        self.invalidate()
+        self._reconciliations += 1
+        try:
+            certificate = self.robot.reconcile_arm_hold(deepcopy(failure["hold"]))
+            problem = self._hold_problem(certificate)
+            if problem:
+                raise ValueError(problem)
+            if certificate["calibration_id"] != failure["hold"]["calibration_id"]:
+                raise ValueError("arm_calibration_changed")
+            if certificate["held_goal_raw"] != failure["hold"]["held_goal_raw"]:
+                raise ValueError("arm_hold_goals_changed")
+            if not -.1 <= time.time() - certificate["timestamp"] <= 1.0:
+                raise ValueError("arm_hold_feedback_stale")
+        except Exception as exc:
+            # A failed hardware verification has no reset path. In particular,
+            # transport errors cannot be reclassified by trying another ID.
+            self.halt()
+            return reject(f"arm_hold_verification_failed: {str(exc)[:1024]}")
+
+        try:
+            verified_at = max(failure["finished_at"], certificate["timestamp"])
+            # Camera workers publish asynchronously. Wait for a genuinely new
+            # frame with the same bounded read-only polling used after motion.
+            response = self._post_observe(failure["command"], verified_at)
+            raw = response["observation"]
+            ego = raw.get("ego")
+            if not _fresh(ego, 1.0, time.time()) or ego["timestamp"] <= verified_at:
+                raise ValueError("arm_feedback_unavailable_or_stale")
+            if (ego.get("calibration_id") != certificate["calibration_id"]
+                    or not isinstance(ego.get("calibration_status"), dict)
+                    or ego["calibration_status"].get("valid") is not True):
+                raise ValueError("arm_calibration_changed_or_invalid")
+            joints = ego.get("joints")
+            if not isinstance(joints, dict) or any(
+                    not _number(joints.get(name))
+                    or abs(joints[name] - value) > (2 if name == "gripper" else .5)
+                    for name, value in certificate["measured"].items()):
+                raise ValueError("arm_changed_after_hold_verification")
+            # The observation was adopted while halted. Only the fully checked
+            # ego state below that camera barrier can open admission.
+        except Exception as exc:
+            self.invalidate()
+            return reject(f"arm_reconciliation_observation_failed: {str(exc)[:1024]}")
+
+        self._recovery_constraints = deepcopy(failure["command"])
+        self._arm_failure = None
+        self._halt_reason = None
+        response.update(status="ok", action_context=self._context(), recovery={
+            "reconciled": True, "failed_action_id": request["failed_action_id"],
+            "runtime_id": self.runtime_id,
+            "attempts_remaining": self._remaining_reconciliations(),
+            "hold": deepcopy(certificate),
+        })
+        return response
 
     @staticmethod
     def _camera_problem(observation, name, *, after=None):
@@ -129,6 +289,7 @@ class ExecutionGuard:
         return names
 
     def _preflight(self, command):
+        self._preflight_joints = None
         if self._halt_reason:
             return self._halt_reason
         baseline = self._baseline
@@ -141,6 +302,14 @@ class ExecutionGuard:
             return "observation_expired"
         if not baseline["valid_cameras"]:
             return "no_fresh_camera"
+        if self._recovery_constraints and command.get("action") != "wait":
+            if not self._arm_only(command):
+                return "arm_recovery_requires_arm_only"
+            if command["duration_ms"] < RECOVERY_MIN_DURATION_MS:
+                return "arm_recovery_duration_too_short"
+            failed = self._recovery_constraints
+            if command["joints"] == failed["joints"] and command["duration_ms"] == failed["duration_ms"]:
+                return "arm_recovery_command_not_revised"
 
         before = baseline["observation"]
         try:
@@ -191,6 +360,11 @@ class ExecutionGuard:
                     value = joints.get(name)
                     if not _number(value) or abs(target - value) > limit["max_speed"] * command["duration_ms"] / 1000:
                         return "arm_speed_limit"
+                    if self._recovery_constraints and (
+                            abs(target - value) > RECOVERY_MAX_JOINT_DELTA_DEG
+                            or not _number(old_joints.get(name))
+                            or abs(target - old_joints[name]) > RECOVERY_MAX_JOINT_DELTA_DEG):
+                        return "arm_recovery_joint_delta_limit"
 
         # IMU is supplemental. Never treat integrated displacement as verified
         # base pose, and do not require an IMU on robots configured without it.
@@ -199,6 +373,8 @@ class ExecutionGuard:
             if imu.get("available") is True and not _fresh(imu, .25, time.time()):
                 self.invalidate()
                 return "imu_stale"
+        if self._recovery_constraints and needs_arm:
+            self._preflight_joints = deepcopy(ego["joints"])
         return None
 
     def _post_observe(self, command, finished_at, fallback_cameras=()):
@@ -308,6 +484,7 @@ class ExecutionGuard:
             response = self._reject(command, problem)
         else:
             post_cameras = tuple(self._baseline["valid_cameras"])
+            preflight_joints = self._preflight_joints
             self.invalidate()  # The observation is single-use, including on failure.
             try:
                 execute = getattr(self.robot, "execute_guarded", None)
@@ -318,12 +495,18 @@ class ExecutionGuard:
                         execution["command_sent"] = False
                 else:
                     execution = execute(command)
-                    if not isinstance(execution, dict) or execution.get("outcome") not in ("completed", "rejected"):
+                    if not isinstance(execution, dict) or execution.get("outcome") not in ("completed", "rejected", "incomplete"):
                         raise ValueError("Invalid guarded execution result")
+                    if len(json.dumps(execution, allow_nan=False).encode()) > 64 * 1024:
+                        raise ValueError("Guarded execution result exceeds size limit")
                     execution = {**self._execution(command, execution["outcome"]), **execution,
                                  "action_id": identity}
+                    if execution["outcome"] == "incomplete":
+                        self._record_incomplete(command, execution)
                 response = {"status": execution["outcome"], "execution": execution,
                             "capabilities": dict(CAPABILITIES), "action_context": self._context()}
+                if execution["outcome"] == "incomplete":
+                    response["recovery"] = self._recovery()
             except PreDispatchRejected as exc:
                 # Only an explicit driver guarantee that no motor write has
                 # happened is recoverable. The consumed lease still requires
@@ -331,7 +514,7 @@ class ExecutionGuard:
                 response = self._reject(command, str(exc)[:1024])
                 response.update(error_code=exc.code, error_details=exc.details)
             except Exception as exc:
-                self._halt_reason = "uncertain_execution"
+                self.halt()
                 response = {"status": "error", "error": str(exc)[:1024],
                             "execution": self._execution(command, "uncertain_execution"),
                             "capabilities": dict(CAPABILITIES), "action_context": self._context()}
@@ -341,6 +524,22 @@ class ExecutionGuard:
                     response["execution"]["motion_finished_at"] = finished_at
                     try:
                         response.update(self._post_observe(command, finished_at, post_cameras))
+                        if (self._recovery_constraints and self._arm_only(command)
+                                and execution.get("command_sent") is True
+                                and execution.get("arm_reached") is True):
+                            post_ego = response["observation"].get("ego", {})
+                            post_joints = post_ego.get("joints", {}) if isinstance(post_ego, dict) else {}
+                            progress = bool(
+                                _fresh(post_ego, 1.0, time.time())
+                                and post_ego["timestamp"] > finished_at
+                                and isinstance(preflight_joints, dict) and isinstance(post_joints, dict)
+                                and any(_number(preflight_joints.get(name)) and _number(post_joints.get(name))
+                                        and abs(target - preflight_joints[name]) - abs(target - post_joints[name]) >= 1.0
+                                        for name, target in command["joints"].items()))
+                            response["execution"]["arm_recovery_progress_verified"] = progress
+                            if progress:
+                                self._recovery_constraints = None
+                            response["action_context"] = self._context()
                     except Exception as exc:
                         self.invalidate()
                         response.update(status="completed_without_observation", observation_error=str(exc)[:1024],

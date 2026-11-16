@@ -1,9 +1,10 @@
 """On-device sensor lifecycle, observations and supported actions."""
 
 import time
+from copy import deepcopy
 
 from .config import load_config
-from .drivers.arm import ArmController
+from .drivers.arm import ARM_CONTROL_REVISION, ArmController, ArmTargetNotReached
 from .drivers.imu import ImuStream
 from .drivers.servo import ServoBus
 from .drivers.wheels import WheelDrive, valid_motion
@@ -101,14 +102,33 @@ class OrinRobot:
     def execute_guarded(self, command: dict) -> dict:
         """Report what this driver verifies; base pose/stationarity are unknown.
 
-        Only PreDispatchRejected certifies a validation failure before motor
-        writes. It and other exceptions propagate to the guard, which preserves
-        uncertainty for communication errors and partly transmitted commands.
+        PreDispatchRejected certifies a validation failure before motor writes.
+        An exact endpoint failure may report incomplete only after measured
+        progress and a verified hold; it remains distinct from completion.
+        Communication errors and partly transmitted commands retain uncertainty.
         """
-        accepted = self.execute(command)
         moving = command.get("action") == "move"
         uses_arm = moving and command.get("joints") is not None
         uses_base = moving and (not uses_arm or any(command.get(axis, 0) for axis in ("x", "y", "theta")))
+        try:
+            accepted = self.execute(command)
+        except ArmTargetNotReached as failure:
+            feedback = failure.feedback
+            hold = feedback.get('hold')
+            # Only this exact driver failure, after measured progress and an
+            # independently verified hold, can be reconciled by fresh feedback.
+            # No goal or transport exception is inferred safe from its message.
+            if (type(failure) is not ArmTargetNotReached or not uses_arm or uses_base
+                    or 'gripper' in command['joints'] or feedback.get('targets') != command['joints']
+                    or feedback != self.arm.last_motion or feedback.get('recovery_eligible') is not True
+                    or not isinstance(hold, dict) or hold.get('verified') is not True
+                    or hold.get('revision') != ARM_CONTROL_REVISION
+                    or hold.get('calibration_id') != self.arm.calibration_id):
+                raise
+            return {'outcome': 'incomplete', 'command_sent': True, 'arm_reached': False,
+                    'arm_hold_verified': True, 'arm_motion': deepcopy(feedback),
+                    'base_stop_command_sent': None, 'base_stop_verified': None,
+                    'simulated': self.mock}
         result = {
             "outcome": "completed" if accepted else "rejected",
             "command_sent": bool(accepted and moving),
@@ -120,3 +140,7 @@ class OrinRobot:
         if accepted and uses_arm:
             result["arm_motion"] = dict(self.arm.last_motion)
         return result
+
+    def reconcile_arm_hold(self, certificate: dict) -> dict:
+        """Read-only recheck of a prior hold; the guard obtains new sensors next."""
+        return self.arm.reconcile_hold(certificate)

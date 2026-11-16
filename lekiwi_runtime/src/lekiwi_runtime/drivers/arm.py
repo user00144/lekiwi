@@ -18,7 +18,9 @@ ARM_JOINTS = (
 )
 PRESENT_POSITION = 56
 ARM_FEEDBACK_TIMEOUT_S = 2.0
-ARM_CONTROL_REVISION = 'bounded-settling-v2'
+ARM_CONTROL_REVISION = 'verified-arm-reconcile-v3'
+HOLD_STABILITY_INTERVAL_S = .2
+HOLD_STABILITY_SAMPLES = 3
 
 
 class ArmTransportError(OSError):
@@ -119,7 +121,8 @@ class ArmController:
                   "control": {"revision": ARM_CONTROL_REVISION, "max_duration_ms": ARM_MAX_DURATION_MS,
                               "feedback_timeout_s": ARM_FEEDBACK_TIMEOUT_S, "tolerance_deg": 2,
                               "tolerance_percent": 5},
-                  "calibration_status": self.calibration_status({}, available=False)}
+                  "calibration_status": self.calibration_status({}, available=False),
+                  "communication_retries": []}
         if not self.enabled:
             return {**result, "error": "disabled"}
         if self.mock:
@@ -141,6 +144,9 @@ class ArmController:
                         if comm == sdk.COMM_SUCCESS and error == 0:
                             raw[name] = int(value)
                             break
+                        result['communication_retries'].append({
+                            'joint': name, 'register': PRESENT_POSITION,
+                            'communication': comm, 'device_error': error})
                     else:
                         errors.append(f"{name}: communication={comm}, device={error}")
             except Exception as exc:
@@ -254,10 +260,13 @@ class ArmController:
 
     def hold(self):
         """On interruption hold measured positions, without dropping arm torque."""
-        errors = []
+        errors, held_goals = [], {}
+        names = {motor_id: name for name, motor_id in ARM_JOINTS}
         for motor_id in sorted(self._pending):
             try:
-                self._write(motor_id, 42, self._read(motor_id, PRESENT_POSITION))
+                measured = self._read(motor_id, PRESENT_POSITION)
+                self._write(motor_id, 42, measured)
+                held_goals[names[motor_id]] = measured
             except Exception as exc:
                 errors.append(str(exc))
         if errors:
@@ -265,6 +274,119 @@ class ArmController:
         if self._pending:
             print("Arm holding measured position", file=sys.stderr, flush=True)
         self._pending.clear()
+        return held_goals
+
+    def verify_hold(self, held_goals: dict, *, certificate=None):
+        """Read-only certificate for a calibrated, healthy and stable measured hold.
+
+        The initial hold writes only the interrupted command's pending joints.
+        This verification reads all six joints without enabling any idle motor,
+        changing a goal, or relaxing tolerances. An unpowered joint therefore
+        conservatively prevents automatic reconciliation.
+        """
+        names = {name for name, _ in ARM_JOINTS}
+        if self.mock or not self.enabled or self.bus.port_handler is None:
+            raise OSError('Arm hold requires acknowledged servo feedback')
+        if (not isinstance(held_goals, dict) or not held_goals or not set(held_goals) <= names
+                or any(type(raw) is not int or not self.calibration[name]['range_min'] <= raw <= self.calibration[name]['range_max']
+                       for name, raw in held_goals.items())):
+            raise OSError('Invalid measured arm hold goals')
+        reference = None
+        if certificate is not None:
+            if (not isinstance(certificate, dict) or certificate.get('verified') is not True
+                    or certificate.get('revision') != ARM_CONTROL_REVISION
+                    or certificate.get('calibration_id') != self.calibration_id
+                    or set(held_goals) != names or held_goals != certificate.get('held_goal_raw')):
+                raise OSError('Arm hold certificate or calibration changed')
+            reference = certificate.get('measured')
+            if (not isinstance(reference, dict) or set(reference) != names
+                    or any(type(value) not in (int, float) or not math.isfinite(value) for value in reference.values())):
+                raise OSError('Arm hold certificate has invalid measured positions')
+        expected = dict(held_goals)
+        samples, stamps, health = [], [], {}
+        for index in range(HOLD_STABILITY_SAMPLES):
+            if index:
+                # The interval is measured between completed samples, not assumed
+                # from servo-read latency or a number of polling iterations.
+                due = stamps[0] + HOLD_STABILITY_INTERVAL_S * index / (HOLD_STABILITY_SAMPLES - 1)
+                time.sleep(max(0., due - time.monotonic()))
+            measured_raw = {}
+            for name, motor_id in ARM_JOINTS:
+                goal = self._read(motor_id, 42)
+                if name not in expected:
+                    expected[name] = goal
+                if type(goal) is not int or goal != expected[name]:
+                    raise OSError(f'{name}: arm hold goal readback changed')
+                if not self.calibration[name]['range_min'] <= goal <= self.calibration[name]['range_max']:
+                    raise OSError(f'{name}: arm hold goal outside calibration')
+                torque, mode = self._read(motor_id, 40, 1), self._read(motor_id, 33, 1)
+                status, temperature = self._read(motor_id, 65, 1), self._read(motor_id, 63, 1)
+                encoded_offset = self._read(motor_id, 31)
+                offset = -(encoded_offset & 0x7ff) if encoded_offset & 0x800 else encoded_offset
+                if torque != 1 or mode != 0 or status != 0 or temperature >= 65:
+                    raise OSError(f'{name}: arm hold health not verified '
+                                  f'(torque={torque}, mode={mode}, status={status}, temperature={temperature})')
+                if offset != self.calibration[name].get('homing_offset'):
+                    raise OSError(f'{name}: arm hold homing offset changed')
+                health[name] = {'torque_enabled': True, 'mode': mode, 'status': status,
+                                'temperature_c': temperature, 'homing_offset': offset}
+                measured_raw[name] = self._read(motor_id, PRESENT_POSITION)
+            if self.calibration_status(measured_raw).get('valid') is not True:
+                raise OSError('Arm hold encoder feedback outside calibration')
+            measured = {name: raw_to_unit(raw, name, self.calibration[name]) for name, raw in measured_raw.items()}
+            goals = {name: raw_to_unit(raw, name, self.calibration[name]) for name, raw in expected.items()}
+            for name in names:
+                tolerance = 5. if name == 'gripper' else 2.
+                if abs(measured[name] - goals[name]) > tolerance:
+                    raise OSError(f'{name}: arm hold did not reach measured goal')
+                if reference is not None and abs(measured[name] - reference[name]) > tolerance:
+                    raise OSError(f'{name}: arm moved away from hold certificate')
+            samples.append(measured)
+            stamps.append(time.monotonic())
+        interval = stamps[-1] - stamps[0]
+        if interval + 1e-9 < HOLD_STABILITY_INTERVAL_S:
+            raise OSError('Arm hold sampling interval too short')
+        drift = {name: max(sample[name] for sample in samples) - min(sample[name] for sample in samples) for name in names}
+        drift_limits = {name: 2. if name == 'gripper' else .5 for name in names}
+        if any(drift[name] > drift_limits[name] for name in names):
+            raise OSError('Arm hold position is not stable')
+        return {'verified': True, 'revision': ARM_CONTROL_REVISION, 'calibration_id': self.calibration_id,
+                'timestamp': time.time(), 'held_goal_raw': expected, 'goals': goals,
+                'measured_raw': measured_raw, 'measured': samples[-1], 'health': health,
+                'stability': {'sample_count': len(samples), 'interval_s': interval,
+                              'max_drift': drift, 'limits': drift_limits},
+                'tolerances': {name: 5. if name == 'gripper' else 2. for name in names}}
+
+    def reconcile_hold(self, certificate):
+        """Recheck an existing hold using reads only; never replay a movement."""
+        goals = certificate.get('held_goal_raw') if isinstance(certificate, dict) else None
+        return self.verify_hold(goals, certificate=certificate)
+
+    def _recovery_eligibility(self, feedback, before, base_motion):
+        """Return conservative endpoint-only recovery evidence before hold checks."""
+        if 'gripper' in feedback['targets']:
+            return False, 'gripper_command_not_recoverable', {}
+        if base_motion is not None:
+            return False, 'base_motion_not_recoverable', {}
+        if (before.get('communication_retries') != [] or feedback['communication_recoveries']):
+            return False, 'communication_not_fully_acknowledged', {}
+        if self.calibration_status(before['raw']).get('valid') is not True:
+            return False, 'initial_calibration_invalid', {}
+        progress = {}
+        for name in feedback['failed_joints']:
+            initial = before['joints'][name]
+            requested_delta = feedback['targets'][name] - initial
+            remaining_error = abs(feedback['errors'][name])
+            reduction = abs(requested_delta) - remaining_error
+            required = max(1., .2 * abs(requested_delta))
+            before_target = requested_delta * (feedback['targets'][name] - feedback['measured'][name]) > 0
+            progress[name] = {'initial': initial, 'requested_delta': requested_delta,
+                              'error_reduction': reduction, 'required_progress': required,
+                              'remaining_error': remaining_error, 'before_target': before_target,
+                              'eligible': before_target and reduction >= required}
+        if not progress or not all(item['eligible'] for item in progress.values()):
+            return False, 'insufficient_joint_progress', progress
+        return True, 'hold_verification_required', progress
 
     def move(self, joints: dict, duration_ms: int, base_motion=None):
         if not self.valid_target(joints, duration_ms):
@@ -357,6 +479,7 @@ class ArmController:
                         tolerances = {name: 5 if name == "gripper" else 2 for name in joints}
                         self.last_motion = {
                             'targets': dict(joints), 'target_raw': dict(goals),
+                            'initial_joints': deepcopy(before['joints']), 'initial_raw': deepcopy(before['raw']),
                             'measured': dict(measured), 'measured_raw': dict(measured_raw),
                             'errors': errors, 'tolerances': tolerances,
                             'units': {name: '%' if name == 'gripper' else 'deg' for name in joints},
@@ -367,13 +490,34 @@ class ArmController:
                             'feedback_timeout_s': ARM_FEEDBACK_TIMEOUT_S,
                             'tolerance_deg': 2, 'tolerance_percent': 5, 'timestamp': time.time(),
                             'communication_recoveries': deepcopy(communication_recoveries),
+                            'recovery_eligible': False, 'recovery_reason': 'hold_not_verified', 'hold': None,
                         }
                         raise ArmTargetNotReached(self.last_motion)
                     # Retain the final goal while checking feedback. No goal,
                     # profile or torque writes are repeated during settling.
                     time.sleep(min(.05, max(0, deadline - sampled_at)))
-            except BaseException:
-                self.hold()
+            except BaseException as failure:
+                try:
+                    held_goals = self.hold()
+                except BaseException as hold_failure:
+                    if type(failure) is ArmTargetNotReached:
+                        self.last_motion.update(recovery_eligible=False, recovery_reason='hold_failed',
+                                                hold_error=str(hold_failure))
+                        failure.feedback = deepcopy(self.last_motion)
+                    raise
+                if type(failure) is ArmTargetNotReached:
+                    eligible, reason, progress = self._recovery_eligibility(self.last_motion, before, base_motion)
+                    self.last_motion.update(recovery_reason=reason, progress=progress)
+                    if eligible:
+                        try:
+                            certificate = self.verify_hold(held_goals)
+                        except Exception as verification_failure:
+                            self.last_motion.update(recovery_reason='hold_verification_failed',
+                                                    hold_error=str(verification_failure))
+                        else:
+                            self.last_motion.update(recovery_eligible=True, recovery_reason='verified_measured_hold',
+                                                    hold=certificate)
+                    failure.feedback = deepcopy(self.last_motion)
                 raise
             self._pending.clear()  # Successful trajectory keeps holding its target.
         measured = {name: raw_to_unit(self._mock_raw[name], name, self.calibration[name])

@@ -137,7 +137,7 @@ class ManualXYZ:
             run_id = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ') + '-manual-' + uuid4().hex[:8]
             runner = EpisodeRunner(None, self.tools, request.robot_id, '수동 XYZ 1회 이동',
                                    self.runs_dir / run_id, EpisodeLimits(1, 1, 90),
-                                   cartesian=cartesian, clock=self.clock)
+                                   cartesian=cartesian, clock=self.clock, allow_reconciliation=False)
             self.current_run_id = run_id
             await runner.observe()
             target = {'frame': 'arm_base', 'mode': 'relative', 'xyz_m': request.delta_m, 'approach_axis': None}
@@ -246,6 +246,13 @@ class ManualXYZ:
         except BaseException as exc:
             status = 'uncertain_execution' if runner.in_flight else exc.reason if isinstance(exc, EpisodeStopped) else 'host_error'
             detail = str(exc) or type(exc).__name__
+        if status == 'incomplete':
+            motion = ((runner.previous_result or {}).get('execution') or {}).get('arm_motion') or {}
+            targets, measured = motion.get('targets') or {}, motion.get('measured') or {}
+            values = [f'{name}: 목표 {target:.2f}°, 측정 {measured[name]:.2f}°'
+                      for name, target in targets.items()
+                      if type(target) in (int, float) and type(measured.get(name)) in (int, float)]
+            detail += (' ' + '; '.join(values)) if values else ''
         result = runner.finish(status, detail)
         self.last = {**result, 'run_id': view['run_id'], 'execution': (runner.previous_result or {}).get('execution')}
         self.current_run_id = None

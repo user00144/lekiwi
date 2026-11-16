@@ -24,9 +24,13 @@ class RobotClient:
         try:
             if request.get("op") == "observe":
                 reply.update(status="ok", **self.guard.observe())
+            elif request.get("op") == "reconcile":
+                reply.update(self.guard.reconcile(request))
             elif request.get("op") == "execute":
                 if GUARD_FIELDS.intersection(request):
                     reply.update(self.guard.execute(request))
+                elif self.guard.legacy_block_reason:
+                    reply.update(self.guard._reject(request, self.guard.legacy_block_reason))
                 else:
                     # Legacy clients retain the old wire format, but a legacy
                     # command always invalidates any guarded observation lease.

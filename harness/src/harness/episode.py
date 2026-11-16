@@ -19,6 +19,10 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from .tools import ARM_MAX_DURATION_MS, ARM_MIN_DURATION_MS, build_command
 
 
+MAX_ARM_RECONCILIATIONS = 2
+RECOVERY_ARM_JOINTS = {'shoulder_pan', 'shoulder_lift', 'elbow_flex', 'wrist_flex', 'wrist_roll'}
+
+
 class JointTargets(BaseModel):
     model_config = ConfigDict(extra='forbid', strict=True, allow_inf_nan=False)
     shoulder_pan: float | None
@@ -205,6 +209,10 @@ class MCPRobotTools:
     async def execute(self, robot_id, **arguments):
         return await self._call('execute', {'robot_id': robot_id, **arguments})
 
+    async def reconcile(self, robot_id, *, runtime_id, failed_action_id):
+        return await self._call('reconcile', {'robot_id': robot_id, 'runtime_id': runtime_id,
+                                             'failed_action_id': failed_action_id})
+
 
 class EpisodeRunner:
     """Testable loop: planner.decide(context, images), and observe/execute tools.
@@ -213,7 +221,7 @@ class EpisodeRunner:
     previously written action is never automatically replayed after restart.
     """
     def __init__(self, planner, tools, robot_id, instruction, run_dir, limits=None, *, clock=time.monotonic,
-                 cartesian=None):
+                 cartesian=None, allow_reconciliation=True):
         self.planner, self.tools = planner, tools
         self.cartesian = cartesian
         self.geometry = {'available': False, 'executable': False, 'frame': 'arm_base',
@@ -241,6 +249,13 @@ class EpisodeRunner:
         self.calibration_rejections = {}
         self.rejection_feedback = None
         self.repeat_block_count = 0
+        self.allow_reconciliation = allow_reconciliation
+        self.reconciliation_attempts = 0
+        self.reconciled_action_ids = set()
+        self.seen_observation_ids = set()
+        self.motion_failure_feedback = None
+        self.recovery_constraints = None
+        self.failed_motion_targets = set()
 
     def remaining(self):
         return self.limits.max_seconds - (self.clock() - self.started)
@@ -308,8 +323,34 @@ class EpisodeRunner:
         if (context.get('movement_allowed') is not True or type(age) not in (int, float) or
                 not math.isfinite(age) or age <= 0 or not images):
             raise EpisodeStopped('observation_invalid', 'Fresh usable camera/state observations are required')
-        if previous_id is not None and observation_id == previous_id:
+        incoming_constraints = context.get('recovery_constraints')
+        if incoming_constraints is not None:
+            recovery_capability = (packet.get('capabilities') or {}).get('arm_reconciliation')
+            if (type(recovery_capability) is not int or recovery_capability != 1
+                    or not self._valid_recovery_constraints(incoming_constraints)
+                    or incoming_constraints.get('runtime_id', runtime_id) != runtime_id):
+                raise EpisodeStopped('reconciliation_failed', 'Invalid runtime recovery constraints')
+            if self.recovery_constraints is None:
+                self.recovery_constraints = dict(incoming_constraints)
+                self.reconciliation_attempts = max(self.reconciliation_attempts,
+                                                   MAX_ARM_RECONCILIATIONS - incoming_constraints['remaining'])
+                self.motion_failure_feedback = {
+                    'resolved': False, 'failed_action_id': incoming_constraints.get('failed_action_id'),
+                    'runtime_id': runtime_id, 'failed_command': None, 'arm_motion': {},
+                    'recovery_constraints': dict(incoming_constraints),
+                    'measured_joints': (obs.get('ego') or {}).get('joints'),
+                    'guidance': 'The runtime retains an unresolved prior arm motion. Reinspect the current pose '
+                                'and propose a small revised arm action; do not claim completion.',
+                }
+                self.record.event('motion_failure_feedback', self.motion_failure_feedback)
+        if self.recovery_constraints is not None:
+            finished_recovery = (packet.get('status') == 'completed'
+                                 and (packet.get('execution') or {}).get('arm_reached') is True)
+            if not finished_recovery and incoming_constraints != self.recovery_constraints:
+                raise EpisodeStopped('reconciliation_failed', 'Recovery constraints changed or disappeared before a verified move')
+        if observation_id in self.seen_observation_ids or previous_id is not None and observation_id == previous_id:
             raise EpisodeStopped('observation_invalid', 'A new observation is required')
+        self.seen_observation_ids.add(observation_id)
         self.runtime_id = runtime_id
         self.packet, self.images, self.received_at = packet, images, self.clock()
         self._clear_recovered_calibration()
@@ -359,6 +400,8 @@ class EpisodeRunner:
             'robot_id': self.robot_id, 'task': self.instruction, 'current': self.packet,
             'previous_decision': self.previous_decision, 'previous_result': self.previous_result,
             'pending_motion_feedback': self.pending_feedback,
+            'motion_failure_feedback': self.motion_failure_feedback,
+            'recovery_constraints': self.recovery_constraints,
             'rejection_feedback': ({**self.rejection_feedback,
                                     'current_observation_id': self.packet['observation']['observation_id']}
                                    if self.rejection_feedback else None),
@@ -369,6 +412,7 @@ class EpisodeRunner:
             'completion_candidate': self.completion_candidate,
             'budget': {'actions_remaining': self.limits.max_actions - self.actions,
                        'decisions_remaining': self.limits.max_steps - self.steps,
+                       'arm_reconciliations_remaining': MAX_ARM_RECONCILIATIONS - self.reconciliation_attempts,
                        'seconds_remaining': max(0, round(self.remaining(), 2))},
         }
 
@@ -414,6 +458,14 @@ class EpisodeRunner:
                     self.completion_candidate = None
                     await self.observe()
                 elif decision.tool == 'task_complete':
+                    if self.motion_failure_feedback and self.motion_failure_feedback.get('resolved') is not True:
+                        self.completion_candidate = None
+                        self.record.event('decision_rejected', {
+                            'reason': 'incomplete_motion_requires_replan',
+                            'detail': 'Partial arm motion is not completion. Inspect measured state and plan a revised action.',
+                        })
+                        await self.observe()
+                        continue
                     if self.completion_candidate is not None:
                         self.claim = {'reason': decision.reason, 'evidence': decision.evidence,
                                       'observation_id': decision.observation_id,
@@ -449,6 +501,8 @@ class EpisodeRunner:
                   'observations': self.record.sequence, 'elapsed_s': round(self.clock() - self.started, 3),
                   'completion_claim': self.claim, 'physical_success_verified': False,
                   'rejection_feedback': self.rejection_feedback,
+                  'motion_failure_feedback': self.motion_failure_feedback,
+                  'reconciliation_attempts': self.reconciliation_attempts,
                   'pending_action_id': self.in_flight, 'automatic_resume': False,
                   'run_dir': str(self.record.path)}
         self.record.event('episode_finished', result)
@@ -459,6 +513,9 @@ class EpisodeRunner:
         if self.actions >= self.limits.max_actions:
             raise EpisodeStopped('budget_actions')
         command = decision.command.request()
+        requested_command = command
+        if not await self._recovery_command_allowed(command, resolved=False):
+            return
         if decision.command.cartesian is not None:
             request_signature = json.dumps(command, sort_keys=True)
             if request_signature in self.rejected_commands:
@@ -467,6 +524,8 @@ class EpisodeRunner:
             command = await self._resolve_cartesian(decision, command)
             if command is None:
                 return
+        if not await self._recovery_command_allowed(command, resolved=True):
+            return
         signature = json.dumps(command, sort_keys=True)
         if signature == self.rejected_signature:
             raise EpisodeStopped('repeated_failed_action', 'Change the rejected/failed command after inspecting feedback')
@@ -508,8 +567,14 @@ class EpisodeRunner:
             safe_rejection = status == 'rejected' and sent is False and execution.get('outcome') == 'rejected'
             confirmed = (status in ('completed', 'completed_without_observation') and type(sent) is bool
                          and execution.get('outcome') == 'completed')
-            if not safe_rejection and not confirmed:
+            incomplete = status == 'incomplete' and self._verified_incomplete(packet, action_id, command)
+            if not safe_rejection and not confirmed and not incomplete:
                 raise EpisodeStopped('uncertain_execution', f'Execution {status}: observation or result not confirmed')
+            if confirmed and self.recovery_constraints is not None and execution.get('arm_reached') is not True:
+                raise EpisodeStopped('uncertain_execution', 'Revised arm motion has no confirmed joint arrival')
+        if incomplete:
+            await self._reconcile_incomplete(packet, before, command, requested_command, action_id)
+            return
         if status == 'rejected' and sent is False and execution.get('outcome') == 'rejected':
             self.in_flight = None
             self.previous_result = packet
@@ -541,11 +606,223 @@ class EpisodeRunner:
         self._accept_observation(packet, images, previous_id=decision.observation_id)
         self.pending_feedback = self._feedback(before, self.packet, command, execution)
         self.record.event('motion_feedback', self.pending_feedback)
+        if self.recovery_constraints is not None:
+            retained = packet['action_context'].get('recovery_constraints')
+            if retained is not None:
+                self.recovery_constraints = dict(retained)
+                self.motion_failure_feedback = {
+                    **self.motion_failure_feedback, 'resolved': False,
+                    'current_observation_id': packet['observation']['observation_id'],
+                    'measured_joints': (packet['observation'].get('ego') or {}).get('joints'),
+                    'last_revised_action_id': action_id, 'recovery_constraints': dict(retained),
+                    'guidance': 'The revised endpoint was reached but the runtime has not verified enough '
+                                'target-directed progress. Keep the small arm-only constraints and replan; '
+                                'do not claim the prior failure resolved.',
+                }
+                self.record.event('motion_failure_feedback', self.motion_failure_feedback)
+                self.record.event('motion_replanning', self.motion_failure_feedback)
+            else:
+                if execution.get('arm_recovery_progress_verified') is not True:
+                    raise EpisodeStopped('reconciliation_failed', 'Runtime released recovery without verified measured progress')
+                self.recovery_constraints = None
+                self.motion_failure_feedback = {**self.motion_failure_feedback, 'resolved': True,
+                                                'resolved_by_action_id': action_id,
+                                                'resolution': 'Revised arm target reached with verified measured progress and a fresh observation'}
+                self.record.event('motion_recovery_completed', self.motion_failure_feedback)
         self.rejected_signature = signature if self.pending_feedback['no_joint_progress'] else None
         if command['action'] == 'move' and not self.pending_feedback['no_joint_progress']:
             self.rejected_commands.clear()
             self.rejection_feedback = None
             self.repeat_block_count = 0
+
+    @staticmethod
+    def _finite_number(value):
+        try:
+            return type(value) in (int, float) and math.isfinite(value)
+        except OverflowError:
+            return False
+
+    def _valid_hold(self, hold, calibration_id):
+        names = RECOVERY_ARM_JOINTS | {'gripper'}
+        return (isinstance(hold, dict) and hold.get('verified') is True
+                and isinstance(calibration_id, str) and bool(calibration_id)
+                and hold.get('calibration_id') == calibration_id
+                and self._finite_number(hold.get('timestamp')) and hold['timestamp'] > 0
+                and isinstance(hold.get('measured'), dict) and set(hold['measured']) == names
+                and all(self._finite_number(value) for value in hold['measured'].values()))
+
+    def _valid_recovery_constraints(self, constraints):
+        return (isinstance(constraints, dict)
+                and type(constraints.get('remaining')) is int
+                and 0 <= constraints['remaining'] < MAX_ARM_RECONCILIATIONS
+                and self._finite_number(constraints.get('max_joint_delta_deg'))
+                and 0 < constraints['max_joint_delta_deg'] <= 3.
+                and type(constraints.get('min_duration_ms')) is int
+                and 3000 <= constraints['min_duration_ms'] <= ARM_MAX_DURATION_MS)
+
+    def _verified_incomplete(self, packet, action_id, command):
+        """Recognize one typed, held, known partial motion; never infer from error text."""
+        execution = packet.get('execution') or {}
+        capability = (packet.get('capabilities') or {}).get('arm_reconciliation')
+        guarded = (packet.get('capabilities') or {}).get('guarded_execution')
+        recovery, context = packet.get('recovery'), packet.get('action_context')
+        motion = execution.get('arm_motion')
+        targets = command.get('joints')
+        calibration_id = (self.packet['observation'].get('ego') or {}).get('calibration_id')
+        if (type(capability) is not int or capability != 1 or type(guarded) is not int or guarded != 1
+                or execution.get('action_id') != action_id
+                or execution.get('outcome') != 'incomplete' or execution.get('command_sent') is not True
+                or execution.get('arm_reached') is not False or execution.get('arm_hold_verified') is not True
+                or command.get('action') != 'move' or any(command.get(axis) for axis in ('x', 'y', 'theta'))
+                or not isinstance(targets, dict) or not targets or not set(targets) <= RECOVERY_ARM_JOINTS
+                or not isinstance(motion, dict) or motion.get('targets') != targets
+                or motion.get('reached') is not False or motion.get('recovery_eligible') is not True
+                or motion.get('communication_recoveries') != []
+                or not self._valid_hold(motion.get('hold'), calibration_id)
+                or not self._finite_number(execution.get('motion_finished_at'))
+                or execution['motion_finished_at'] < motion['hold']['timestamp']
+                or not isinstance(recovery, dict) or recovery.get('failed_action_id') != action_id
+                or recovery.get('runtime_id') != self.runtime_id
+                or type(recovery.get('attempts_remaining')) is not int
+                or not 0 <= recovery['attempts_remaining'] <= MAX_ARM_RECONCILIATIONS
+                or not isinstance(context, dict) or context.get('runtime_id') != self.runtime_id
+                or context.get('movement_allowed') is not False
+                or context.get('reason') != 'arm_reconciliation_required'):
+            return False
+        return True
+
+    async def _reconcile_incomplete(self, packet, before, command, requested_command, action_id):
+        self.in_flight = None  # The exact known partial result and measured hold were verified above.
+        self.previous_result = packet
+        self.before_images = self.images
+        self.completion_candidate = None
+        execution, recovery = packet['execution'], packet['recovery']
+        self.failed_motion_targets.update((json.dumps(command, sort_keys=True),
+                                           json.dumps(requested_command, sort_keys=True)))
+        self.motion_failure_feedback = {
+            'resolved': False, 'failed_action_id': action_id, 'runtime_id': self.runtime_id,
+            'failed_command': command, 'failed_request': requested_command,
+            'execution': execution, 'arm_motion': execution['arm_motion'],
+            'measured_joints': execution['arm_motion']['hold']['measured'],
+            'reconciliation_attempts': self.reconciliation_attempts,
+            'guidance': 'Known partial motion with a verified held pose. Do not claim completion or replay '
+                        'the failed command. Reinspect fresh feedback and propose one revised bounded arm action.',
+        }
+        self.record.event('motion_incomplete', self.motion_failure_feedback)
+        if not self.allow_reconciliation:
+            raise EpisodeStopped('incomplete', '목표에 도달하지 못했으며 측정 자세 유지를 확인했습니다. 새 관찰로 재계획이 필요합니다.')
+        if (self.reconciliation_attempts >= MAX_ARM_RECONCILIATIONS or recovery['attempts_remaining'] <= 0
+                or recovery.get('eligible') is not True or action_id in self.reconciled_action_ids):
+            raise EpisodeStopped('recovery_exhausted', 'Bounded arm reconciliation is unavailable or exhausted')
+        if self.actions >= self.limits.max_actions:
+            raise EpisodeStopped('budget_actions', 'No action budget remains for a revised arm command')
+        if self.steps >= self.limits.max_steps:
+            raise EpisodeStopped('budget_steps', 'No decision budget remains for arm replanning')
+        if self.remaining() <= 3.:
+            raise EpisodeStopped('budget_seconds', 'Insufficient time for a constrained revised arm action')
+        self.reconciliation_attempts += 1
+        self.reconciled_action_ids.add(action_id)
+        previous_id = before['observation']['observation_id']
+        async with self.phase('reconcile', failed_action_id=action_id,
+                              reconciliation_attempt=self.reconciliation_attempts) as phase:
+            try:
+                response, images = decode_content(await self.bounded(lambda: self.tools.reconcile(
+                    self.robot_id, runtime_id=self.runtime_id, failed_action_id=action_id)))
+            except (asyncio.CancelledError, EpisodeStopped, TimeoutError):
+                raise
+            except Exception as exc:
+                raise EpisodeStopped('reconciliation_failed', f'Fresh held-state verification failed: {exc}') from exc
+            self.record.event('reconcile_result', {'failed_action_id': action_id, 'packet': response})
+            constraints = self._validate_reconciled(response, execution, recovery, images)
+            self._check_post_motion(response, command, execution)
+            self.recovery_constraints = constraints
+            self._accept_observation(response, images, previous_id=previous_id)
+            self.pending_feedback = {**self._feedback(before, response, command, execution),
+                                     'motion_incomplete': True, 'arm_reached': False}
+            self.record.event('motion_feedback', self.pending_feedback)
+            self.motion_failure_feedback = {
+                **self.motion_failure_feedback, 'current_observation_id': self.packet['observation']['observation_id'],
+                'measured_joints': self.packet['observation']['ego']['joints'],
+                'recovery_constraints': dict(constraints), 'reconciliation_attempts': self.reconciliation_attempts,
+            }
+            self.record.event('motion_failure_feedback', self.motion_failure_feedback)
+            self.record.event('motion_replanning', {'failed_action_id': action_id,
+                                                   'recovery_constraints': dict(constraints)})
+            phase['observation_id'] = self.packet['observation']['observation_id']
+
+    def _validate_reconciled(self, response, execution, prior_recovery, images):
+        recovery, context = response.get('recovery'), response.get('action_context')
+        capability = (response.get('capabilities') or {}).get('arm_reconciliation')
+        if (response.get('status') != 'ok' or type(capability) is not int or capability != 1
+                or not isinstance(recovery, dict) or recovery.get('reconciled') is not True
+                or recovery.get('failed_action_id') != prior_recovery['failed_action_id']
+                or recovery.get('runtime_id') != self.runtime_id or not isinstance(context, dict)
+                or context.get('runtime_id') != self.runtime_id):
+            raise EpisodeStopped('reconciliation_failed', 'Reconciliation identity or result was not verified')
+        constraints = context.get('recovery_constraints')
+        remaining = recovery.get('attempts_remaining')
+        if (not isinstance(constraints, dict) or type(remaining) is not int
+                or remaining != prior_recovery['attempts_remaining'] - 1
+                or not 0 <= remaining < MAX_ARM_RECONCILIATIONS
+                or type(constraints.get('remaining')) is not int or constraints['remaining'] != remaining
+                or not self._finite_number(constraints.get('max_joint_delta_deg'))
+                or not 0 < constraints['max_joint_delta_deg'] <= 3.
+                or type(constraints.get('min_duration_ms')) is not int
+                or not 3000 <= constraints['min_duration_ms'] <= ARM_MAX_DURATION_MS):
+            raise EpisodeStopped('reconciliation_failed', 'Reconciliation did not provide bounded arm constraints')
+        observation = response.get('observation') or {}
+        ego = observation.get('ego') or {}
+        joints = ego.get('joints')
+        hold = recovery.get('hold')
+        prior_hold = execution['arm_motion']['hold']
+        wrist = (observation.get('cameras') or {}).get('wrist') or {}
+        if (not self._valid_hold(hold, prior_hold['calibration_id'])
+                or hold['timestamp'] <= execution['motion_finished_at']
+                or ego.get('available') is not True or ego.get('error')
+                or ego.get('calibration_id') != prior_hold['calibration_id']
+                or (ego.get('calibration_status') or {}).get('valid') is not True
+                or not self._finite_number(ego.get('timestamp')) or ego['timestamp'] <= hold['timestamp']
+                or not isinstance(joints, dict) or not (RECOVERY_ARM_JOINTS | {'gripper'}) <= set(joints)
+                or not all(self._finite_number(joints[name]) for name in RECOVERY_ARM_JOINTS | {'gripper'})
+                or any(abs(joints[name] - hold['measured'][name]) > (2. if name == 'gripper' else .5)
+                       for name in RECOVERY_ARM_JOINTS | {'gripper'})
+                or not self._finite_number(wrist.get('timestamp')) or wrist['timestamp'] <= hold['timestamp']
+                or not any(label == 'wrist' for label, _, _ in images)):
+            raise EpisodeStopped('reconciliation_failed', 'Fresh calibrated joint feedback and hold certificate are required')
+        return dict(constraints)
+
+    async def _recovery_command_allowed(self, command, *, resolved):
+        if self.recovery_constraints is None:
+            return True
+        failure = None
+        if json.dumps(command, sort_keys=True) in self.failed_motion_targets:
+            failure = 'The failed command was repeated unchanged; propose a revised request after inspecting feedback'
+        elif command.get('action') != 'move' or any(command.get(axis) for axis in ('x', 'y', 'theta')):
+            failure = 'Reconciled motion must be an arm-only move with zero base velocity'
+        elif command.get('duration_ms', 0) < self.recovery_constraints['min_duration_ms']:
+            failure = 'Reconciled arm motion must use at least the requested recovery duration'
+        elif resolved:
+            joints = command.get('joints')
+            measured = (self.packet['observation'].get('ego') or {}).get('joints') or {}
+            maximum = self.recovery_constraints['max_joint_delta_deg']
+            if not isinstance(joints, dict) or not joints or not set(joints) <= RECOVERY_ARM_JOINTS:
+                failure = 'Reconciled motion cannot command the gripper, base, or an empty arm target'
+            elif any(not self._finite_number(measured.get(name)) or abs(value - measured[name]) > maximum
+                     for name, value in joints.items()):
+                failure = 'Reconciled joint targets must stay within 3 degrees of the fresh measured pose'
+        if failure is None:
+            return True
+        self.rejection_feedback = {
+            'source': 'host', 'command': command, 'command_sent': False,
+            'error_code': 'arm_recovery_constraints', 'error': failure,
+            'error_details': {'recovery_constraints': self.recovery_constraints},
+            'current_observation_id': self.packet['observation']['observation_id'],
+            'guidance': 'Read motion_failure_feedback and choose a changed, slow, small arm-only request. '
+                        'Never repeat the failed command or treat its partial movement as completion.',
+        }
+        self.record.event('decision_rejected', self.rejection_feedback)
+        await self._reobserve_rejection()
+        return False
 
     async def _reject_repeated(self, command, failure, observation_id):
         # Both host IK rejection and explicit runtime rejection guarantee no motion

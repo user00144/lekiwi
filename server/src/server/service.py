@@ -27,6 +27,11 @@ class ServerService:
                 response = await self.robot_server.observe(robot_id)
             elif request["op"] == "execute":
                 response = await self.robot_server.execute(robot_id, request["command"])
+            elif request["op"] == "reconcile":
+                if set(request) != {"op", "robot_id", "runtime_id", "failed_action_id"}:
+                    raise ValueError("reconcile accepts only robot_id, runtime_id and failed_action_id")
+                response = await self.robot_server.reconcile(
+                    robot_id, request["runtime_id"], request["failed_action_id"])
             else:
                 raise ValueError("Unknown operation")
         except TimeoutError:

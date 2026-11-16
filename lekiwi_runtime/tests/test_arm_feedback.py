@@ -97,7 +97,7 @@ class ArmFeedbackTest(unittest.TestCase):
         self.assertFalse(arm._pending)
         fresh = arm.read_ego()
         self.assertTrue(fresh['available'])
-        self.assertEqual(fresh['control']['revision'], 'bounded-settling-v2')
+        self.assertEqual(fresh['control']['revision'], 'verified-arm-reconcile-v3')
         self.assertEqual(fresh['control']['feedback_timeout_s'], 2.)
         self.assertEqual(fresh['control']['max_duration_ms'], 10000)
         self.assertEqual(fresh['last_motion'], feedback)
