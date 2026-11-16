@@ -21,6 +21,7 @@ from starlette.routing import Route
 from .episode import EpisodeLimits, atomic_json
 from .episode_runtime import run_episode
 from .gui_preview import PreviewInput, calculate_preview
+from .manual_xyz import ExecuteInput, ManualBusy, ManualXYZ, PrepareInput
 
 
 DEFAULT_LIMITS = {'max_actions': 20, 'max_steps': 40, 'max_seconds': 300}
@@ -117,6 +118,7 @@ class GuiController:
         self.stopping = False
         self.requests = {}
         self.preview_lock = asyncio.Lock()
+        self.manual = ManualXYZ(self.runs_dir, self.server, self.kinematics_config)
 
     def preview(self, request):
         observed = None
@@ -150,6 +152,8 @@ class GuiController:
             request = request.model_copy(update={'model': self.model})
         if self.task is not None and not self.task.done():
             raise BusyError('An episode is already active; wait for its cleanup to finish')
+        if self.manual.reserved():
+            raise BusyError('수동 XYZ 이동을 계산/실행 중입니다. 먼저 실행 또는 취소해주세요.')
         run_id = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ') + '-' + uuid4().hex[:8]
         pending = request.model_dump()
         pending['mode'] = self.mode
@@ -231,6 +235,7 @@ class GuiController:
         return {'id': run_id, 'status': 'stopping'}
 
     async def close(self):
+        await self.manual.close()
         if self.task is not None and not self.task.done():
             await self.stop(self.active_run_id)
             try:
@@ -289,8 +294,9 @@ class GuiController:
         request = self.requests.get(run_id) or read_json(path / 'gui_request.json') or record
         result = read_json(path / 'result.json') or None
         events = read_events(path / 'events.jsonl')
-        active = self._is_active(run_id)
-        status = (result or {}).get('status', 'starting' if active else 'interrupted_unknown')
+        manual_phase = self.manual.phase_for_run(run_id)
+        active = self._is_active(run_id) or manual_phase is not None
+        status = manual_phase or (result or {}).get('status', 'starting' if active else 'interrupted_unknown')
         if active and self.stopping:
             status = 'stopping'
         elif not active and status in ('running', 'starting'):
@@ -343,8 +349,9 @@ class GuiController:
                 path = self._run_path(run_id, exists=run_id not in self.requests)
                 record = self.requests.get(run_id) or read_json(path / 'run.json')
                 result = read_json(path / 'result.json')
-                active = self._is_active(run_id)
-                status = result.get('status', 'starting' if active else 'interrupted_unknown')
+                manual_phase = self.manual.phase_for_run(run_id)
+                active = self._is_active(run_id) or manual_phase is not None
+                status = manual_phase or result.get('status', 'starting' if active else 'interrupted_unknown')
                 if active and self.stopping:
                     status = 'stopping'
                 elif not active and status in ('running', 'starting'):
@@ -357,7 +364,7 @@ class GuiController:
         return {'mode': self.mode, 'config': {'server': self.server, 'robot_id': self.robot_id,
                                             'model': self.model, 'limits': dict(DEFAULT_LIMITS),
                                             'kinematics_configured': self.kinematics_config is not None},
-                'capabilities': {'xyz_preview': 1},
+                'capabilities': {'xyz_preview': 1, 'manual_xyz': 1 if self.mode == 'live' else 0},
                 'active_run_id': active_id, 'runs': runs,
                 'active': self.run_view(active_id) if active_id is not None else None}
 
@@ -405,7 +412,7 @@ async def json_body(request):
 
 def create_app(controller=None, *, port=8765, static_dir=None):
     controller = controller or GuiController()
-    static = Path(static_dir) if static_dir is not None else Path(__file__).parent / 'static'
+    static = (Path(static_dir) if static_dir is not None else Path(__file__).parent / 'static').resolve()
 
     @asynccontextmanager
     async def lifespan(app):
@@ -413,7 +420,34 @@ def create_app(controller=None, *, port=8765, static_dir=None):
         await controller.close()
 
     async def state(request):
-        return JSONResponse(await asyncio.to_thread(controller.snapshot))
+        value = await asyncio.to_thread(controller.snapshot)
+        # Reservation expiry mutates a run journal; keep it on the event-loop thread.
+        value['manual_xyz'] = controller.manual.snapshot()
+        return JSONResponse(value)
+
+    async def manual(request):
+        try:
+            if controller.mode != 'live':
+                raise ValueError('데모 GUI는 실제 로봇에 연결하지 않습니다.')
+            operation = request.path_params['operation']
+            payload = await json_body(request)
+            if operation == 'cancel':
+                if payload:
+                    raise ValueError('취소 요청에는 추가 필드가 필요하지 않습니다.')
+                return JSONResponse(controller.manual.cancel())
+            if controller.task is not None and not controller.task.done():
+                raise ManualBusy('에이전트 작업이 실행 중입니다. 종료 후 수동 실험을 시작해주세요.')
+            if operation == 'prepare':
+                return JSONResponse(await controller.manual.prepare(PrepareInput.model_validate(payload)))
+            if operation == 'execute':
+                return JSONResponse(controller.manual.execute(ExecuteInput.model_validate(payload)), 202)
+            return JSONResponse({'error': 'Unknown manual operation'}, 404)
+        except ManualBusy as exc:
+            return JSONResponse({'error': str(exc)}, 409)
+        except (ValueError, TypeError, OSError) as exc:
+            return JSONResponse({'error': str(exc)}, 400)
+        except Exception as exc:
+            return JSONResponse({'error': str(exc) or type(exc).__name__}, 503)
 
     async def detail(request):
         try:
@@ -467,13 +501,27 @@ def create_app(controller=None, *, port=8765, static_dir=None):
             return JSONResponse({'error': 'GUI asset not found'}, 404)
         return FileResponse(path)
 
+    async def viewer_assets(request):
+        relative = request.path_params['path']
+        root = static if request.url.path.startswith('/static/') else Path(__file__).parent / 'data'
+        path = root / relative
+        allowed = ((relative == 'urdf-viewer.js' or relative.startswith('vendor/') and relative.endswith('.js'))
+                   if root == static else (relative == 'so101_new_calib.urdf' or
+                       re.fullmatch(r'assets/[A-Za-z0-9_]+\.stl', relative)))
+        if not allowed or path.resolve() != path or not path.is_file():
+            return JSONResponse({'error': 'Viewer asset not found'}, 404)
+        media_type = 'application/xml' if path.suffix == '.urdf' else 'text/javascript' if path.suffix == '.js' else 'application/octet-stream'
+        return FileResponse(path, media_type=media_type)
+
     app = Starlette(lifespan=lifespan, routes=[
         Route('/api/state', state), Route('/api/runs', start, methods=['POST']),
         Route('/api/kinematics/preview', preview, methods=['POST']),
+        Route('/api/manual-xyz/{operation}', manual, methods=['POST']),
         Route('/api/runs/{run_id}/stop', stop, methods=['POST']),
         Route('/api/runs/{run_id}/files/{path:path}', files), Route('/api/runs/{run_id}', detail),
         Route('/', assets), Route('/console.css', assets), Route('/console.js', assets),
         Route('/static/console.css', assets), Route('/static/console.js', assets),
+        Route('/static/{path:path}', viewer_assets), Route('/models/{path:path}', viewer_assets),
     ])
     app.state.controller = controller
     app.add_middleware(LocalOnly, port=port)

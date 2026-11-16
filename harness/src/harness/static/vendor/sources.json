@@ -1,0 +1,4 @@
+{
+  "three": {"version": "0.177.0", "source": "https://registry.npmjs.org/three/-/three-0.177.0.tgz", "license": "MIT", "license_file": "three/LICENSE"},
+  "urdf-loader": {"version": "0.12.6", "source": "https://registry.npmjs.org/urdf-loader/-/urdf-loader-0.12.6.tgz", "license": "Apache-2.0", "license_file": "urdf-loader/LICENSE", "license_source": "https://github.com/gkjohnson/urdf-loaders/blob/v0.12.6/LICENSE"}
+}

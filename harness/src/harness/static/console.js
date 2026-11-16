@@ -7,6 +7,7 @@
     started: false, busy: false, stoppingId: null, connected: false,
     timelineKey: null, historyKey: null, imageView: "current", announcement: null,
   };
+  const manual = {view: null, busy: false, dirty: false, key: null, lastKey: null, lastRun: null, visualReady: false};
   const preview = {data: null, busy: false, initialized: false, runsKey: null};
   const statusLabels = {
     idle: "대기", running: "실행 중", starting: "준비 중", stopping: "중지 중",
@@ -18,7 +19,7 @@
     recorded_observation: "기록 실행 불가", runtime_changed: "로봇 연결 변경",
     invalid_decision: "판단 확인 필요", repeated_failed_action: "반복 행동 중단",
     host_error: "실행 오류", gui_error: "GUI 실행 오류", startup_error: "시작 실패", error: "오류", cancelled: "취소됨",
-    interrupted_unknown: "종료 상태 미확정",
+    interrupted_unknown: "종료 상태 미확정", preparing: "상태 확인 중", completed: "이동 응답 확인", expired: "계산 만료", prepared: "이동 준비", rejected: "이동 거부", executing: "이동 중",
   };
   const toolLabels = {observe: "재관찰", execute: "행동 실행", task_complete: "완료 주장", blocked: "작업 보류"};
   const feedbackLabels = {initial: "첫 판단", progress: "진전 확인", stalled: "진전 없음", uncertain: "판단 유보"};
@@ -30,7 +31,7 @@
     action_started: "행동 실행", action_finished: "행동 응답", action_result: "실행 결과",
     motion_feedback: "실행 전후 비교", rejection_feedback: "명령 거부 · 재관찰 후 수정", completion_candidate: "완료 주장 · 재관찰 요청",
     episode_finished: "작업 종료", stopping: "루프 중지 요청", stop_requested: "루프 중지 요청",
-    error: "오류",
+    manual_operator_confirmation: "사용자 1회 이동 확인", error: "오류",
   };
   const jointLabels = {shoulder_pan: "어깨 회전", shoulder_lift: "어깨 높이", elbow_flex: "팔꿈치", wrist_flex: "손목 굽힘", wrist_roll: "손목 회전", gripper: "그리퍼"};
   const rejectionLabels = {
@@ -103,6 +104,7 @@
     target.firstChild.setAttribute("aria-hidden", "true");
     updateControls();
     previewControls();
+    manualControls();
   }
 
   function initialize(config) {
@@ -119,7 +121,7 @@
     const activeId = state.server?.active_run_id;
     const readingOther = state.selectedId && state.selectedId !== activeId;
     const active = Boolean(activeId);
-    $("start").disabled = !state.connected || active || state.busy;
+    $("start").disabled = !state.connected || active || state.busy || manual.busy || Boolean(state.server?.manual_xyz?.busy || state.server?.manual_xyz?.prepared);
     $("stop").disabled = !state.connected || !active || Boolean(readingOther) || state.stoppingId === activeId || state.busy;
     const mode = state.server?.mode;
     text("start-label", state.busy ? "작업 시작 중…" : mode === "demo" ? "데모 루프 실행" : "로봇 에이전트 실행");
@@ -135,6 +137,8 @@
 
   function phaseInfo(run) {
     const phase = String(run?.phase || "").toLowerCase();
+    if (phase === "prepared") return ["reviewing", "수동 XYZ 목표 확인을 기다립니다"];
+    if (phase === "preparing") return ["observing", "수동 XYZ 이동을 위한 관찰과 계산 중입니다"];
     if (run?.status === "stopping" || state.stoppingId === run?.id) return ["reviewing", "다음 행동을 중지하고 있습니다"];
     if (/action|execut|mov/.test(phase)) return ["executing", "로봇이 한 행동을 실행하고 있습니다"];
     if (/plan|thinking|decid|decision/.test(phase)) return ["thinking", "관찰을 바탕으로 다음 행동을 판단합니다"];
@@ -343,57 +347,32 @@
     kinematicReasons(parent, data);
   }
 
-  function svgNode(tag, attributes, content) {
-    const element = document.createElementNS("http://www.w3.org/2000/svg", tag);
-    for (const [key, value] of Object.entries(attributes)) element.setAttribute(key, String(value));
-    if (content) element.textContent = content;
-    return element;
+  let viewerModule;
+  const renderVersions = new Map();
+  async function drawRobot(prefix, data) {
+    const element = $(`${prefix}-plot`), version = (renderVersions.get(prefix) || 0) + 1;
+    renderVersions.set(prefix, version);
+    element.dataset.fkMatch = "false";
+    if (prefix === "manual") manual.visualReady = false;
+    for (const option of $(`${prefix}-display`).options) option.disabled = option.value !== "current" && !data?.result?.success;
+    if (!data?.result?.success) $(`${prefix}-display`).value = "current";
+    const target = data?.result?.target_xyz_m, current = data?.state?.current_xyz_m;
+    text(`${prefix}-movement`, target && current
+      ? "팔 끝 목표 이동: " + target.map((v, i) => `${["X", "Y", "Z"][i]} ${(1000 * (v - current[i])).toFixed(1)} mm`).join(" · ")
+      : "현재 자세 · 목표 계산 전");
+    try {
+      viewerModule ||= import("/static/urdf-viewer.js");
+      const module = await viewerModule;
+      if (renderVersions.get(prefix) !== version) return;
+      await module.updateViewer(element, data, $(`${prefix}-view`).value, $(`${prefix}-display`).value);
+      if (renderVersions.get(prefix) !== version) return;
+      if (prefix === "manual") manual.visualReady = element.dataset.fkMatch === "true";
+    } catch (error) {
+      element.dataset.fkMatch = "false";
+      element.replaceChildren(node("p", "kinematics-reason", `3D 표시 오류: ${error.message}`));
+    } finally { if (prefix === "manual") manualControls(); }
   }
-
-  function drawPreview() {
-    const svg = $("xyz-plot");
-    svg.replaceChildren();
-    const data = preview.data;
-    const current = data?.current_points || [];
-    const solved = data?.solution_points || [];
-    const target = data?.result?.target_xyz_m;
-    const view = $("xyz-view").value;
-    const projection = ([x, y, z]) => view === "xz" ? [x, -z] : view === "xy" ? [x, -y]
-      : view === "yz" ? [y, -z] : [(x - y) * 0.86, (x + y) * 0.38 - z];
-    const axis = [[.1, 0, 0], [0, .1, 0], [0, 0, .1]];
-    const vectors = [[0, 0, 0], ...axis, ...current.map(p => p.xyz_m), ...solved.map(p => p.xyz_m)];
-    if (vectorLabel(target)) vectors.push(target);
-    const projected = vectors.map(projection);
-    const low = [Math.min(...projected.map(p => p[0])), Math.min(...projected.map(p => p[1]))];
-    const high = [Math.max(...projected.map(p => p[0])), Math.max(...projected.map(p => p[1]))];
-    const scale = Math.min(320 / Math.max(.2, high[0] - low[0]), 210 / Math.max(.2, high[1] - low[1]));
-    const screen = v => { const p = projection(v); return [210 + (p[0] - (low[0] + high[0]) / 2) * scale, 155 + (p[1] - (low[1] + high[1]) / 2) * scale]; };
-    for (let x = 20; x < 420; x += 20) svg.append(svgNode("line", {x1: x, y1: 0, x2: x, y2: 310, stroke: "#edf0e8"}));
-    for (let y = 15; y < 310; y += 20) svg.append(svgNode("line", {x1: 0, y1: y, x2: 420, y2: y, stroke: "#edf0e8"}));
-    const origin = screen([0, 0, 0]);
-    axis.forEach((value, i) => {
-      const end = screen(value);
-      if (Math.hypot(end[0] - origin[0], end[1] - origin[1]) < 1) return;
-      svg.append(svgNode("line", {x1: origin[0], y1: origin[1], x2: end[0], y2: end[1], stroke: "#aeb8ad", "stroke-dasharray": "3 3"}));
-      svg.append(svgNode("text", {x: end[0] + 5, y: end[1] - 5, fill: "#738078", "font-size": 11}, ["X", "Y", "Z"][i]));
-    });
-    const arm = (points, color, dashed) => {
-      if (!points.length) return;
-      svg.append(svgNode("polyline", {points: points.map(p => screen(p.xyz_m).join(",")).join(" "), fill: "none", stroke: color, "stroke-width": 5, "stroke-linecap": "round", "stroke-linejoin": "round", ...(dashed ? {"stroke-dasharray": "7 5"} : {})}));
-      points.forEach(point => {
-        const [cx, cy] = screen(point.xyz_m);
-        const circle = svgNode("circle", {cx, cy, r: 4, fill: "white", stroke: color, "stroke-width": 2});
-        circle.append(svgNode("title", {}, `${point.name}: ${vectorLabel(point.xyz_m)}`));
-        svg.append(circle);
-      });
-    };
-    arm(current, "#98a49a", true); arm(solved, "#326a4e", false);
-    if (vectorLabel(target)) {
-      const [x, y] = screen(target);
-      svg.append(svgNode("path", {d: `M${x - 7},${y}h14 M${x},${y - 7}v14`, stroke: "#b87e32", "stroke-width": 2.5}));
-    }
-    svg.append(svgNode("text", {x: 15, y: 292, fill: "#738078", "font-size": 10}, "기준축 길이 0.1 m · 화면 크기에 맞춰 표시"));
-  }
+  function drawPreview() { drawRobot("xyz", preview.data); }
 
   function previewControls() {
     const enabled = state.server?.capabilities?.xyz_preview === 1 && state.connected;
@@ -430,7 +409,7 @@
     if (!data) { output.append(node("p", "kinematics-note", "자세를 불러와 현재 XYZ를 확인하세요.")); drawPreview(); return; }
     text("xyz-provenance", data.source.kind === "model"
       ? "입력 기준: URDF 예시 관절각 · 로봇에 연결하지 않은 모델 계산"
-      : `입력 기준: 저장 관찰 ${shortId(data.source.observation_id)} · ${historyDate(data.source.at)} · 새 관찰을 사용하려면 ‘자세 불러오기’를 누르세요.`);
+      : `입력 기준: 저장 관찰 ${shortId(data.source.observation_id)} · ${historyDate(data.source.at)} · 선택한 기록의 최신 관찰은 ‘자세 불러오기’로 갱신하세요.`);
     eventLine(output, "시작 XYZ", vectorLabel(data.state.current_xyz_m) || "관절 정보를 읽을 수 없습니다.");
     if (data.result) {
       const [summary, tone] = ikStatus(data.result);
@@ -738,6 +717,8 @@
     renderHistory(state.server?.runs || []);
     updateControls();
     updatePreviewSources();
+    text("xyz-agent-state", state.server?.active_run_id ? "에이전트 실행 중 · 관찰 → 판단 → 행동 → 결과 확인" : "에이전트 대기 · 현재 실행 중인 추론 작업이 없습니다.");
+    syncManual();
   }
 
   async function poll() {
@@ -748,6 +729,7 @@
       initialize(snapshot.config || {});
       setConnection(true);
       if (wasDisconnected && $("notice").dataset.connectionError === "true") { notice(""); delete $("notice").dataset.connectionError; }
+      if (state.selectedId && state.selectedRun?.active) state.selectedRun = await api(`/api/runs/${encodeURIComponent(state.selectedId)}`);
       if (snapshot.active) state.currentRun = snapshot.active;
       else if (state.currentRun?.active) state.currentRun = await api(`/api/runs/${encodeURIComponent(state.currentRun.id)}`);
       if (!snapshot.active_run_id) state.stoppingId = null;
@@ -788,6 +770,7 @@
   $("xyz-load").addEventListener("click", () => requestPreview(false));
   $("xyz-source").addEventListener("change", () => { preview.data = null; renderPreview(); requestPreview(false); });
   $("xyz-view").addEventListener("change", drawPreview);
+  $("xyz-display").addEventListener("change", drawPreview);
   $("xyz-form").addEventListener("input", event => {
     if (event.target.id === "xyz-source") return;
     if (preview.data) {
@@ -797,6 +780,132 @@
       text("xyz-provenance", "입력값이 바뀌었습니다. 미리보기 계산을 눌러 결과를 갱신하세요.");
     }
   });
+
+  function manualControls() {
+    const remote = state.server?.manual_xyz, busy = manual.busy || remote?.busy;
+    const enabled = state.connected && state.server?.capabilities?.manual_xyz === 1;
+    const agentActive = Boolean(state.server?.active_run_id);
+    text("manual-availability", !state.connected ? "GUI 연결을 기다리고 있습니다." : !enabled
+      ? state.server?.mode === "demo" ? "데모 화면에서는 실제 팔을 움직일 수 없습니다." : "GUI 서버를 다시 실행하면 수동 XYZ 이동을 사용할 수 있습니다."
+      : agentActive ? "에이전트 작업이 끝난 뒤 수동 실험을 시작하세요." : "이동량은 팔 장착부의 X·Y·Z 축 기준입니다. 먼저 Z +5mm로 계산해 보세요.");
+    for (const input of $("manual-form").querySelectorAll("input, select, button")) input.disabled = !enabled || busy || agentActive;
+    for (const input of $("manual-mapping-inputs").querySelectorAll("input, select")) input.disabled ||= !$("manual-custom-mapping").checked;
+    text("manual-prepare", busy ? remote?.phase === "executing" ? "이동 결과를 기다리는 중…" : "현재 상태 확인 중…" : "① 로봇 상태 읽고 계산 · 아직 이동 안 함");
+    const view = manual.view, valid = view?.ready && view.token && view.expires_at * 1000 > Date.now();
+    $("manual-execute").disabled = !enabled || busy || agentActive || !valid || manual.dirty || !manual.visualReady
+      || !$("manual-clearance").checked || (view?.requires_alignment_confirmation && !$("manual-alignment").checked);
+    $("manual-cancel").disabled = busy || !state.connected || !remote?.prepared;
+    $("manual-alignment").disabled = busy || !valid;
+    $("manual-clearance").disabled = busy || !valid;
+    text("manual-expiry", manual.dirty ? "입력값이 바뀌었습니다. ① 버튼으로 다시 계산하세요." : valid
+      ? `계산 유효시간 ${Math.max(0, Math.ceil(view.expires_at - Date.now() / 1000))}초 · 실행하면 이 계산은 다시 사용할 수 없습니다.`
+      : view ? "이 계산은 전송할 수 없습니다. ① 버튼으로 상태를 다시 읽으세요." : "");
+    updateControls();
+  }
+
+  function showManual(view) {
+    manual.view = view; manual.key = view?.token || view?.run_id; manual.dirty = false;
+    $("manual-alignment").checked = false; $("manual-clearance").checked = false;
+    $("manual-review").hidden = !view;
+    if (!view) { manualControls(); return; }
+    $("manual-alignment-label").hidden = !view.requires_alignment_confirmation;
+    $("manual-cameras").replaceChildren();
+    for (const camera of view.images || []) {
+      const figure = node("figure"), img = node("img"), caption = node("figcaption", "", camera.label);
+      img.src = camera.url; img.alt = `${camera.label} · 계산 직전 관찰`; figure.append(img, caption); $("manual-cameras").append(figure);
+    }
+    const output = $("manual-targets"); output.replaceChildren();
+    eventLine(output, "대상 로봇", view.robot_id);
+    eventLine(output, "현재 XYZ", vectorLabel(view.state?.current_xyz_m));
+    eventLine(output, "목표 XYZ", vectorLabel(view.result?.target_xyz_m));
+    eventLine(output, "동작", "1초 · 베이스와 집게 벌림 유지");
+    const table = node("table", "manual-joints"), head = node("tr");
+    for (const title of ["관절", "현재", "목표", "변화량"]) head.append(node("th", "", title));
+    table.append(head);
+    for (const [name, delta] of Object.entries(view.joint_delta_deg || {})) {
+      const row = node("tr");
+      for (const value of [jointLabels[name], `${view.state.current_runtime_joints_deg[name].toFixed(2)}°`, `${view.result.solution_runtime_joints_deg[name].toFixed(2)}°`, `${delta >= 0 ? "+" : ""}${delta.toFixed(2)}°`]) row.append(node("td", "", value));
+      table.append(row);
+    }
+    output.append(table);
+    if (!view.ready) kinematicReasons(output, view);
+    else if (view.requires_alignment_confirmation) output.append(node("p", "kinematics-reason", "관절 방향·영점이 아직 검증되지 않았습니다. 3D 현재 자세를 실물과 비교하고, 맞는 경우에만 아래 확인란을 선택하세요."));
+    drawRobot("manual", view); manualControls();
+  }
+
+  function syncManual() {
+    const remote = state.server?.manual_xyz;
+    if (remote?.prepared && remote.prepared.token !== manual.key && !manual.busy) showManual(remote.prepared);
+    if (!remote?.prepared && !manual.busy && manual.view?.token && remote?.last?.status !== "prepared") manual.view.token = null;
+    const key = JSON.stringify(remote?.last);
+    if (remote?.last && key !== manual.lastKey && !manual.busy) {
+      manual.lastKey = key; manual.lastRun = remote.last.run_id;
+      text("manual-status", `${label(remote.last.status)} · ${remote.last.detail || ""}`);
+      $("manual-history").hidden = !manual.lastRun;
+    }
+    manualControls();
+  }
+
+  $("manual-form").addEventListener("submit", async event => {
+    event.preventDefault();
+    if (manual.busy || !$("manual-form").reportValidity() || $("manual-prepare").disabled) return;
+    const payload = {robot_id: $("robot-id").value.trim(), delta_m: ["x", "y", "z"].map(axis => Number($(`manual-${axis}`).value) / 1000), duration_ms: 1000};
+    if ($("manual-custom-mapping").checked) payload.joint_mapping = Object.fromEntries([...$("manual-mapping-inputs").querySelectorAll("[data-joint]")].map(row => [row.dataset.joint, {sign: Number(row.querySelector("select").value), offset_deg: Number(row.querySelector("input").value)}]));
+    manual.busy = true; manualControls(); text("manual-status", "현재 로봇 상태를 읽고 목표를 계산합니다. 아직 이동하지 않습니다.");
+    try {
+      const view = await api("/api/manual-xyz/prepare", {method: "POST", body: JSON.stringify(payload), signal: AbortSignal.timeout(30000)});
+      showManual(view); manual.lastRun = view.run_id;
+      if (state.server.manual_xyz) state.server.manual_xyz.prepared = view.ready ? view : null;
+      text("manual-status", view.ready ? "목표 계산 완료 · 아직 명령을 보내지 않았습니다. 3D 모델과 실물을 확인하세요." : "이 목표는 전송할 수 없습니다. 위 제한 사유를 확인하세요.");
+      $("manual-history").hidden = false;
+    } catch (error) { text("manual-status", error.message); }
+    finally { manual.busy = false; manualControls(); }
+  });
+  $("manual-execute").addEventListener("click", async () => {
+    manualControls();
+    if ($("manual-execute").disabled) return;
+    const token = manual.view.token;
+    manual.view.token = null; manual.busy = true; manualControls();
+    text("manual-status", "한 번 이동을 요청했습니다. 결과를 기다립니다.");
+    try {
+      const result = await api("/api/manual-xyz/execute", {method: "POST", body: JSON.stringify({token, execute: true, alignment_confirmed: $("manual-alignment").checked, clearance_confirmed: true})});
+      manual.lastRun = result.run_id;
+      if (state.server.manual_xyz) { state.server.manual_xyz.prepared = null; state.server.manual_xyz.busy = true; state.server.manual_xyz.phase = "executing"; }
+      text("manual-status", result.detail);
+    } catch (error) { text("manual-status", `요청 결과 확인 필요 · ${error.message} 자동으로 다시 보내지 않습니다.`); }
+    finally { manual.busy = false; manualControls(); }
+  });
+  $("manual-cancel").addEventListener("click", async () => {
+    if (manual.busy) return;
+    manual.busy = true; manualControls();
+    try {
+      state.server.manual_xyz = await api("/api/manual-xyz/cancel", {method: "POST", body: "{}"});
+      showManual(null); text("manual-status", "준비된 계산을 취소했습니다. 명령을 보내지 않았습니다.");
+    } catch (error) { text("manual-status", error.message); }
+    finally { manual.busy = false; manualControls(); }
+  });
+  $("manual-form").addEventListener("input", () => { manual.dirty = true; manualControls(); });
+  $("robot-id").addEventListener("input", () => { manual.dirty = true; manualControls(); });
+  for (const id of ["manual-alignment", "manual-clearance"]) $(id).addEventListener("change", manualControls);
+  for (const id of ["manual-view", "manual-display"]) $(id).addEventListener("change", () => drawRobot("manual", manual.view));
+  $("manual-history").addEventListener("click", () => { if (manual.lastRun) selectRun(manual.lastRun); });
+  for (const mode of ["preview", "manual"]) $(`xyz-${mode}-tab`).addEventListener("click", () => {
+    for (const name of ["preview", "manual"]) {
+      $(`xyz-${name}-content`).hidden = name !== mode;
+      $(`xyz-${name}-tab`).classList.toggle("selected", name === mode);
+      $(`xyz-${name}-tab`).setAttribute("aria-pressed", String(name === mode));
+    }
+    badge("xyz-mode-badge", mode === "manual" ? "실제 팔 · 수동 1회" : "계산 전용", mode === "manual" ? "warning" : "neutral");
+  });
+  for (const name of Object.keys(jointLabels).filter(name => name !== "gripper")) {
+    const row = node("div", "manual-mapping-row"); row.dataset.joint = name;
+    const title = node("label", "", jointLabels[name]), sign = node("select"), offset = node("input");
+    sign.add(new Option("같은 방향 (+1)", "1")); sign.add(new Option("반대 방향 (−1)", "-1"));
+    sign.setAttribute("aria-label", `${jointLabels[name]} 방향`);
+    offset.type = "number"; offset.step = "any"; offset.min = -180; offset.max = 180; offset.value = 0; offset.required = true;
+    offset.setAttribute("aria-label", `${jointLabels[name]} 영점 (도)`);
+    row.append(title, sign, offset); $("manual-mapping-inputs").append(row);
+  }
 
   $("stop").addEventListener("click", async () => {
     const id = state.server?.active_run_id;
@@ -819,6 +928,7 @@
     document.querySelectorAll(".before-frame").forEach((frame) => { frame.hidden = state.imageView !== "compare"; });
   }));
   window.setInterval(() => {
+    manualControls();
     const run = state.selectedId ? state.selectedRun : state.currentRun;
     if (state.connected && run?.active) text("elapsed", clock(runElapsed(run)));
   }, 1000);

@@ -10,3 +10,7 @@ wheels/
 .venv
 
 memory/
+
+# Required offline runtime for the URDF viewer, not a generated project build.
+!src/harness/static/vendor/three/build/
+!src/harness/static/vendor/three/build/*.js

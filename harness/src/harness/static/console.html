@@ -6,6 +6,7 @@
   <meta name="color-scheme" content="light">
   <title>LeKiwi · Agent console</title>
   <link rel="stylesheet" href="/static/console.css">
+  <script type="importmap">{"imports":{"three":"/static/vendor/three/build/three.module.js","three/":"/static/vendor/three/"}}</script>
   <script src="/static/console.js" defer></script>
 </head>
 <body>
@@ -50,7 +51,10 @@
         </section>
 
         <section class="panel xyz-panel" aria-labelledby="xyz-title">
-          <div class="section-heading"><div><h2 id="xyz-title">XYZ 미리보기</h2><p class="section-note">좌표를 입력하면 팔의 끝점과 관절 해를 계산합니다. 로봇에는 전송하지 않습니다.</p></div><span class="badge neutral">계산 전용</span></div>
+          <div class="section-heading"><div><h2 id="xyz-title">팔 끝 XYZ 테스트</h2><p class="section-note">팔 끝을 어디로, 얼마나 옮길지 확인하세요.</p></div><span id="xyz-mode-badge" class="badge neutral">계산 전용</span></div>
+          <div class="segmented xyz-tabs" role="group" aria-label="XYZ 테스트 방식"><button id="xyz-preview-tab" type="button" class="selected" aria-pressed="true">계산만 보기</button><button id="xyz-manual-tab" type="button" aria-pressed="false">실제 팔 1회 이동</button></div>
+          <p id="xyz-agent-state" class="kinematics-note"></p><p class="kinematics-note xyz-agent-links">에이전트 추론: <a href="#task-title">작업 지시 후 실행</a> · <a href="#decision-title">판단 근거 보기</a>. 아래 계산·수동 이동은 모델을 호출하지 않습니다.</p>
+          <div id="xyz-preview-content">
           <p id="xyz-availability" class="kinematics-reason" hidden></p>
           <div class="xyz-workspace">
             <form id="xyz-form">
@@ -62,10 +66,38 @@
               <p class="kinematics-note">0.01 m = 1 cm · 원점은 팔 장착부입니다.</p>
               <button type="submit" id="xyz-solve" class="button primary">XYZ 미리보기 계산</button>
             </form>
-            <div class="xyz-visual"><div class="xyz-visual-head"><strong>팔 관절 도식</strong><select id="xyz-view" aria-label="팔 도식 시점"><option value="iso">입체 투영</option><option value="xz">옆면 XZ</option><option value="xy">윗면 XY</option><option value="yz">정면 YZ</option></select></div><svg id="xyz-plot" viewBox="0 0 420 310" role="img" aria-label="팔의 시작 자세와 계산된 목표 자세"></svg><div class="xyz-legend"><span>● 시작 자세</span><span>● 계산된 자세</span><span>＋ 목표 위치</span></div><p class="kinematics-note">관절을 선으로 연결한 도식입니다. 직선 이동 경로·충돌·실물 축 정합을 검증하지 않습니다.</p></div>
+            <div class="xyz-visual"><div class="xyz-visual-head"><strong>SO-101 · URDF 3D</strong><select id="xyz-view" aria-label="미리보기 3D 시점"><option value="iso">3D 시점</option><option value="xz">옆 (XZ)</option><option value="xy">위 (XY)</option><option value="yz">정면 (YZ)</option></select></div>
+              <div class="urdf-toolbar"><label for="xyz-display">표시 자세</label><select id="xyz-display"><option value="current">현재 자세</option><option value="target">계산된 목표 자세</option><option value="overlay">현재 + 목표 겹쳐 보기</option></select></div>
+              <div id="xyz-plot" class="urdf-viewport" role="img" aria-label="URDF 외형 메시로 표시한 3D 로봇 팔"></div><p class="urdf-help">드래그: 회전 · 휠: 확대 · 격자: 5cm</p>
+              <p id="xyz-movement" class="xyz-movement">목표를 계산하면 팔 끝의 이동량을 표시합니다.</p><div class="xyz-legend"><span>파랑 점: 현재 팔 끝</span><span>초록 모델: 목표 자세</span><span>주황 점: XYZ 목표</span></div><p class="kinematics-note">팔 5관절에 관절각을 적용합니다. 집게 벌림은 모델 기본 자세입니다. 축은 팔 장착부 기준입니다.</p></div>
           </div>
           <p id="xyz-provenance" class="kinematics-note">URDF 예시 자세를 불러오는 중입니다.</p>
           <div id="xyz-output" class="kinematics-panel" aria-live="polite"><p>시작 자세를 불러오면 현재 XYZ가 표시됩니다.</p></div>
+          </div>
+          <div id="xyz-manual-content" hidden>
+            <p class="manual-intro">① 현재 상태를 읽고 목표 확인 → ② 버튼을 눌러 한 번 이동</p>
+            <p class="kinematics-note">이동 거리 2mm 초과~10mm · 1초 · 관절당 최대 3° · 베이스와 그리퍼 목표는 유지합니다.</p>
+            <p id="manual-availability" class="kinematics-reason"></p>
+            <form id="manual-form">
+              <div class="xyz-inputs"><div class="field"><label for="manual-x">X 방향 이동량 (mm)</label><input id="manual-x" type="number" step="any" min="-10" max="10" value="0" required></div><div class="field"><label for="manual-y">Y 방향 이동량 (mm)</label><input id="manual-y" type="number" step="any" min="-10" max="10" value="0" required></div><div class="field"><label for="manual-z">Z 방향 이동량 (mm)</label><input id="manual-z" type="number" step="any" min="-10" max="10" value="5" required></div></div>
+              <p class="kinematics-note">처음 값은 Z +5mm입니다. 방향은 아래 그림의 팔 장착부 기준축을 따릅니다.</p>
+              <details class="settings manual-mapping"><summary>실물과 3D 자세가 다를 때 <span>관절 방향·영점 맞추기</span></summary><p class="kinematics-note">부호는 관절 회전 방향, 영점은 실제 관절각에 더하는 각도입니다. 설정 파일을 편집하지 않고 여기서 바꿔 다시 계산할 수 있습니다. 단순히 이동을 허용하려고 확인란에 체크하지 마세요.</p><label class="manual-check"><input id="manual-custom-mapping" type="checkbox"> 아래 방향·영점을 이번 계산에 사용</label><div id="manual-mapping-inputs" class="manual-mapping-inputs"></div></details>
+              <button id="manual-prepare" class="button xyz-secondary" type="submit">① 로봇 상태 읽고 계산 · 아직 이동 안 함</button>
+            </form>
+            <div id="manual-review" hidden>
+              <div class="manual-review-grid"><div class="xyz-visual"><div class="xyz-visual-head"><strong>SO-101 · URDF 3D</strong><select id="manual-view" aria-label="실제 팔 3D 시점"><option value="iso">3D 시점</option><option value="xz">옆 (XZ)</option><option value="xy">위 (XY)</option><option value="yz">정면 (YZ)</option></select></div>
+              <div class="urdf-toolbar"><label for="manual-display">표시 자세</label><select id="manual-display"><option value="current">현재 자세</option><option value="target">계산된 목표 자세</option><option value="overlay">현재 + 목표 겹쳐 보기</option></select></div>
+              <div id="manual-plot" class="urdf-viewport" role="img" aria-label="URDF 외형 메시로 표시한 3D 로봇 팔"></div><p class="urdf-help">드래그: 회전 · 휠: 확대 · 격자: 5cm</p>
+              <p id="manual-movement" class="xyz-movement">목표를 계산하면 팔 끝의 이동량을 표시합니다.</p><div class="xyz-legend"><span>파랑 점: 현재 팔 끝</span><span>초록 모델: 목표 자세</span><span>주황 점: XYZ 목표</span></div><p class="kinematics-note">팔 5관절에 관절각을 적용합니다. 집게 벌림은 모델 기본 자세입니다. 축은 팔 장착부 기준입니다.</p></div><div><p class="label-caps">계산에 사용한 새 카메라 관찰</p><div id="manual-cameras" class="manual-cameras"></div></div></div>
+              <div id="manual-targets" class="kinematics-panel"></div>
+              <label id="manual-alignment-label" class="manual-check"><input id="manual-alignment" type="checkbox"> 실물과 3D 모델을 비교해 관절 자세·축 방향이 맞는 것을 확인했습니다. (이번 1회에만 적용)</label>
+              <label class="manual-check"><input id="manual-clearance" type="checkbox"> 팔이 움직일 공간을 확인했고, 표시된 목표로 실제 이동하겠습니다.</label>
+              <p id="manual-expiry" class="kinematics-note"></p>
+              <div class="field-row"><button id="manual-execute" class="button manual-execute" type="button" disabled>② 실제 팔 한 번 이동</button><button id="manual-cancel" class="button xyz-secondary" type="button">준비 취소 · 전송 안 함</button></div>
+            </div>
+            <p id="manual-status" class="manual-status" role="status">① 버튼을 누르기 전에는 로봇에 연결하지 않습니다.</p>
+            <button id="manual-history" class="button xyz-secondary" type="button" hidden>이번 실험의 관찰·실행 결과 보기</button>
+          </div>
         </section>
 
         <section class="panel observation-panel" aria-labelledby="observation-title"><div class="section-heading"><div><h2 id="observation-title">로봇의 시야</h2><p class="section-note">각 판단에 사용한 관찰 이미지입니다.</p></div><div class="segmented" role="group" aria-label="관찰 비교 모드"><button type="button" data-view="current" class="selected" aria-pressed="true">현재</button><button type="button" data-view="compare" aria-pressed="false">동작 전후 비교</button></div></div>
