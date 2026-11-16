@@ -7,13 +7,16 @@ __all__ = ["Robot", "RobotClient"]
 
 
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] == 'calibrate':
+        from .calibrate import main as calibrate_main
+        raise SystemExit(calibrate_main(sys.argv[2:]))
     import argparse
     import signal
     from pathlib import Path
     from .orin import OrinRobot
     from .config import load_config
 
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(epilog='팔 가동범위 측정: lekiwi-runtime calibrate --help')
     parser.add_argument("--server", default="tcp://127.0.0.1:5555", help="Robot server endpoint (default: local port 5555)")
     parser.add_argument("--robot-id", default="kiwi-01")
     parser.add_argument("--config", type=Path, help="Per-robot JSON configuration overrides")

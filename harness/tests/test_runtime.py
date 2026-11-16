@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from harness.runtime import CodexRuntime
 
@@ -31,6 +31,16 @@ class RuntimeTest(unittest.TestCase):
             "result": {"content": [{"type": "text", "text": '{"status":"ok","observation":{}}'}]},
         }])
         self.assertEqual(result["command"], {"action": "wait", "duration_ms": 100})
+
+    def test_execution_forwards_local_kinematics_config_without_changing_proposal_api(self):
+        from pathlib import Path
+        with patch('harness.episode_runtime.run_episode', new_callable=AsyncMock) as episode:
+            episode.return_value = {'status': 'blocked'}
+            result = CodexRuntime().run_episode('kiwi', 'Move endpoint',
+                                               kinematics_config=Path('/local/mapping.json'))
+        self.assertEqual(result['status'], 'blocked')
+        self.assertEqual(episode.call_args.kwargs['kinematics_config'], Path('/local/mapping.json'))
+        self.assertEqual(episode.call_args.args[2:], ('kiwi', 'Move endpoint'))
 
 
 class SnapshotTest(unittest.IsolatedAsyncioTestCase):

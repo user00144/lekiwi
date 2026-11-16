@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "frame": "arm_base",
+  "tip_frame": "gripper_frame_link",
+  "hardware_alignment_verified": false,
+  "calibration_id": null,
+  "model_hash": null,
+  "joint_mapping": {
+    "shoulder_pan": {"sign": 1, "offset_deg": 0},
+    "shoulder_lift": {"sign": 1, "offset_deg": 0},
+    "elbow_flex": {"sign": 1, "offset_deg": 0},
+    "wrist_flex": {"sign": 1, "offset_deg": 0},
+    "wrist_roll": {"sign": 1, "offset_deg": 0}
+  }
+}

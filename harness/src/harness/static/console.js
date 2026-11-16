@@ -24,7 +24,7 @@
   const eventLabels = {
     startup: "작업 준비", startup_started: "작업 준비", startup_finished: "준비 완료", demo_started: "데모 시작",
     planner_started: "에이전트 연결", observe_started: "새 관찰 요청", observe_finished: "관찰 수신",
-    observation: "관찰 저장", planning_started: "다음 행동 판단 중", planning_finished: "판단 수신",
+    observation: "관찰 저장", kinematics_state: "현재 팔 위치 계산", ik_result: "XYZ 목표 변환 결과", planning_started: "다음 행동 판단 중", planning_finished: "판단 수신",
     decision: "에이전트 판단", decision_rejected: "판단 보류", action_prepared: "명령 준비",
     action_started: "행동 실행", action_finished: "행동 응답", action_result: "실행 결과",
     motion_feedback: "실행 전후 비교", rejection_feedback: "명령 거부 · 재관찰 후 수정", completion_candidate: "완료 주장 · 재관찰 요청",
@@ -189,6 +189,7 @@
     renderObservations(run);
     renderDecision(decision, latestEvent(run, "motion_feedback")?.data);
     renderRejection(run);
+    renderKinematics(run);
     renderTimeline(run);
   }
 
@@ -246,6 +247,7 @@
       $("joint-values").append(item);
     }
     renderCalibration(observation.ego || {});
+    renderCalibrationId(observation.ego?.calibration_id);
   }
 
   function calibrationLine(detail) {
@@ -279,6 +281,109 @@
     if (!issues.length) return;
     panel.append(node("strong", "", "현재 관절 범위 확인"));
     issues.forEach((detail) => panel.append(node("p", "", calibrationLine(detail))));
+  }
+
+  function renderCalibrationId(value) {
+    let panel = $("calibration-identity");
+    if (!panel) {
+      panel = node("div", "calibration-identity");
+      panel.id = "calibration-identity";
+      const title = node("label", "", "보정 식별자 · XYZ 매핑 설정에 사용");
+      title.htmlFor = "calibration-id-value";
+      const input = node("input");
+      input.id = "calibration-id-value";
+      input.readOnly = true;
+      input.setAttribute("spellcheck", "false");
+      input.addEventListener("click", () => input.select());
+      panel.append(title, input, node("small", "", "값을 선택해 복사할 수 있습니다. 보정 범위를 바꾸면 식별자도 바뀝니다."));
+      $("calibration-diagnostics").after(panel);
+    }
+    panel.hidden = typeof value !== "string" || !/^[a-f0-9]{64}$/i.test(value);
+    // Preserve an active text selection while the GUI polls the same observation.
+    if ($("calibration-id-value").value !== value) $("calibration-id-value").value = panel.hidden ? "" : value;
+  }
+
+  function vectorLabel(value) {
+    return Array.isArray(value) && value.length === 3 && value.every(Number.isFinite)
+      ? value.map((part, index) => `${["X", "Y", "Z"][index]} ${part.toFixed(4)}`).join(" · ") + " m" : null;
+  }
+  function solutionLabel(data) {
+    const runtime = data.solution_runtime_joints_deg || data.joints;
+    const solution = runtime || data.solution_urdf_joints_deg || data.solution_joints_deg;
+    const parts = Object.entries(solution || {}).filter(([, value]) => Number.isFinite(value));
+    return parts.length ? {label: runtime ? "관절 해 · runtime" : "관절 해 · URDF",
+      text: parts.map(([name, value]) => `${jointLabels[name] || name} ${value.toFixed(2)}°`).join(" · ")} : null;
+  }
+  function ikStatus(data) {
+    return data.success === true && data.executable === true
+      ? ["해 계산 성공 · 전송 전 검사 가능", "good"]
+      : data.success === true ? ["해 계산 성공 · 미리보기", "warning"] : ["해 미확정 · 전송 안 함", "warning"];
+  }
+  function kinematicReasons(parent, data) {
+    const reasons = Array.isArray(data.reasons) ? data.reasons.filter((reason) => typeof reason === "string" && reason) : [];
+    for (const reason of reasons) parent.append(node("p", "kinematics-reason", reason));
+  }
+  function ikLines(parent, data) {
+    if (data.request?.mode === "relative") eventLine(parent, "요청 이동량", vectorLabel(data.request.xyz_m));
+    eventLine(parent, "목표 XYZ", vectorLabel(data.target_xyz_m || (data.request?.mode === "absolute" ? data.request.xyz_m : null)));
+    eventLine(parent, "계산 끝점", vectorLabel(data.achieved_xyz_m));
+    const solution = solutionLabel(data);
+    if (solution) eventLine(parent, solution.label, solution.text);
+    if (Number.isFinite(data.residual_m)) {
+      const tolerance = Number.isFinite(data.tolerance_m) ? ` / 허용 ${(data.tolerance_m * 1000).toFixed(2)} mm` : "";
+      eventLine(parent, "위치 오차", `${(data.residual_m * 1000).toFixed(2)} mm${tolerance}`);
+    }
+    if (data.orientation_checked === true && Number.isFinite(data.orientation_error_deg)) {
+      eventLine(parent, "접근축 오차", `${data.orientation_error_deg.toFixed(2)}°`);
+    }
+    eventLine(parent, "명령 전송", data.success === true && data.executable === true
+      ? "IK 검사 통과 · 실제 전송과 도달 여부는 실행 결과에서 확인" : "이 XYZ 요청은 미전송 · 미리보기 또는 제한 조건 확인 필요");
+    kinematicReasons(parent, data);
+  }
+  function renderKinematics(run) {
+    let current = $("kinematics-current");
+    if (!current) {
+      current = node("section", "kinematics-panel");
+      current.id = "kinematics-current";
+      current.setAttribute("aria-label", "현재 관찰의 팔 끝 위치 계산");
+      $("calibration-identity").after(current);
+    }
+    const kinematics = run?.kinematics || latestEvent(run, "kinematics_state")?.data;
+    const currentId = run?.current_observation?.observation_id;
+    const matching = Boolean(currentId && kinematics?.observation_id === currentId);
+    current.hidden = !kinematics;
+    current.replaceChildren();
+    if (kinematics) {
+      const head = node("div", "kinematics-heading");
+      const ready = matching && kinematics.executable === true;
+      head.append(node("strong", "", "현재 팔 끝 위치 · FK"), node("span", `badge ${ready ? "good" : "neutral"}`,
+        !matching ? "계산 대기" : ready ? "매핑 확인됨" : "미리보기"));
+      current.append(head);
+      if (matching) {
+        eventLine(current, "현재 XYZ", vectorLabel(kinematics.current_xyz_m) || "계산값 없음");
+        eventLine(current, "좌표 기준", `${kinematics.frame || "arm_base"} → ${kinematics.tip_frame || "gripper_frame_link"}`);
+        current.append(node("p", "kinematics-note", "관절 측정값으로 계산한 팔 끝 위치입니다. 카메라·세계 좌표에서 측정한 위치가 아닙니다."));
+        kinematicReasons(current, kinematics);
+      } else current.append(node("p", "kinematics-note", "현재 관찰에 대응하는 위치 계산을 기다리고 있습니다."));
+    }
+    let result = $("kinematics-result");
+    if (!result) {
+      result = node("section", "kinematics-panel");
+      result.id = "kinematics-result";
+      result.setAttribute("aria-label", "최근 XYZ 요청의 역기구학 계산 결과");
+      $("command-details").before(result);
+    }
+    const event = latestEvent(run, "ik_result");
+    result.hidden = !event;
+    result.replaceChildren();
+    if (!event) return;
+    const data = event.data || {};
+    const [summary, tone] = ikStatus(data);
+    const head = node("div", "kinematics-heading");
+    head.append(node("strong", "", "최근 XYZ 변환 · IK"), node("span", `badge ${tone}`, summary));
+    result.append(head, node("p", "kinematics-note", `${timeLabel(event.at)} · 관찰 ${shortId(data.observation_id)} 기준 · ${data.frame || data.request?.frame || "arm_base"}`));
+    ikLines(result, data);
+    result.append(node("p", "kinematics-note", "끝점 관절 해를 계산합니다. 직선 이동·충돌 회피·전체 6D 자세는 검증하지 않습니다."));
   }
 
   function safeRejection(packet) {
@@ -349,6 +454,10 @@
     if (!command) return "";
     if (command.action === "wait") return `대기 ${command.duration_ms}ms`;
     const parts = [];
+    if (command.cartesian) {
+      const xyz = vectorLabel(command.cartesian.xyz_m);
+      if (xyz) parts.push(`팔 ${command.cartesian.mode === "relative" ? "상대 이동" : "목표"} ${xyz} · ${command.cartesian.frame || "arm_base"}`);
+    }
     if (command.joints) {
       for (const [name, value] of Object.entries(command.joints)) {
         if (typeof value === "number") parts.push(`${jointLabels[name] || name} ${value}${name === "gripper" ? "%" : "°"}`);
@@ -361,12 +470,14 @@
   function renderEvent(event) {
     const kind = event.event;
     const data = event.data || {};
+    const finishedStatus = kind === "action_finished" && !("transport_status" in data) && data.status === "completed" && data.result_status ? data.result_status : data.status;
     const rejected = kind === "rejection_feedback" || kind === "action_result" && safeRejection(data.packet);
-    const category = rejected ? "rejection" : kind === "decision" ? "decision" : kind.startsWith("action") ? "action" : kind === "error" || kind === "decision_rejected" ? "error" : "";
+    const failedFinish = kind.endsWith("_finished") && ["error", "uncertain_execution", "completed_without_observation"].includes(finishedStatus);
+    const category = rejected ? "rejection" : failedFinish ? "error" : kind === "decision" ? "decision" : kind.startsWith("action") ? "action" : kind === "error" || kind === "decision_rejected" ? "error" : "";
     const item = node("article", `timeline-event ${category}`);
     const head = node("div", "event-head");
     const finishedPhase = {observe_finished: "관찰", planning_finished: "판단", action_finished: "행동 실행", startup_finished: "작업 준비"}[kind];
-    const interruptedLabel = data.status === "cancelled" ? "취소" : data.status === "error" ? "실패" : null;
+    const interruptedLabel = {cancelled: "취소", error: "실패", uncertain_execution: "결과 미확정", rejected: "명령 거부", completed_without_observation: "완료 · 재관찰 실패"}[finishedStatus];
     head.append(node("strong", "", finishedPhase && interruptedLabel ? `${finishedPhase} ${interruptedLabel}` : eventLabels[kind] || kind));
     if (kind === "decision") head.append(node("span", "event-tag", toolLabels[data.tool] || data.tool));
     const time = node("time", "", timeLabel(event.at));
@@ -386,15 +497,31 @@
     } else if (kind === "action_prepared") {
       item.append(node("p", "event-body", commandLabel(data.command || data)));
       eventLine(item, "판단 근거", data.reason);
+    } else if (kind === "kinematics_state") {
+      eventLine(item, "현재 XYZ", vectorLabel(data.current_xyz_m) || "계산값 없음");
+      eventLine(item, "XYZ 준비", data.executable === true ? "매핑 확인됨 · 목표별 IK 검사 필요" : "미리보기 · 실행 조건 미충족");
+      kinematicReasons(item, data);
+    } else if (kind === "ik_result") {
+      item.append(node("p", "event-body", ikStatus(data)[0]));
+      ikLines(item, data);
     } else if (kind === "action_result") {
       const packet = data.packet || data;
       const execution = packet.execution || {};
+      const recordedRecoveries = execution.arm_motion?.communication_recoveries;
+      const recoveries = packet.status === "completed" && execution.outcome === "completed" && Array.isArray(recordedRecoveries)
+        ? recordedRecoveries.filter((recovery) => recovery?.recovery === "verified_readback" && recovery.requested === recovery.read_value
+          && [recovery.motor_id, recovery.register, recovery.requested, recovery.read_value].every(Number.isFinite)) : [];
       const message = safeRejection(packet) ? "명령 거부 · 재관찰 후 수정. 이 명령은 로봇에 전송되지 않았습니다."
         : execution.outcome === "uncertain_execution" ? "실행 여부 미확정 · 자동 재실행을 중단했습니다."
-          : packet.status === "completed" ? "동작 응답 수신 · 새 관찰로 결과를 확인합니다." : packet.error || packet.observation_error || label(packet.status);
+          : packet.status === "completed" ? recoveries.length ? "통신 응답 오류 · 설정값 재확인 후 완료" : "동작 응답 수신 · 새 관찰로 결과를 확인합니다."
+            : packet.error || packet.observation_error || label(packet.status);
       item.append(node("p", "event-body", message));
       if (safeRejection(packet)) eventLine(item, "거부 원인", rejectionReason(packet));
       else if (execution.outcome === "uncertain_execution") eventLine(item, "오류", packet.error);
+      for (const recovery of recoveries) {
+        const attempts = Number.isInteger(recovery.read_attempts) ? ` · 읽기 ${recovery.read_attempts}회` : "";
+        eventLine(item, "설정 확인", `모터 ${recovery.motor_id} · 레지스터 ${recovery.register} · 요청 ${recovery.requested} / 확인 ${recovery.read_value}${attempts}`);
+      }
       if (typeof execution.arm_reached === "boolean") eventLine(item, "팔 목표", execution.arm_reached ? "엔코더 허용 오차 내 도달" : "도달 미확인");
       if (execution.base_stop_verified === false) eventLine(item, "베이스", "정지 명령 처리 · 실제 이동량·정지 상태는 미측정");
     } else if (kind === "rejection_feedback") {
@@ -413,8 +540,8 @@
       item.append(node("p", "event-body", `${label(data.status)}${data.detail ? ` · ${data.detail}` : ""}`));
     } else if (kind === "completion_candidate") {
       item.append(node("p", "event-body", data.evidence || data.reason || "새 관찰을 받아 완료 주장을 다시 확인합니다."));
-    } else if (data.reason || data.message || data.error || data.detail) {
-      item.append(node("p", "event-body", data.reason || data.message || data.error || data.detail));
+    } else if (data.reason || data.message || data.error || data.result_error || data.detail) {
+      item.append(node("p", "event-body", data.reason || data.message || data.error || data.result_error || data.detail));
     }
     if (Object.keys(data).length && !["observe_started", "planning_started", "startup"].includes(kind)) {
       const details = node("details", "event-details");

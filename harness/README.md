@@ -121,3 +121,6 @@ MCP 도구는 `observe`, `execute` 두 개이며, execute의 action은 `move`, `
 `move`는 베이스 속도(x/y/theta, 생략 시 0)와 팔 관절 목표(joints, 생략 시 팔 유지)를 선택적으로 받습니다. 둘 다 지정하면 동시에 움직입니다. `wait`에는 이동 목표를 넣지 않습니다.
 
 `observe`와 `execute` 응답에는 `observation.imu`도 포함됩니다. 가속도·각속도·자세 및 초기 위치 기준 추정 변위(m)를 반환합니다. `available`, `estimate_valid`, `age_s`, `origin_id`를 확인하고, 동일 원점의 유효한 추정값끼리만 비교합니다. IMU 적분 변위는 누적 오차가 있는 추정치입니다. 도구와 action은 추가되지 않습니다.
+## XYZ 팔 제어
+
+에이전트 루프에서 `cartesian` 목표(arm_base 기준 XYZ, m)를 SO-101 IK로 관절각으로 변환해 기존 guarded 경로로 실행할 수 있습니다. GUI에는 현재 FK, 목표·계산된 관절각·오차와 미리보기/실행 준비 상태가 표시됩니다. `--kinematics-config 로봇별설정.json`으로 실물 부호·영점 매핑과 보정 ID를 지정하며, 미검증 또는 보정 파일이 바뀐 상태는 실행하지 않습니다. 설정 예제는 `src/harness/data/cartesian.example.json`입니다. [설정·명령·오프라인 미리보기](../docs/agent-loop.md#xyz-팔-제어)

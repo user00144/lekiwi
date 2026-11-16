@@ -12,6 +12,7 @@ dependencies = [
 
 [project.scripts]
 lekiwi-runtime = "lekiwi_runtime:main"
+lekiwi-calibrate = "lekiwi_runtime.calibrate:main"
 
 [build-system]
 requires = ["uv_build>=0.12.21,<0.13.0"]

@@ -65,6 +65,60 @@ uv run --project harness harness-run --execute \
 
 팔은 기존 보정·범위·속도 검사, 목표 보간과 관절 피드백 확인을 사용합니다. 베이스는 시간 제한 속도 명령이며, 정지 명령 전송과 실제 정지·거리 도달은 구분합니다. IMU 적분 변위도 정확한 위치 측정값으로 취급하지 않습니다.
 
+## XYZ 팔 제어
+
+에이전트의 `command.cartesian` 목표를 harness의 SO-101 IK가 관절각으로 변환한 뒤 기존 server·runtime의 guarded 실행으로 보냅니다. 외부 `lekiwi-console`에 있던 URDF/FK/IK를 패키지 안으로 가져왔으며 실행 중 그 외부 폴더에 의존하지 않습니다. `numpy`·`scipy`는 harness 의존성에 포함됩니다.
+
+```json
+{
+  "action": "move", "x": 0, "y": 0, "theta": 0,
+  "duration_ms": 500, "joints": null,
+  "cartesian": {
+    "frame": "arm_base", "mode": "relative",
+    "xyz_m": [0, 0, 0.01], "approach_axis": null
+  }
+}
+```
+
+위 요청은 현재 FK 위치에서 arm_base의 +Z 방향으로 1cm 이동하는 끝점 목표입니다. `mode: absolute`는 같은 기준의 절대 XYZ입니다. `arm_base`는 포함된 URDF의 고정 팔 장착 원점이며 카메라·세계·바퀴 odometry 좌표가 아닙니다. `approach_axis`는 이 좌표계에서 그리퍼의 local +Z가 향할 단위 방향을 선택적으로 지정합니다. 팔 5자유도에 맞춘 기능으로 임의의 전체 6D 자세는 지원하지 않습니다. 그리퍼와 베이스는 XYZ 명령과 동시에 움직이지 않으며 별도 행동으로 명령합니다.
+
+계산은 현재 관절각을 시작값으로 사용하고 URDF 제한, runtime 제한, `현재각 ± 최대속도 × duration`의 교집합 안에서 수행합니다. 허용 위치 오차는 모델상 2mm이며 실물 정확도 보장은 아닙니다. 현재값이 범위 밖이면 잘라 맞추지 않고 거부합니다. 해가 없거나 매핑 검증이 안 됐으면 모터 명령을 보내지 않고 원인·수치 해를 모델에 돌려주어 재관찰·수정을 이어갑니다. 같은 실패 목표의 반복도 제한합니다. FK·목표·관절 해·잔차·거부 원인은 GUI와 `kinematics_state`/`ik_result` 이벤트에 표시합니다.
+
+이 구현은 **끝점 IK + 기존 관절 보간**입니다. ffw/Cyclo처럼 연속 Cartesian 기준 궤적을 추종하는 MoveL, 충돌 검사, 영상 픽셀에서 물체 XYZ를 구하는 깊이·카메라 변환은 포함하지 않습니다. 모델은 이미지와 결과를 보며 짧은 XYZ 행동을 순차적으로 결정합니다.
+
+### 실물 매핑 설정
+
+설정이 없으면 FK/IK 미리보기는 제공하지만 XYZ 실행은 비활성입니다. 다음 예시를 로봇별 파일로 복사하고 실물 관절 영점·회전 방향을 확인해 작성합니다.
+
+```bash
+cp harness/src/harness/data/cartesian.example.json /tmp/lekiwi-cartesian.json
+```
+
+- `joint_mapping`: 각 관절에 대해 `q_URDF = sign × q_runtime + offset_deg`. `sign`은 +1 또는 -1입니다. 알려진 기준 자세에서 URDF 각도와 관측 각도를 비교해 offset을 정하고, 다른 자세에서도 방향과 FK 위치가 맞는지 확인합니다. 예시의 +1/0은 실물 검증 결과가 아닙니다.
+- `calibration_id`: 캘리브레이션 저장 결과 또는 GUI 관절 패널에 표시되는 현재 `ego.calibration_id` 전체값입니다. 범위·영점 파일이 바뀌면 ID가 달라지고 이전 매핑의 실행은 차단됩니다.
+- `model_hash`: FK/IK 결과에 표시되는 URDF 모델 식별자입니다. 링크 길이·축 등 모델이 변경되면 기존 검증 설정으로 실행하지 않습니다.
+- `hardware_alignment_verified`: 위 매핑과 그리퍼 기준점이 실물과 일치하는 것을 확인한 뒤 `true`로 설정합니다. ID만 복사하는 것으로 정합 검증을 대신하지 않습니다.
+
+검증된 파일로 GUI 또는 CLI를 실행합니다. 설정 경로는 실행자가 시작 옵션으로만 지정하며 에이전트나 HTTP 작업 요청이 변경할 수 없습니다.
+
+```bash
+uv run --project harness harness-gui --server tcp://127.0.0.1:5556 \
+  --robot-id kiwi-01 --kinematics-config /tmp/lekiwi-cartesian.json
+
+uv run --project harness harness-run --server tcp://127.0.0.1:5556 \
+  --robot-id kiwi-01 --execute --kinematics-config /tmp/lekiwi-cartesian.json \
+  '관찰 후 가능하면 팔 끝을 arm_base +Z 방향으로 1cm 이동하고 결과를 확인해줘'
+```
+
+모델이나 로봇을 호출하지 않고 기록된 관찰로 IK 수치 결과만 검사할 수도 있습니다. 아래 CLI는 설정이 검증됐더라도 항상 기록 기반 미리보기로 표시하고 명령을 전송하지 않습니다.
+
+```bash
+uv run --project harness python -m harness.kinematics \
+  --observation runs/실행ID/observations/0001/observation.json \
+  --xyz 0 0 0.01 --mode relative --duration-ms 500 \
+  --config /tmp/lekiwi-cartesian.json
+```
+
 ## 실패와 재관찰
 
 실행 모드는 guarded 실행을 지원한다고 응답하는 runtime에만 명령을 보냅니다. 오래된 runtime으로 자동 하향 전환하지 않습니다. 만료되거나 바뀐 관찰은 실행 전에 거부하고 새로 관찰합니다. 통신 timeout 등으로 실행 여부를 알 수 없으면 해당 에피소드의 추가 실행을 중단합니다.
@@ -77,6 +131,8 @@ uv run --project harness harness-run --execute \
 
 같은 `action_id`와 같은 명령을 다시 보내면 runtime은 저장된 결과를 반환합니다. 같은 ID에 다른 명령을 넣으면 거부합니다. 이 기록은 runtime 프로세스 동안 유지되며, 재시작하면 `runtime_id`가 바뀝니다. 이전 관찰·명령으로 새 프로세스에서 실행하지 않습니다.
 
+`Arm 2 write 46: communication=-6, device=0`은 어깨 관절의 이동 속도 설정에 대한 응답 timeout입니다. 설정이 적용되지 않았다는 증거는 아니며, 응답이 없을 때 `device=0`도 서보 정상 확인을 뜻하지 않습니다. 런타임은 보간 전 시간·속도 설정(44·46)에 한해 최대 두 번 읽어 요청값과 정확히 일치하면 같은 행동을 계속합니다. 쓰기나 행동을 재전송하지 않고, 이후 관절 도달과 새 관찰까지 확인해야 완료로 처리합니다. 값 불일치, 확인 불가, 서보 오류, 목표 위치·토크 쓰기 실패는 계속 실행 미확정으로 중단합니다. GUI와 실행 결과의 `arm_motion.communication_recoveries`에서 설정 재확인 내역을 볼 수 있습니다.
+
 행동 기록은 runtime당 기본 128개 ID 또는 인코딩된 결과 32MiB로 제한합니다. 공간이 차면 guarded 실행을 차단하며, 이전 ID를 지워 다시 실행할 수 있게 만들지 않습니다. 새 에피소드도 같은 runtime의 누적 한도를 공유합니다.
 
 guarded 관찰은 JSON 인코딩 기준 2MiB 이하로 제한합니다. 더 큰 관찰도 기존 조회에는 그대로 전달하지만 실행 허가는 내주지 않습니다. 실행 전에는 해당 로봇의 이미지 크기와 관찰 설정을 확인합니다.
@@ -87,6 +143,7 @@ guarded 관찰은 JSON 인코딩 기준 2MiB 이하로 제한합니다. 더 큰 
 
 - `run.json`: 작업 지시와 실행 예산.
 - `events.jsonl`: 관찰, 모델 판단, 전송 전 행동 ID·인자, 실행 결과, 피드백. 전송 전 기록을 디스크에 반영합니다.
+- `action_finished.status`는 행동 응답의 결과를, `transport_status`는 요청·응답 처리 종료 상태를 나타냅니다. `transport_status: completed`만으로 물리적 동작 성공을 뜻하지 않습니다. 이전 기록에 남은 `status: completed, result_status: error`도 GUI에서는 실행 오류로 표시합니다.
 - `observations/`: 각 관찰의 메타데이터와 이미지.
 - `result.json`: 종료 사유, 행동·판단 수, 미확정 행동 ID, 완료 주장. 종료 기록을 쓰지 못한 강제 중단은 `running`으로 남을 수 있으므로 성공으로 취급하지 않습니다.
 
@@ -94,7 +151,7 @@ guarded 관찰은 JSON 인코딩 기준 2MiB 이하로 제한합니다. 더 큰 
 
 ## 검증 범위
 
-2026-11-16 기준 오류 복구 수정 후 runtime 테스트 81개, harness 테스트 75개를 통과했습니다. 실제 MCP stdio·ZeroMQ server·mock runtime을 연결해 관찰 ID, 중복 실행 방지, 동작 이후 프레임과 에피소드 기록을 검증했습니다. 팔꿈치 raw 3133을 모의 runtime에 넣어 전송 전 거부 후 재관찰·손목 대안 명령·완료 재확인까지 이어지는 경로도 검증했습니다. GUI는 합성 데이터로 실행·중지·기록 조회·관찰 이미지 비교·거부와 보정 진단 표시를 확인했습니다. 설치된 SDK의 격리 환경 초기화와 빈 스레드 생성도 확인했습니다. 실제 모델 판단과 실물 로봇 동작은 시험하지 않았습니다.
+2026-11-16 기준 캘리브레이션·통신 복구·XYZ 제어 추가 후 runtime 테스트 100개, harness 테스트 114개를 통과했습니다. 실제 MCP stdio·ZeroMQ server·mock runtime을 연결해 관찰 ID, 중복 실행 방지, 동작 이후 프레임과 에피소드 기록을 검증했습니다. 팔꿈치 raw 3133의 전송 전 거부 후 재관찰·손목 대안 명령·완료 재확인, 프로파일 ACK 오류 후 읽기 검증, 실제 IK 목표→guarded 관절 명령→모의 엔코더 도달 경로도 확인했습니다. 캘리브레이션의 범위·영점·토크 해제 실패·취소·백업과 XYZ 매핑·보정/모델 해시·속도 제한·미리보기 차단·계산 중 관찰 만료를 검사했습니다. GUI는 합성 데이터로 FK/IK 결과와 미검증 요청의 미전송 표시를 확인했습니다. 실제 모델 판단과 실물 로봇 동작은 시험하지 않았습니다.
 
 ```bash
 uv run --project lekiwi_runtime python -m unittest discover -s lekiwi_runtime/tests -v

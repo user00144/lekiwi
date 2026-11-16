@@ -44,7 +44,18 @@ Use hypot(x,y)<=0.4, abs(theta)<=150, duration_ms=1..1000. Prefer short motions 
 Arm joints are absolute degrees (shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll); gripper is
 absolute opening percent 0..100. Null joints are omitted and stay unchanged. Use current ego.limits and
 measured joint values; arm duration=100..1000ms, max arm change=30deg/s, gripper=50 percentage points/s.
-No Cartesian IK, calibrated object XYZ, collision planner or camera-to-base transform is provided.
+Cartesian control is available only when context.cartesian.executable is true. Its current_xyz_m is FK
+for the measured arm pose in arm_base. For an XYZ command set command.cartesian to
+{frame:"arm_base", mode:"absolute"|"relative", xyz_m:[x,y,z], approach_axis:null|[x,y,z]}, joints=null,
+x=y=theta=0 and duration_ms=100..1000. Absolute xyz_m is a target in metres; relative xyz_m is a displacement
+along arm_base axes from CURRENT measured FK, not the tool axes or the previous requested target.
+approach_axis is an optional gripper +Z direction in arm_base, not a full orientation. The host solves
+IK within the verified joint mapping, current calibration limits and per-step speed constraints, then
+sends one joint command. Inspect ik_result/rejection_feedback if it cannot execute; choose a smaller
+feasible target or another justified action. An unverified preview never authorizes motion. Set
+command.cartesian=null for ordinary joint/base/wait commands. Gripper actions remain separate.
+No calibrated object XYZ, collision planner or camera-to-base transform is provided. Do not infer metric
+depth from RGB alone or treat a numerical IK solution as proof of a clear path or a successful grasp.
 Base and joints can be commanded together only when the whole combined motion is supported by current views.
 Before any movement check relevant current camera visibility and swept-path clearance. Radar and IMU do not
 certify clearance. Do not probe unseen obstacles. IMU displacement is a drifting relative estimate; compare
@@ -91,7 +102,7 @@ class CodexPlanner:
             content.append({'type': 'input_image', 'image_url': f'data:{mime};base64,{data}'})
         self.turn = await self.thread.turn(
             ExternalMessage(tool_name='lekiwi_observation', content=content),
-            output_schema=Decision.model_json_schema(),
+            output_schema=planner_decision_schema(),
         )
         try:
             result = await self.turn.run()
@@ -112,7 +123,18 @@ class CodexPlanner:
         return json.loads(result.final_response)
 
 
-async def run_episode(server, model, robot_id, instruction, *, snapshot=None, run_dir=None, limits=None):
+def planner_decision_schema():
+    schema = Decision.model_json_schema()
+    # Old recorded joint commands may omit this field; new structured model
+    # outputs must explicitly choose cartesian:null or a Cartesian target.
+    command = schema['$defs']['Command']
+    command['properties']['cartesian'].pop('default', None)
+    command['required'].append('cartesian')
+    return schema
+
+
+async def run_episode(server, model, robot_id, instruction, *, snapshot=None, run_dir=None, limits=None,
+                      kinematics_config=None):
     if snapshot is not None:
         raise ValueError('Snapshot mode cannot execute an episode')
     limits = limits or EpisodeLimits()
@@ -122,6 +144,9 @@ async def run_episode(server, model, robot_id, instruction, *, snapshot=None, ru
     runner = EpisodeRunner(None, None, robot_id, instruction, path, limits)
     episode_started = False
     try:
+        async with runner.phase('startup', component='kinematics'):
+            from .kinematics import CartesianController
+            runner.cartesian = CartesianController(kinematics_config)
         async with isolated_planner_config() as (config, cwd):
             codex = AsyncCodex(config)
             try:

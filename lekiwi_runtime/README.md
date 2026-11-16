@@ -20,6 +20,29 @@ ORIN에 `lekiwi_runtime/`만 복사한 경우 해당 폴더에서 `uv sync` 후 
 
 ## 장비 설정
 
+### 팔 최소·최대 가동범위 캘리브레이션
+
+ORIN에서 runtime과 teleop을 종료하고 팔을 손으로 지지한 뒤 실행합니다. 처음 Enter를 누르면 팔 ID 1–6의 토크를 해제합니다. 바퀴 명령·자동 팔 이동·EEPROM 쓰기는 하지 않습니다.
+
+```bash
+uv run --project lekiwi_runtime lekiwi-runtime calibrate --port /dev/ttyACM0
+```
+
+각 관절을 손으로 사용할 최소·최대 위치까지 천천히 움직이고, 양 끝에서 잠시 유지한 뒤 Enter로 다음 관절로 넘어갑니다. 현재 raw 값과 측정 범위를 표시합니다. `r`+Enter는 현재 관절 재측정, `q`+Enter 또는 Ctrl+C는 취소입니다. 마지막 범위 비교표를 검토하고 `save`를 입력해야 저장합니다. 끝을 억지로 밀지 마세요. 종료 후에도 토크는 꺼져 있습니다.
+
+기본적으로 runtime 설정의 `arm.calib_path` 파일을 갱신하고, 덮어쓰기 전 원본 그대로 `*.backup-시각-ID`를 만듭니다. `--config`를 쓰는 runtime이라면 여기에도 같은 설정 파일을 지정하세요. `--output 새파일.json`은 별도 저장하며 이후 runtime 설정에 그 경로를 지정해야 합니다. 범위에 여유를 두려면 `--margin-ticks 10`을 사용합니다. 팔꿈치만 다시 측정할 수도 있습니다.
+
+```bash
+uv run --project lekiwi_runtime lekiwi-runtime calibrate \
+  --port /dev/ttyACM0 --joints elbow_flex --margin-ticks 10
+```
+
+`lekiwi-calibrate` 명령이나 `python -m lekiwi_runtime.calibrate`로도 동일하게 실행합니다. `lekiwi_runtime/` 폴더 안에서는 `uv run lekiwi-runtime calibrate ...`를 사용합니다. 별도 설치 패키지 환경에서는 업데이트 후 실행하세요.
+
+3개 샘플의 중앙값으로 순간 튐을 줄이며, 샘플 부족·32 ticks 미만의 범위·0/4095 encoder 경계 통과·통신 오류는 저장을 막습니다. 현재 모터에서 읽은 `homing_offset`과 기존 `drive_mode`를 저장하고 하드웨어 영점은 바꾸지 않습니다. 이는 JSON 기반 소프트웨어 가동범위 설정이며 모터 자체의 EEPROM 한계값 변경은 아닙니다. 저장한 뒤 팔을 새 범위 안의 자세로 놓고 runtime을 재시작하세요.
+
+현재 각도 계산은 범위의 중간값을 0도로 삼으므로, 범위를 바꾸면 기존 각도 목표·저장 자세·XYZ 매핑도 재확인해야 합니다. 관찰의 `ego.calibration_id`와 저장 시 출력하는 ID가 보정 내용을 식별합니다. XYZ 설정이 이전 ID를 가리키면 실행을 허용하지 않습니다. 범위만 되돌리려면 해당 백업 파일을 원래 경로로 복사하고 runtime을 재시작합니다.
+
 기본 설정은 `src/lekiwi_runtime/data/robot.json`입니다.
 
 - 카메라: `/dev/video0`, `/dev/video2`, 640×480, 30 FPS, JPEG.
@@ -109,6 +132,7 @@ guard 필드가 없는 기존 호출은 이전 인터페이스를 사용합니�
 - `ego.limits`로 보정된 범위와 속도 제한을 제공합니다. 현재 위치·위치 모드·온도·하드웨어 homing offset을 검사한 후 현재 위치를 목표로 기록하고 토크를 켭니다.
 - `ego.calibration_status`로 현재 raw 위치의 보정 범위 위반을 표시합니다. `ego.available`은 센서 읽기 가능 여부이며 모든 관절의 이동 허가를 뜻하지 않습니다. 범위를 벗어난 관절은 현재 위치가 정상 범위로 돌아왔는지 확인하기 전까지 명령 대상에서 제외해야 합니다.
 - 50Hz 목표 보간과 서보 속도 제한을 적용합니다. 관절 30deg/s, 그리퍼 50%/s, 100–1000ms입니다.
+- 보간 전 이동 시간·속도 설정(레지스터 44·46)의 응답이 timeout 또는 손상으로 누락되면, 최대 두 번 읽어 요청값이 실제로 저장됐는지 확인합니다. 정확히 일치할 때만 기존 동작을 이어가며 설정 쓰기나 행동 전체를 재전송하지 않습니다. 확인 내역은 `execution.arm_motion.communication_recoveries`와 `ego.last_motion.communication_recoveries`에 남습니다. 값 불일치·읽기 실패·서보 오류 및 목표 위치·토크 쓰기 실패는 이 복구 대상이 아닙니다.
 - 실행 후 최대 500ms 동안 관절 피드백을 확인합니다. 허용오차는 관절 2도, 그리퍼 5%p이며 미도달은 error입니다. `ego.last_motion`은 성공한 목표와 측정값을 포함합니다.
 - 정상 완료 후 목표 자세를 유지합니다. 중단·오류에는 측정 위치를 hold하도록 시도하고 자동으로 팔 토크를 끄지 않습니다. 이는 충돌 회피나 물체 파지 성공을 보장하지 않습니다.
 - 팔 기능을 사용하려면 ORIN에 변경된 runtime을 설치하고 재시작해야 합니다. 단순 관측과 베이스 주행은 팔 토크를 활성화하지 않습니다.

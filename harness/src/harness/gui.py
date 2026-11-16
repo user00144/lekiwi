@@ -99,8 +99,11 @@ def read_events(path):
 
 class GuiController:
     def __init__(self, server='tcp://127.0.0.1:5556', robot_id='kiwi-01', runs_dir='runs',
-                 model=None, demo=False, episode_fn=None):
+                 model=None, demo=False, episode_fn=None, kinematics_config=None):
         self.server, self.robot_id, self.model = server, robot_id, model
+        self.kinematics_config = Path(kinematics_config).expanduser().resolve() if kinematics_config else None
+        if demo and self.kinematics_config is not None:
+            raise ValueError('Demo mode does not accept a hardware kinematics configuration')
         self.mode = 'demo' if demo else 'live'
         self.runs_dir = Path(runs_dir).resolve()
         self.runs_dir.mkdir(parents=True, exist_ok=True)
@@ -143,10 +146,12 @@ class GuiController:
 
     async def _run(self, run_id, request):
         try:
+            options = {'kinematics_config': self.kinematics_config} if self.kinematics_config else {}
             await self.episode_fn(
                 self.server, request.model, request.robot_id, request.instruction,
                 run_dir=self._run_path(run_id, exists=False),
                 limits=EpisodeLimits(**request.limits.model_dump()),
+                **options,
             )
         except asyncio.CancelledError:
             self._fallback_result(run_id, 'interrupted', 'Loop stopped; an already sent command may still finish')
@@ -300,11 +305,13 @@ class GuiController:
             model = next((event['data'].get('model') for event in events
                           if event.get('event') == 'planner_started'), None)
         run_mode = request.get('mode', record.get('mode', 'execute'))
+        kinematics = next((event['data'] for event in reversed(events)
+                           if event.get('event') == 'kinematics_state'), None)
         return {'id': run_id, 'active': active, 'mode': 'demo' if run_mode == 'demo' else 'live',
                 'request': {'robot_id': request.get('robot_id'), 'instruction': request.get('instruction'),
                             'model': model, 'limits': request.get('limits', DEFAULT_LIMITS)},
                 'result': result, 'status': status, 'phase': phase, 'events': events,
-                'current_observation': current, 'before_observation': before}
+                'current_observation': current, 'before_observation': before, 'kinematics': kinematics}
 
     def snapshot(self):
         active_id = self.active_run_id
@@ -332,7 +339,8 @@ class GuiController:
             except (FileNotFoundError, OSError):
                 continue
         return {'mode': self.mode, 'config': {'server': self.server, 'robot_id': self.robot_id,
-                                            'model': self.model, 'limits': dict(DEFAULT_LIMITS)},
+                                            'model': self.model, 'limits': dict(DEFAULT_LIMITS),
+                                            'kinematics_configured': self.kinematics_config is not None},
                 'active_run_id': active_id, 'runs': runs,
                 'active': self.run_view(active_id) if active_id is not None else None}
 
@@ -450,10 +458,14 @@ def main():
     parser.add_argument('--model')
     parser.add_argument('--runs-dir', type=Path, default=Path('runs'))
     parser.add_argument('--demo', action='store_true', help='Synthetic episode, no model or robot calls')
+    parser.add_argument('--kinematics-config', type=Path, help='Verified local joint mapping for guarded XYZ execution')
     args = parser.parse_args()
     if not 1 <= args.port <= 65535:
         parser.error('--port must be 1..65535')
-    controller = GuiController(args.server, args.robot_id, args.runs_dir, args.model, args.demo)
+    if args.demo and args.kinematics_config:
+        parser.error('--demo cannot use --kinematics-config')
+    controller = GuiController(args.server, args.robot_id, args.runs_dir, args.model, args.demo,
+                               kinematics_config=args.kinematics_config)
     import uvicorn
     print(f'LeKiwi console: http://127.0.0.1:{args.port} ({controller.mode})', flush=True)
     uvicorn.run(create_app(controller, port=args.port), host='127.0.0.1', port=args.port)

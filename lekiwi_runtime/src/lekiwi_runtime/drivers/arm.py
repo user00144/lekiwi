@@ -1,6 +1,7 @@
 """STS3215 calibrated joint feedback and bounded position trajectories."""
 
 from contextlib import nullcontext
+from hashlib import sha256
 import json
 import math
 import sys
@@ -15,6 +16,18 @@ ARM_JOINTS = (
     ("wrist_flex", 4), ("wrist_roll", 5), ("gripper", 6),
 )
 PRESENT_POSITION = 56
+
+
+class ArmTransportError(OSError):
+    """Preserve SDK transport/device status without inferring actuation state."""
+    def __init__(self, operation, motor_id, register, communication, device_error):
+        self.operation = operation
+        self.motor_id = motor_id
+        self.register = register
+        self.communication = communication
+        self.device_error = device_error
+        super().__init__(f"Arm {motor_id} {operation} {register}: "
+                         f"communication={communication}, device={device_error}")
 
 
 def load_calibration(path: str) -> dict:
@@ -48,6 +61,7 @@ class ArmController:
         self.mock = mock
         self.enabled = config["enabled"]
         self.calibration = load_calibration(config["calib_path"]) if self.enabled else {}
+        self.calibration_id = sha256(json.dumps(self.calibration, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
         self.bus = bus if bus is not None else ServoBus(config)
         self.error = None
         self.last_motion = None
@@ -84,7 +98,7 @@ class ArmController:
         names = [name for name, _ in ARM_JOINTS]
         result = {"available": False, "port": ("mock" if self.mock else self.bus.port), "joints": {}, "angles": [],
                   "joint_names": names, "raw": {}, "timestamp": None, "error": None,
-                  "limits": self.limits(), "last_motion": self.last_motion,
+                  "limits": self.limits(), "last_motion": self.last_motion, "calibration_id": self.calibration_id,
                   "calibration_status": self.calibration_status({}, available=False)}
         if not self.enabled:
             return {**result, "error": "disabled"}
@@ -157,18 +171,66 @@ class ArmController:
 
     def _read(self, motor_id, address, size=2):
         import scservo_sdk as sdk
-        read = self.bus.packet_handler.read1ByteTxRx if size == 1 else self.bus.packet_handler.read2ByteTxRx
-        value, comm, error = read(self.bus.port_handler, motor_id, address)
+        if size not in (1, 2):
+            raise ValueError("Arm register reads must be one or two bytes")
+        # The SDK read helpers slice without validating the full response length;
+        # a short packet can even put its checksum in that data slice. Build the
+        # same READ request, but validate the entire status packet before decode.
+        request = [0, 0, motor_id, 4, sdk.INST_READ, address, size, 0]
+        packet, comm, error = self.bus.packet_handler.txRxPacket(self.bus.port_handler, request)
         if comm != sdk.COMM_SUCCESS or error:
-            raise OSError(f"Arm {motor_id} read {address}: communication={comm}, device={error}")
-        return value
+            raise ArmTransportError("read", motor_id, address, comm, error)
+        if (not isinstance(packet, (list, tuple, bytes, bytearray)) or len(packet) != size + 6
+                or any(type(value) is not int or not 0 <= value <= 255 for value in packet)
+                or list(packet[:5]) != [255, 255, motor_id, size + 2, 0]
+                or packet[-1] != (~sum(packet[2:-1]) & 255)):
+            raise OSError(f"Arm {motor_id} read {address}: invalid response payload")
+        data = packet[5:-1]
+        return data[0] if size == 1 else sdk.SCS_MAKEWORD(data[0], data[1])
 
     def _write(self, motor_id, address, value, size=2):
         import scservo_sdk as sdk
         write = self.bus.packet_handler.write1ByteTxRx if size == 1 else self.bus.packet_handler.write2ByteTxRx
         comm, error = write(self.bus.port_handler, motor_id, address, value)
         if comm != sdk.COMM_SUCCESS or error:
-            raise OSError(f"Arm {motor_id} write {address}: communication={comm}, device={error}")
+            raise ArmTransportError("write", motor_id, address, comm, error)
+
+    def _write_motion_profile(self, motor_id, address, value):
+        """Verify an ambiguous profile write with reads only; never resend it.
+
+        This is only for time/speed setup (44/46), before base motion or arm
+        interpolation. Goal/torque writes must keep their uncertain outcome.
+        All arm/wheel operations remain on the runtime's one serial caller;
+        never force-clear SDK ownership, reopen the bus, or flush its input.
+        """
+        import scservo_sdk as sdk
+        if address not in (44, 46) or type(value) is not int or not 0 <= value <= 65535:
+            raise ValueError("Only two-byte time/speed profile settings can be verified")
+        try:
+            self._write(motor_id, address, value)
+            return None
+        except ArmTransportError as failure:
+            if (failure.operation != "write" or failure.motor_id != motor_id or failure.register != address
+                    or failure.communication not in (sdk.COMM_RX_TIMEOUT, sdk.COMM_RX_CORRUPT)
+                    or failure.device_error != 0):
+                raise
+            for attempt in (1, 2):
+                try:
+                    actual = self._read(motor_id, address)
+                except ArmTransportError as read_failure:
+                    if (attempt == 2 or read_failure.operation != "read" or read_failure.motor_id != motor_id
+                            or read_failure.register != address or read_failure.device_error != 0
+                            or read_failure.communication not in (sdk.COMM_RX_TIMEOUT, sdk.COMM_RX_CORRUPT)):
+                        raise
+                    continue
+                if type(actual) is not int or actual != value:
+                    raise OSError(f"Arm {motor_id} profile {address} readback mismatch: "
+                                  f"requested={value}, read={actual}") from failure
+                recovery = {"motor_id": motor_id, "register": address, "requested": value,
+                            "read_value": actual, "read_attempts": attempt,
+                            "communication": failure.communication, "recovery": "verified_readback"}
+                print(f"Arm profile write verified by readback: {recovery}", file=sys.stderr, flush=True)
+                return recovery
 
     def hold(self):
         """On interruption hold measured positions, without dropping arm torque."""
@@ -188,6 +250,7 @@ class ArmController:
         if not self.valid_target(joints, duration_ms):
             raise PreDispatchRejected("invalid_arm_targets", "Invalid arm targets or duration")
         self.last_motion = None
+        communication_recoveries = []
         before = self.read_ego()
         if not before["available"]:
             raise OSError("Arm feedback unavailable: " + str(before["error"]))
@@ -241,8 +304,10 @@ class ArmController:
                     # Clear a stale goal before torque on. Limit native servo speed too.
                     self._write(mid, 42, before["raw"][name])
                     speed = (self.calibration[name]["range_max"] - self.calibration[name]["range_min"]) / 2 if name == "gripper" else 30 * 4095 / 360
-                    self._write(mid, 44, 0)
-                    self._write(mid, 46, max(1, round(speed)))
+                    for address, value in ((44, 0), (46, max(1, round(speed)))):
+                        recovery = self._write_motion_profile(mid, address, value)
+                        if recovery is not None:
+                            communication_recoveries.append(recovery)
                     self._write(mid, 40, 1, 1)
                 with base_motion if base_motion is not None else nullcontext():
                     steps = max(1, math.ceil(seconds / .02))
@@ -269,5 +334,6 @@ class ArmController:
         measured = {name: raw_to_unit(self._mock_raw[name], name, self.calibration[name])
                     for name in joints} if self.mock else measured
         self.last_motion = {"targets": dict(joints), "measured": measured, "reached": True,
-                            "tolerance_deg": 2, "tolerance_percent": 5, "timestamp": time.time()}
+                            "tolerance_deg": 2, "tolerance_percent": 5, "timestamp": time.time(),
+                            "communication_recoveries": communication_recoveries}
         print("Arm target reached; holding position", file=sys.stderr, flush=True)

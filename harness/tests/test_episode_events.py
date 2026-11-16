@@ -39,6 +39,9 @@ class MemoryTools:
         self.action_entered = asyncio.Event()
         self.action_release = asyncio.Event()
         self.action_release.set()
+        self.result_status = self.execution_outcome = 'completed'
+        self.command_sent = False
+        self.result_action_id = None
 
     def packet(self):
         self.sequence += 1
@@ -64,11 +67,13 @@ class MemoryTools:
         self.action_entered.set()
         await self.action_release.wait()
         packet = self.packet()
-        packet.update(status='completed', execution={
-            'action_id': arguments['action_id'], 'outcome': 'completed',
-            'command_sent': False, 'arm_reached': None,
+        packet.update(status=self.result_status, execution={
+            'action_id': self.result_action_id or arguments['action_id'], 'outcome': self.execution_outcome,
+            'command_sent': self.command_sent, 'arm_reached': None,
             'base_stop_command_sent': None, 'base_stop_verified': None,
         })
+        if self.result_status == 'error':
+            packet['error'] = 'Arm 2 write 46: communication=-6, device=0'
         return RobotTools._content(packet)
 
 
@@ -155,6 +160,7 @@ class EpisodeEventsTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(started['data']['observation_id'], 'obs-1')
         self.assertEqual(started['data']['action_attempts'], 1)
         self.assertEqual(finished['data']['status'], 'completed')
+        self.assertEqual(finished['data']['transport_status'], 'completed')
         self.assertEqual(finished['data']['result_status'], 'completed')
         self.assertLess(started['seq'], by_name['action_result']['seq'])
         self.assertLess(by_name['action_result']['seq'], finished['seq'])
@@ -162,6 +168,64 @@ class EpisodeEventsTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(by_name['motion_feedback']['data']['after_observation_id'], 'obs-2')
         self.assertEqual(len(self.tools.execute_calls), 1)
         self.assertEqual(self.tools.observe_calls, 1)
+
+    async def test_received_robot_error_is_not_reported_as_action_completed(self):
+        self.tools.result_status = 'error'
+        self.tools.execution_outcome = 'uncertain_execution'
+        self.tools.command_sent = None
+        planner = SimpleNamespace(decide=AsyncMock(side_effect=lambda c, _: decision(c, 'execute')))
+        result = await EpisodeRunner(planner, self.tools, 'kiwi', 'Inspect', self.path).run()
+        finished = next(event['data'] for event in self.events() if event['event'] == 'action_finished')
+        self.assertEqual(result['status'], 'uncertain_execution')
+        self.assertEqual(finished['status'], 'error')
+        self.assertEqual(finished['transport_status'], 'completed')
+        self.assertEqual(finished['result_status'], 'error')
+        self.assertEqual(finished['execution_outcome'], 'uncertain_execution')
+        self.assertIn('communication=-6', finished['result_error'])
+        self.assertEqual(len(self.tools.execute_calls), 1)
+        self.assertEqual(planner.decide.await_count, 1)
+
+    async def test_mismatched_completed_result_is_action_error(self):
+        self.tools.result_action_id = 'different-action'
+        planner = SimpleNamespace(decide=AsyncMock(side_effect=lambda c, _: decision(c, 'execute')))
+        result = await EpisodeRunner(planner, self.tools, 'kiwi', 'Inspect', self.path).run()
+        finished = next(event['data'] for event in self.events() if event['event'] == 'action_finished')
+        self.assertEqual(result['status'], 'uncertain_execution')
+        self.assertEqual(finished['status'], 'error')
+        self.assertEqual(finished['transport_status'], 'completed')
+        self.assertEqual(finished['result_status'], 'completed')
+        self.assertEqual(finished['error'], 'uncertain_execution')
+
+    async def test_safe_rejection_is_distinct_from_transport_failure(self):
+        self.tools.result_status = self.tools.execution_outcome = 'rejected'
+        choices = iter(('execute', 'blocked'))
+        planner = SimpleNamespace(decide=AsyncMock(side_effect=lambda c, _: decision(c, next(choices))))
+        result = await EpisodeRunner(planner, self.tools, 'kiwi', 'Inspect', self.path).run()
+        finished = next(event['data'] for event in self.events() if event['event'] == 'action_finished')
+        self.assertEqual(result['status'], 'blocked')
+        self.assertEqual(finished['status'], 'rejected')
+        self.assertEqual(finished['transport_status'], 'completed')
+        self.assertFalse(finished['command_sent'])
+        self.assertEqual(planner.decide.await_count, 2)
+
+    async def test_completed_without_observation_is_explicit_in_action_finish(self):
+        self.tools.result_status = 'completed_without_observation'
+        planner = SimpleNamespace(decide=AsyncMock(side_effect=lambda c, _: decision(c, 'execute')))
+        result = await EpisodeRunner(planner, self.tools, 'kiwi', 'Inspect', self.path).run()
+        finished = next(event['data'] for event in self.events() if event['event'] == 'action_finished')
+        self.assertEqual(result['status'], 'post_motion_observation_failed')
+        self.assertEqual(finished['status'], 'completed_without_observation')
+        self.assertEqual(finished['transport_status'], 'completed')
+
+    async def test_transport_exception_has_no_successful_response_status(self):
+        self.tools.execute = AsyncMock(side_effect=OSError('connection closed'))
+        planner = SimpleNamespace(decide=AsyncMock(side_effect=lambda c, _: decision(c, 'execute')))
+        result = await EpisodeRunner(planner, self.tools, 'kiwi', 'Inspect', self.path).run()
+        finished = next(event['data'] for event in self.events() if event['event'] == 'action_finished')
+        self.assertEqual(result['status'], 'uncertain_execution')
+        self.assertEqual(finished['status'], 'error')
+        self.assertEqual(finished['transport_status'], 'error')
+        self.assertNotIn('result_status', finished)
 
     async def test_cancelled_action_closes_phase_and_preserves_uncertainty(self):
         self.tools.action_release.clear()
@@ -180,6 +244,7 @@ class EpisodeEventsTest(unittest.IsolatedAsyncioTestCase):
         events = self.events()
         finished = next(event['data'] for event in events if event['event'] == 'action_finished')
         self.assertEqual(finished['status'], 'cancelled')
+        self.assertEqual(finished['transport_status'], 'cancelled')
         self.assertEqual(finished['error'], 'CancelledError')
         self.assertNotIn('action_result', [event['event'] for event in events])
         result = json.loads((self.path / 'result.json').read_text())

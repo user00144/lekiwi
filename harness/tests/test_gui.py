@@ -30,9 +30,10 @@ class RecordingEpisode:
         self.cleanup_release = asyncio.Event()
         self.hold_cleanup = False
 
-    async def __call__(self, server, model, robot_id, instruction, *, run_dir, limits):
+    async def __call__(self, server, model, robot_id, instruction, *, run_dir, limits, kinematics_config=None):
         self.calls.append({'server': server, 'model': model, 'robot_id': robot_id,
-                           'instruction': instruction, 'run_dir': run_dir, 'limits': limits})
+                           'instruction': instruction, 'run_dir': run_dir, 'limits': limits,
+                           'kinematics_config': kinematics_config})
         record = RunRecord(run_dir, robot_id, instruction, limits)
         record.event('startup_started', {'component': 'planner'})
         record.observation(packet('obs-before'), [('front', '/9j/2Q==', 'image/jpeg')])
@@ -130,6 +131,17 @@ class GuiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.episode.calls[0]['model'], 'configured-model')
         self.assertEqual(self.controller.run_view(run_id)['request']['model'], 'configured-model')
 
+    async def test_kinematics_path_is_launch_only_and_forwarded_to_existing_episode(self):
+        config = self.root / 'verified-mapping.json'
+        config.write_text('{}')
+        self.controller.kinematics_config = config
+        run_id = await self.start()
+        self.assertEqual(self.episode.calls[0]['kinematics_config'], config)
+        state = (await self.client.get('/api/state')).json()
+        self.assertTrue(state['config']['kinematics_configured'])
+        self.assertNotIn('kinematics_config', state['config'])
+        self.assertEqual(state['active_run_id'], run_id)
+
     async def test_single_active_until_cancelled_task_cleanup_finishes(self):
         self.episode.hold_cleanup = True
         run_id = await self.start()
@@ -218,6 +230,18 @@ class GuiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(view['current_observation']['observation_id'], 'obs-7')
         self.assertEqual(view['before_observation']['observation_id'], 'obs-2')
 
+    async def test_current_kinematics_comes_from_durable_events_without_sensor_polling(self):
+        run_id = 'kinematics-history'
+        record = RunRecord(self.controller.runs_dir / run_id, 'robot', 'goal', EpisodeLimits())
+        record.observation(packet('obs-fk'), [])
+        state = {'observation_id': 'obs-fk', 'available': True, 'executable': False,
+                 'current_xyz_m': [.1, .2, .3], 'frame': 'arm_base'}
+        record.event('kinematics_state', state)
+        view = self.controller.run_view(run_id)
+        self.assertEqual(view['kinematics'], state)
+        self.assertEqual(view['current_observation']['observation_id'], state['observation_id'])
+        self.assertEqual(self.episode.calls, [])
+
     async def test_fallback_retains_unconfirmed_or_mismatched_action(self):
         cases = [
             ('mismatch', 'completed', 'completed', True, 'other-action', True),
@@ -260,6 +284,7 @@ class GuiTest(unittest.IsolatedAsyncioTestCase):
             {**REQUEST, 'limits': {**REQUEST['limits'], 'max_steps': 201}},
             {**REQUEST, 'limits': {**REQUEST['limits'], 'max_seconds': 3601}},
             {**REQUEST, 'server': 'tcp://attacker:5556'},
+            {**REQUEST, 'kinematics_config': '/another/mapping.json'},
         ]
         for payload in payloads:
             response = await self.client.post('/api/runs', json=payload)

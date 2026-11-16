@@ -29,6 +29,14 @@ class JointTargets(BaseModel):
     gripper: float | None
 
 
+class CartesianTarget(BaseModel):
+    model_config = ConfigDict(extra='forbid', strict=True, allow_inf_nan=False)
+    frame: Literal['arm_base']
+    mode: Literal['absolute', 'relative']
+    xyz_m: list[float] = Field(min_length=3, max_length=3)
+    approach_axis: list[float] | None = Field(min_length=3, max_length=3)
+
+
 class Command(BaseModel):
     model_config = ConfigDict(extra='forbid', strict=True, allow_inf_nan=False)
     action: Literal['move', 'wait']
@@ -37,8 +45,25 @@ class Command(BaseModel):
     theta: float
     duration_ms: int
     joints: JointTargets | None
+    cartesian: CartesianTarget | None = None
+
+    @model_validator(mode='after')
+    def cartesian_is_arm_only(self):
+        if self.cartesian is not None and (self.action != 'move' or self.joints is not None
+                                          or any((self.x, self.y, self.theta))
+                                          or not 100 <= self.duration_ms <= 1000):
+            raise ValueError('Cartesian move requires zero base velocity, joints=null and duration_ms=100..1000')
+        return self
+
+    def request(self):
+        if self.cartesian is not None:
+            return {'action': 'move', 'x': 0., 'y': 0., 'theta': 0., 'duration_ms': self.duration_ms,
+                    'cartesian': self.cartesian.model_dump()}
+        return self.wire()
 
     def wire(self):
+        if self.cartesian is not None:
+            raise ValueError('Cartesian targets must be resolved by the host before motor dispatch')
         joints = self.joints.model_dump(exclude_none=True) if self.joints else None
         return build_command(self.action, self.x, self.y, self.theta, self.duration_ms, joints)
 
@@ -183,8 +208,13 @@ class EpisodeRunner:
     Budgets and observation identities are checked by the host. A record is inspection-only: a
     previously written action is never automatically replayed after restart.
     """
-    def __init__(self, planner, tools, robot_id, instruction, run_dir, limits=None, *, clock=time.monotonic):
+    def __init__(self, planner, tools, robot_id, instruction, run_dir, limits=None, *, clock=time.monotonic,
+                 cartesian=None):
         self.planner, self.tools = planner, tools
+        self.cartesian = cartesian
+        self.geometry = {'available': False, 'executable': False, 'frame': 'arm_base',
+                         'reasons': ['Cartesian controller is unavailable'],
+                         'reason_codes': ['cartesian_unavailable']}
         self.robot_id, self.instruction = robot_id, instruction
         self.limits = limits or EpisodeLimits()
         self.clock = clock
@@ -196,6 +226,7 @@ class EpisodeRunner:
         self.received_at = None
         self.runtime_id = None
         self.previous_decision = self.previous_result = None
+        self.previous_ik_result = None
         self.pending_feedback = None
         self.before_images = []
         self.completion_candidate = None
@@ -240,6 +271,13 @@ class EpisodeRunner:
             data['error'] = exc.reason if isinstance(exc, EpisodeStopped) else type(exc).__name__
             raise
         finally:
+            if name == 'action':
+                # A finished RPC is not proof of a successful robot action. Keep
+                # transport lifecycle separate from the validated runtime result.
+                if data.get('transport_status') == 'pending':
+                    data['transport_status'] = status
+                if status == 'completed':
+                    status = data.get('result_status', status)
             self.record.event(name + '_finished', {
                 **data, 'status': status, 'duration_s': round(max(0, self.clock() - started), 3),
                 'steps': self.steps, 'action_attempts': self.actions,
@@ -272,6 +310,13 @@ class EpisodeRunner:
         self.packet, self.images, self.received_at = packet, images, self.clock()
         self._clear_recovered_calibration()
         self.record.observation(packet, images)
+        if self.cartesian is not None:
+            try:
+                self.geometry = self.cartesian.evaluate(packet)
+            except Exception as exc:
+                self.geometry = {'available': False, 'executable': False, 'frame': 'arm_base',
+                                 'reasons': [f'{type(exc).__name__}: {exc}'], 'reason_codes': ['fk_error']}
+            self.record.event('kinematics_state', {**self.geometry, 'observation_id': observation_id})
 
     def _clear_recovered_calibration(self):
         """A fresh encoder sample may clear a restriction; target changes never do."""
@@ -315,6 +360,8 @@ class EpisodeRunner:
                                    if self.rejection_feedback else None),
             'calibration_restrictions': {joint: failure['error_details']
                                          for joint, failure in self.calibration_rejections.items()},
+            'cartesian': self.geometry,
+            'previous_ik_result': self.previous_ik_result,
             'completion_candidate': self.completion_candidate,
             'budget': {'actions_remaining': self.limits.max_actions - self.actions,
                        'decisions_remaining': self.limits.max_steps - self.steps,
@@ -343,7 +390,7 @@ class EpisodeRunner:
                     try:
                         decision = Decision.model_validate(raw)
                         if decision.command is not None:
-                            decision.command.wire()
+                            decision.command.request()
                     except ValueError as exc:
                         raise EpisodeStopped('invalid_decision', str(exc)) from exc
                     self.record.event('decision', decision.model_dump())
@@ -407,7 +454,15 @@ class EpisodeRunner:
     async def execute(self, decision):
         if self.actions >= self.limits.max_actions:
             raise EpisodeStopped('budget_actions')
-        command = decision.command.wire()
+        command = decision.command.request()
+        if decision.command.cartesian is not None:
+            request_signature = json.dumps(command, sort_keys=True)
+            if request_signature in self.rejected_commands:
+                await self._reject_repeated(command, self.rejected_commands[request_signature], decision.observation_id)
+                return
+            command = await self._resolve_cartesian(decision, command)
+            if command is None:
+                return
         signature = json.dumps(command, sort_keys=True)
         if signature == self.rejected_signature:
             raise EpisodeStopped('repeated_failed_action', 'Change the rejected/failed command after inspecting feedback')
@@ -415,28 +470,16 @@ class EpisodeRunner:
                         if joint in (command.get('joints') or {})), None)
         failure = failure or self.rejected_commands.get(signature)
         if failure is not None:
-            # The original response proved no command was sent. Give one extra planning
-            # opportunity without redispatching the same impossible request to the robot.
-            self.repeat_block_count += 1
-            self.rejection_feedback = {
-                **failure, 'source': 'host', 'command': command,
-                'rejected_command': failure['command'],
-                'current_observation_id': decision.observation_id, 'repeat_block_count': self.repeat_block_count,
-                'guidance': 'This proposed command was not sent. Inspect the rejection and choose a different '
-                            'feasible action, observe, or report blocked. Changing only an out-of-calibration '
-                            'joint target cannot fix its invalid current position.',
-            }
-            self.record.event('decision_rejected', {'reason': 'repeated_failed_action',
-                                                   **self.rejection_feedback})
-            if self.repeat_block_count >= 2:
-                self.record.event('rejection_feedback', self.rejection_feedback)
-                raise EpisodeStopped('repeated_failed_action',
-                                     'Repeated a known rejected command after a correction opportunity')
-            await self._reobserve_rejection()
+            await self._reject_repeated(command, failure, decision.observation_id)
             return
         self.check_time()
         if command['duration_ms'] / 1000 >= self.remaining():
             raise EpisodeStopped('budget_seconds', 'Insufficient time for the requested action')
+        if not self._fresh():
+            self.record.event('decision_rejected', {'reason': 'observation_expired_before_dispatch'})
+            self.previous_result = {'status': 'rejected', 'reason': 'Observation expired while preparing the action'}
+            await self.observe()
+            return
         before = self.packet
         action_id = uuid4().hex
         arguments = {**command, 'observation_id': decision.observation_id, 'runtime_id': self.runtime_id,
@@ -446,14 +489,23 @@ class EpisodeRunner:
         self.actions += 1
         self.in_flight = action_id
         async with self.phase('action', action_id=action_id, observation_id=decision.observation_id,
-                              action_attempt=self.actions) as phase:
-            packet, images = decode_content(await self.bounded(lambda: self.tools.execute(self.robot_id, **arguments)))
+                              action_attempt=self.actions, transport_status='pending') as phase:
+            content = await self.bounded(lambda: self.tools.execute(self.robot_id, **arguments))
+            phase['transport_status'] = 'completed'
+            packet, images = decode_content(content)
             self.record.event('action_result', {'action_id': action_id, 'packet': packet})
             phase['result_status'] = packet.get('status')
-        execution = packet.get('execution') or {}
-        if execution.get('action_id') != action_id:
-            raise EpisodeStopped('uncertain_execution', 'Missing or mismatched execution action_id')
-        status, sent = packet.get('status'), execution.get('command_sent')
+            phase['result_error'] = packet.get('error') or packet.get('observation_error')
+            execution = packet.get('execution')
+            if not isinstance(execution, dict) or execution.get('action_id') != action_id:
+                raise EpisodeStopped('uncertain_execution', 'Missing or mismatched execution action_id')
+            status, sent = packet.get('status'), execution.get('command_sent')
+            phase['execution_outcome'], phase['command_sent'] = execution.get('outcome'), sent
+            safe_rejection = status == 'rejected' and sent is False and execution.get('outcome') == 'rejected'
+            confirmed = (status in ('completed', 'completed_without_observation') and type(sent) is bool
+                         and execution.get('outcome') == 'completed')
+            if not safe_rejection and not confirmed:
+                raise EpisodeStopped('uncertain_execution', f'Execution {status}: observation or result not confirmed')
         if status == 'rejected' and sent is False and execution.get('outcome') == 'rejected':
             self.in_flight = None
             self.previous_result = packet
@@ -478,8 +530,6 @@ class EpisodeRunner:
         if status == 'completed_without_observation' and execution.get('outcome') == 'completed':
             self.in_flight = None
             raise EpisodeStopped('post_motion_observation_failed', 'Action completed; fresh observation unavailable')
-        if status != 'completed' or type(sent) is not bool or execution.get('outcome') != 'completed':
-            raise EpisodeStopped('uncertain_execution', f'Execution {status}: observation or result not confirmed')
         self.in_flight = None
         self.previous_result = packet
         self.before_images = self.images
@@ -492,6 +542,69 @@ class EpisodeRunner:
             self.rejected_commands.clear()
             self.rejection_feedback = None
             self.repeat_block_count = 0
+
+    async def _reject_repeated(self, command, failure, observation_id):
+        # Both host IK rejection and explicit runtime rejection guarantee no motion
+        # for this proposal. One extra correction opportunity never retransmits it.
+        self.repeat_block_count += 1
+        self.rejection_feedback = {
+            **failure, 'source': 'host', 'command': command, 'rejected_command': failure['command'],
+            'current_observation_id': observation_id, 'repeat_block_count': self.repeat_block_count,
+            'guidance': 'This proposed command was not sent. Inspect the rejection and choose a different '
+                        'feasible action, observe, or report blocked. Changing only an out-of-calibration '
+                        'joint target cannot fix its invalid current position. Do not relax geometry or calibration checks.',
+        }
+        self.record.event('decision_rejected', {'reason': 'repeated_failed_action', **self.rejection_feedback})
+        if self.repeat_block_count >= 2:
+            self.record.event('rejection_feedback', self.rejection_feedback)
+            raise EpisodeStopped('repeated_failed_action',
+                                 'Repeated a known rejected command after a correction opportunity')
+        await self._reobserve_rejection()
+
+    async def _resolve_cartesian(self, decision, requested_command):
+        request = decision.command.cartesian.model_dump()
+        try:
+            if self.cartesian is None:
+                result = {'success': False, 'executable': False, 'reason_codes': ['cartesian_unavailable'],
+                          'reasons': ['Cartesian controller is unavailable']}
+            else:
+                result = await self.bounded(lambda: asyncio.to_thread(
+                    self.cartesian.solve, self.packet, request, decision.command.duration_ms))
+            if not isinstance(result, dict):
+                raise ValueError('IK controller returned an invalid result')
+            resolved = None
+            if result.get('success') is True and result.get('executable') is True:
+                joints = result.get('joints')
+                names = {'shoulder_pan', 'shoulder_lift', 'elbow_flex', 'wrist_flex', 'wrist_roll'}
+                if not isinstance(joints, dict) or set(joints) != names:
+                    raise ValueError('IK result must contain exactly the five arm joints, without gripper')
+                resolved = build_command('move', 0., 0., 0., decision.command.duration_ms, joints)
+        except (EpisodeStopped, TimeoutError, asyncio.CancelledError):
+            raise
+        except Exception as exc:
+            resolved = None
+            result = {'success': False, 'executable': False, 'reason_codes': ['ik_error'],
+                      'reasons': [f'{type(exc).__name__}: {exc}']}
+        self.previous_ik_result = {**result, 'request': request, 'observation_id': decision.observation_id}
+        self.record.event('ik_result', self.previous_ik_result)
+        if resolved is not None:
+            return resolved
+        reasons = result.get('reasons') or ['IK preview cannot authorize execution']
+        self.rejection_feedback = {
+            'source': 'host', 'action_id': None, 'command': requested_command,
+            'error': '; '.join(str(reason) for reason in reasons),
+            'error_code': (result.get('reason_codes') or ['ik_unavailable'])[0],
+            'error_details': {'ik_result': result}, 'command_sent': False,
+            'failed_observation_id': decision.observation_id, 'current_observation_id': None,
+            'repeat_block_count': self.repeat_block_count,
+            'guidance': 'No motor command was sent. Inspect the IK error and fresh observation; revise the XYZ '
+                        'target, use a feasible joint action, observe, or report blocked. Never invent mapping '
+                        'verification, calibration identity, camera depth, or loosen limits to make a solution pass.',
+        }
+        self.previous_result = {'status': 'rejected', **self.rejection_feedback}
+        self.rejected_commands[json.dumps(requested_command, sort_keys=True)] = self.rejection_feedback
+        await self._reobserve_rejection()
+        return None
 
     async def _reobserve_rejection(self):
         self.record.event('rejection_feedback', self.rejection_feedback)
