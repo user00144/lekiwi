@@ -19,6 +19,11 @@ class FakeTools:
         self.behavior = 'completed'
         self.capability = True
         self.recorded = False
+        self.rejection = {'error': 'Requested wrist_roll motion exceeds speed limit',
+                          'error_code': 'arm_speed_limit', 'error_details': {'joint': 'wrist_roll'}}
+        self.raw = {}
+        self.ego_available = True
+        self.execution_override = {}
 
     def packet(self):
         self.sequence += 1
@@ -28,7 +33,8 @@ class FakeTools:
                 'action_context': {'observation_id': oid, 'runtime_id': 'runtime',
                                    'movement_allowed': True, 'max_age_s': 10},
                 'observation': {'observation_id': oid, 'runtime_id': 'runtime',
-                                'ego': {'joints': {'wrist_roll': self.joint}},
+                                'ego': {'available': self.ego_available,
+                                        'joints': {'wrist_roll': self.joint}, 'raw': dict(self.raw)},
                                 'cameras': {name: {'available': True, 'encoding': 'jpeg_base64',
                                                   'data': '/9j/2Q==', 'timestamp': 2.}
                                             for name in ('front', 'wrist')}}}
@@ -40,7 +46,7 @@ class FakeTools:
         self.calls.append({'robot_id': robot_id, **args})
         if self.behavior == 'timeout':
             await asyncio.sleep(10)
-        if self.behavior != 'no_progress':
+        if self.behavior not in ('no_progress', 'rejected'):
             self.joint = (args.get('joints') or {}).get('wrist_roll', self.joint)
         packet = self.packet()
         packet.update(status='completed', execution={
@@ -50,6 +56,7 @@ class FakeTools:
         if self.behavior == 'rejected':
             packet['status'] = packet['execution']['outcome'] = 'rejected'
             packet['execution']['command_sent'] = False
+            packet.update(self.rejection)
         elif self.behavior == 'missing_observation':
             packet['status'] = 'completed_without_observation'
             del packet['observation']
@@ -59,6 +66,7 @@ class FakeTools:
             packet['execution']['action_id'] = 'wrong'
         elif self.behavior == 'runtime_changed':
             packet['observation']['runtime_id'] = packet['action_context']['runtime_id'] = 'new'
+        packet['execution'].update(self.execution_override)
         return RobotTools._content(packet)
 
 
@@ -231,12 +239,137 @@ class EpisodeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result['status'], 'blocked')
         self.assertEqual(len(self.tools.calls), 2)
         self.assertNotEqual(self.tools.calls[0]['observation_id'], self.tools.calls[1]['observation_id'])
+        feedback = planner.contexts[1]['rejection_feedback']
+        self.assertEqual(feedback['action_id'], self.tools.calls[0]['action_id'])
+        self.assertEqual(feedback['command']['joints'], {'wrist_roll': 3.})
+        self.assertEqual(feedback['error_code'], 'arm_speed_limit')
+        self.assertEqual(feedback['failed_observation_id'], 'obs-1')
+        self.assertEqual(feedback['current_observation_id'], planner.contexts[1]['current']['observation']['observation_id'])
+        self.assertFalse(feedback['command_sent'])
+        self.assertEqual(planner.contexts[1]['previous_result']['status'], 'rejected')
+        self.assertIsNone(planner.contexts[2]['rejection_feedback'])
+        events = [json.loads(line) for line in (self.path / 'events.jsonl').read_text().splitlines()]
+        recovery = [event['data'] for event in events if event['event'] == 'rejection_feedback']
+        self.assertIsNone(recovery[0]['current_observation_id'])
+        self.assertEqual(recovery[-1], feedback)
 
     async def test_unchanged_rejected_command_is_not_repeated(self):
         self.tools.behavior = 'rejected'
-        result = await self.run_episode(ScriptedPlanner('execute', 'execute'))
+        planner = ScriptedPlanner('execute', 'execute', 'execute')
+        result = await self.run_episode(planner)
         self.assertEqual(result['status'], 'repeated_failed_action')
         self.assertEqual(len(self.tools.calls), 1)
+        self.assertEqual(result['steps'], 3)
+        self.assertEqual(planner.contexts[2]['rejection_feedback']['source'], 'host')
+        self.assertEqual(planner.contexts[2]['rejection_feedback']['repeat_block_count'], 1)
+        self.assertNotEqual(planner.contexts[1]['current']['observation']['observation_id'],
+                            planner.contexts[2]['current']['observation']['observation_id'])
+
+    async def test_duplicate_rejection_gets_one_chance_to_correct_without_resending(self):
+        self.tools.behavior = 'rejected'
+        def revised(context):
+            self.tools.behavior = 'completed'
+            return decision(context, 'execute', target=1.)
+        result = await self.run_episode(ScriptedPlanner('execute', 'execute', revised,
+                                                       'task_complete', 'task_complete'))
+        self.assertEqual(result['status'], 'completion_claim')
+        self.assertEqual([call['joints'] for call in self.tools.calls],
+                         [{'wrist_roll': 3.}, {'wrist_roll': 1.}])
+        self.assertEqual(result['action_attempts'], 2)
+
+    async def test_alternating_rejected_commands_cannot_resend_old_failure(self):
+        self.tools.behavior = 'rejected'
+        planner = ScriptedPlanner('execute', lambda c: decision(c, 'execute', target=6.),
+                                  'execute', lambda c: decision(c, 'execute', target=6.))
+        result = await self.run_episode(planner)
+        self.assertEqual(result['status'], 'repeated_failed_action')
+        self.assertEqual(len(self.tools.calls), 2)
+
+    def calibration_failure(self):
+        self.tools.behavior = 'rejected'
+        self.tools.raw['wrist_roll'] = 3133
+        self.tools.rejection = {
+            'error': 'Current wrist_roll is outside calibration',
+            'error_code': 'arm_current_out_of_calibration',
+            'error_details': {'joint': 'wrist_roll', 'raw': 3133, 'raw_min': 930, 'raw_max': 3095,
+                              'current': 98.418, 'min': -95.0769, 'max': 95.0769, 'unit': 'deg'},
+        }
+
+    async def test_changing_target_cannot_bypass_current_calibration_rejection(self):
+        self.calibration_failure()
+        planner = ScriptedPlanner('execute', lambda c: decision(c, 'execute', target=2.),
+                                  lambda c: decision(c, 'execute', target=1.))
+        result = await self.run_episode(planner)
+        self.assertEqual(result['status'], 'repeated_failed_action')
+        self.assertEqual(len(self.tools.calls), 1)
+        self.assertEqual(planner.contexts[1]['calibration_restrictions']['wrist_roll']['raw'], 3133)
+        self.assertEqual(planner.contexts[2]['rejection_feedback']['command']['joints'], {'wrist_roll': 2.})
+
+    async def test_fresh_normal_encoder_reading_can_clear_calibration_restriction(self):
+        self.calibration_failure()
+        def inspect(context):
+            self.tools.raw['wrist_roll'] = 2048  # Simulate an independently corrected sensor state.
+            return decision(context, 'observe')
+        def revised(context):
+            self.assertEqual(context['calibration_restrictions'], {})
+            self.tools.behavior = 'completed'
+            return decision(context, 'execute')
+        result = await self.run_episode(ScriptedPlanner('execute', inspect, revised, 'blocked'))
+        self.assertEqual(result['status'], 'blocked')
+        self.assertEqual(len(self.tools.calls), 2)
+
+    async def test_rejection_correction_stays_within_action_budget(self):
+        self.tools.behavior = 'rejected'
+        result = await self.run_episode(ScriptedPlanner('execute', lambda c: decision(c, 'execute', target=1.)),
+                                        max_actions=1)
+        self.assertEqual(result['status'], 'budget_actions')
+        self.assertEqual(len(self.tools.calls), 1)
+        self.assertIsNone(result['pending_action_id'])
+
+    async def test_partial_unavailable_encoder_read_does_not_clear_calibration_restriction(self):
+        self.calibration_failure()
+        def inspect(context):
+            self.tools.raw['wrist_roll'] = 2048
+            self.tools.ego_available = False
+            return decision(context, 'observe')
+        planner = ScriptedPlanner('execute', inspect, lambda c: decision(c, 'execute', target=1.), 'blocked')
+        result = await self.run_episode(planner)
+        self.assertEqual(result['status'], 'blocked')
+        self.assertEqual(len(self.tools.calls), 1)
+        self.assertIn('wrist_roll', planner.contexts[2]['calibration_restrictions'])
+        self.assertEqual(planner.contexts[3]['rejection_feedback']['source'], 'host')
+
+    async def test_rejection_without_confirmed_unsent_matching_result_never_recovers(self):
+        for number, override in enumerate(({'command_sent': None}, {'command_sent': True},
+                                           {'command_sent': 0}, {'outcome': 'uncertain_execution'},
+                                           {'action_id': 'mismatched'})):
+            with self.subTest(override=override):
+                tools = FakeTools()
+                tools.behavior = 'rejected'
+                tools.execution_override = override
+                planner = ScriptedPlanner('execute', 'execute')
+                runner = EpisodeRunner(planner, tools, 'kiwi', 'task',
+                                       Path(self.temp.name) / f'unknown-{number}')
+                result = await runner.run()
+                self.assertEqual(result['status'], 'uncertain_execution')
+                self.assertEqual(len(tools.calls), 1)
+                self.assertEqual(len(planner.contexts), 1)
+                self.assertEqual(result['pending_action_id'], tools.calls[0]['action_id'])
+                self.assertIsNone(result['rejection_feedback'])
+
+    async def test_other_motion_does_not_clear_uncorrected_calibration_restriction(self):
+        self.calibration_failure()
+        def base_alternative(context):
+            self.tools.behavior = 'completed'
+            output = decision(context, 'execute')
+            output['command'].update(joints=None, x=.01)
+            return output
+        planner = ScriptedPlanner('execute', base_alternative, 'execute', 'blocked')
+        result = await self.run_episode(planner)
+        self.assertEqual(result['status'], 'blocked')
+        self.assertEqual(len(self.tools.calls), 2)
+        self.assertIn('wrist_roll', planner.contexts[2]['calibration_restrictions'])
+        self.assertEqual(planner.contexts[3]['rejection_feedback']['source'], 'host')
 
     async def test_no_measured_joint_progress_blocks_identical_retry(self):
         self.tools.behavior = 'no_progress'

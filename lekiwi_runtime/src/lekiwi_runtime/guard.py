@@ -10,6 +10,8 @@ import math
 import time
 from uuid import uuid4
 
+from .robot import PreDispatchRejected
+
 
 GUARD_FIELDS = frozenset({"observation_id", "runtime_id", "action_id", "reason"})
 CAPABILITIES = {"guarded_execution": 1}
@@ -319,6 +321,12 @@ class ExecutionGuard:
                                  "action_id": identity}
                 response = {"status": execution["outcome"], "execution": execution,
                             "capabilities": dict(CAPABILITIES), "action_context": self._context()}
+            except PreDispatchRejected as exc:
+                # Only an explicit driver guarantee that no motor write has
+                # happened is recoverable. The consumed lease still requires
+                # a new observation and this action ID keeps its rejection.
+                response = self._reject(command, str(exc)[:1024])
+                response.update(error_code=exc.code, error_details=exc.details)
             except Exception as exc:
                 self._halt_reason = "uncertain_execution"
                 response = {"status": "error", "error": str(exc)[:1024],

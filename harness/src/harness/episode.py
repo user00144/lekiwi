@@ -202,6 +202,10 @@ class EpisodeRunner:
         self.claim = None
         self.in_flight = None
         self.rejected_signature = None
+        self.rejected_commands = {}
+        self.calibration_rejections = {}
+        self.rejection_feedback = None
+        self.repeat_block_count = 0
 
     def remaining(self):
         return self.limits.max_seconds - (self.clock() - self.started)
@@ -266,7 +270,27 @@ class EpisodeRunner:
             raise EpisodeStopped('observation_invalid', 'A new observation is required')
         self.runtime_id = runtime_id
         self.packet, self.images, self.received_at = packet, images, self.clock()
+        self._clear_recovered_calibration()
         self.record.observation(packet, images)
+
+    def _clear_recovered_calibration(self):
+        """A fresh encoder sample may clear a restriction; target changes never do."""
+        ego = self.packet['observation'].get('ego') or {}
+        if ego.get('available') is not True:
+            return
+        raw = ego.get('raw') or {}
+        recovered = set()
+        for joint, failure in list(self.calibration_rejections.items()):
+            detail = failure['error_details']
+            values = (raw.get(joint), detail.get('raw_min'), detail.get('raw_max'))
+            if (all(type(value) in (int, float) and math.isfinite(value) for value in values)
+                    and values[1] <= values[0] <= values[2]):
+                del self.calibration_rejections[joint]
+                recovered.add(joint)
+        for signature, failure in list(self.rejected_commands.items()):
+            if (failure.get('error_code') == 'arm_current_out_of_calibration'
+                    and failure['error_details'].get('joint') in recovered):
+                del self.rejected_commands[signature]
 
     def _fresh(self):
         return (self.packet is not None and
@@ -286,6 +310,11 @@ class EpisodeRunner:
             'robot_id': self.robot_id, 'task': self.instruction, 'current': self.packet,
             'previous_decision': self.previous_decision, 'previous_result': self.previous_result,
             'pending_motion_feedback': self.pending_feedback,
+            'rejection_feedback': ({**self.rejection_feedback,
+                                    'current_observation_id': self.packet['observation']['observation_id']}
+                                   if self.rejection_feedback else None),
+            'calibration_restrictions': {joint: failure['error_details']
+                                         for joint, failure in self.calibration_rejections.items()},
             'completion_candidate': self.completion_candidate,
             'budget': {'actions_remaining': self.limits.max_actions - self.actions,
                        'decisions_remaining': self.limits.max_steps - self.steps,
@@ -368,6 +397,7 @@ class EpisodeRunner:
                   'task': self.instruction, 'steps': self.steps, 'action_attempts': self.actions,
                   'observations': self.record.sequence, 'elapsed_s': round(self.clock() - self.started, 3),
                   'completion_claim': self.claim, 'physical_success_verified': False,
+                  'rejection_feedback': self.rejection_feedback,
                   'pending_action_id': self.in_flight, 'automatic_resume': False,
                   'run_dir': str(self.record.path)}
         self.record.event('episode_finished', result)
@@ -381,6 +411,29 @@ class EpisodeRunner:
         signature = json.dumps(command, sort_keys=True)
         if signature == self.rejected_signature:
             raise EpisodeStopped('repeated_failed_action', 'Change the rejected/failed command after inspecting feedback')
+        failure = next((failure for joint, failure in self.calibration_rejections.items()
+                        if joint in (command.get('joints') or {})), None)
+        failure = failure or self.rejected_commands.get(signature)
+        if failure is not None:
+            # The original response proved no command was sent. Give one extra planning
+            # opportunity without redispatching the same impossible request to the robot.
+            self.repeat_block_count += 1
+            self.rejection_feedback = {
+                **failure, 'source': 'host', 'command': command,
+                'rejected_command': failure['command'],
+                'current_observation_id': decision.observation_id, 'repeat_block_count': self.repeat_block_count,
+                'guidance': 'This proposed command was not sent. Inspect the rejection and choose a different '
+                            'feasible action, observe, or report blocked. Changing only an out-of-calibration '
+                            'joint target cannot fix its invalid current position.',
+            }
+            self.record.event('decision_rejected', {'reason': 'repeated_failed_action',
+                                                   **self.rejection_feedback})
+            if self.repeat_block_count >= 2:
+                self.record.event('rejection_feedback', self.rejection_feedback)
+                raise EpisodeStopped('repeated_failed_action',
+                                     'Repeated a known rejected command after a correction opportunity')
+            await self._reobserve_rejection()
+            return
         self.check_time()
         if command['duration_ms'] / 1000 >= self.remaining():
             raise EpisodeStopped('budget_seconds', 'Insufficient time for the requested action')
@@ -404,8 +457,23 @@ class EpisodeRunner:
         if status == 'rejected' and sent is False and execution.get('outcome') == 'rejected':
             self.in_flight = None
             self.previous_result = packet
-            self.rejected_signature = signature
-            await self.observe()
+            details = packet.get('error_details')
+            details = details if isinstance(details, dict) else {}
+            self.rejection_feedback = {
+                'source': 'runtime', 'action_id': action_id, 'command': command,
+                'error': packet.get('error', 'Runtime rejected the command before dispatch'),
+                'error_code': packet.get('error_code'), 'error_details': details,
+                'command_sent': False, 'failed_observation_id': decision.observation_id,
+                'current_observation_id': None, 'repeat_block_count': self.repeat_block_count,
+                'guidance': 'No command was sent. Reinspect current observations and revise the failed '
+                            'command within the existing limits. Do not repeat it unchanged or relax '
+                            'calibration/speed limits. Use blocked if no feasible alternative remains.',
+            }
+            self.rejected_commands[signature] = self.rejection_feedback
+            joint = details.get('joint')
+            if packet.get('error_code') == 'arm_current_out_of_calibration' and isinstance(joint, str):
+                self.calibration_rejections[joint] = self.rejection_feedback
+            await self._reobserve_rejection()
             return
         if status == 'completed_without_observation' and execution.get('outcome') == 'completed':
             self.in_flight = None
@@ -420,6 +488,19 @@ class EpisodeRunner:
         self.pending_feedback = self._feedback(before, self.packet, command, execution)
         self.record.event('motion_feedback', self.pending_feedback)
         self.rejected_signature = signature if self.pending_feedback['no_joint_progress'] else None
+        if command['action'] == 'move' and not self.pending_feedback['no_joint_progress']:
+            self.rejected_commands.clear()
+            self.rejection_feedback = None
+            self.repeat_block_count = 0
+
+    async def _reobserve_rejection(self):
+        self.record.event('rejection_feedback', self.rejection_feedback)
+        await self.observe()
+        self.rejection_feedback = {
+            **self.rejection_feedback,
+            'current_observation_id': self.packet['observation']['observation_id'],
+        }
+        self.record.event('rejection_feedback', self.rejection_feedback)
 
     @staticmethod
     def _check_post_motion(packet, command, execution):

@@ -27,11 +27,25 @@
     observation: "관찰 저장", planning_started: "다음 행동 판단 중", planning_finished: "판단 수신",
     decision: "에이전트 판단", decision_rejected: "판단 보류", action_prepared: "명령 준비",
     action_started: "행동 실행", action_finished: "행동 응답", action_result: "실행 결과",
-    motion_feedback: "실행 전후 비교", completion_candidate: "완료 주장 · 재관찰 요청",
+    motion_feedback: "실행 전후 비교", rejection_feedback: "명령 거부 · 재관찰 후 수정", completion_candidate: "완료 주장 · 재관찰 요청",
     episode_finished: "작업 종료", stopping: "루프 중지 요청", stop_requested: "루프 중지 요청",
     error: "오류",
   };
   const jointLabels = {shoulder_pan: "어깨 회전", shoulder_lift: "어깨 높이", elbow_flex: "팔꿈치", wrist_flex: "손목 굽힘", wrist_roll: "손목 회전", gripper: "그리퍼"};
+  const rejectionLabels = {
+    arm_current_out_of_calibration: "현재 관절 위치가 보정 범위를 벗어났습니다.",
+    arm_target_out_of_range: "목표 관절값이 허용 범위를 벗어났습니다.",
+    arm_speed_limit: "요청한 관절 변화가 속도 제한을 넘습니다.",
+    arm_state_changed: "판단 이후 관절 위치가 바뀌었습니다.",
+    observation_expired: "판단에 사용한 관찰의 유효기간이 지났습니다.",
+    observation_mismatch: "명령과 현재 관찰이 일치하지 않습니다.",
+    arm_feedback_unavailable_or_stale: "최신 관절 피드백을 확인하지 못했습니다.",
+    wrist_camera_unavailable_or_stale: "최신 손목 카메라 관찰이 필요합니다.",
+    front_camera_unavailable_or_stale: "최신 전방 카메라 관찰이 필요합니다.",
+    no_fresh_camera: "사용할 수 있는 최신 카메라 관찰이 없습니다.",
+    imu_stale: "IMU 관찰이 오래되어 베이스 명령을 보내지 않았습니다.",
+    repeated_failed_action: "거부된 명령이 수정 없이 반복되었습니다.",
+  };
 
   function node(tag, className, text) {
     const element = document.createElement(tag);
@@ -122,7 +136,7 @@
     if (run?.status === "stopping" || state.stoppingId === run?.id) return ["reviewing", "다음 행동을 중지하고 있습니다"];
     if (/action|execut|mov/.test(phase)) return ["executing", "로봇이 한 행동을 실행하고 있습니다"];
     if (/plan|thinking|decid|decision/.test(phase)) return ["thinking", "관찰을 바탕으로 다음 행동을 판단합니다"];
-    if (/review|verif|feedback|confirm/.test(phase)) return ["reviewing", "실행 결과와 새 관찰을 확인합니다"];
+    if (/review|verif|feedback|confirm|reject|recover/.test(phase)) return ["reviewing", "실행 결과와 새 관찰을 확인합니다"];
     if (/observ|captur/.test(phase)) return ["observing", "로봇의 현재 상태를 관찰하고 있습니다"];
     return ["observing", "작업을 준비하고 있습니다"];
   }
@@ -174,6 +188,7 @@
     if (run) announce(`${label(status)}. ${run.active ? headline : ""}`);
     renderObservations(run);
     renderDecision(decision, latestEvent(run, "motion_feedback")?.data);
+    renderRejection(run);
     renderTimeline(run);
   }
 
@@ -230,6 +245,81 @@
       item.append(node("b", "", `${value.toFixed(1)}${name === "gripper" ? "%" : "°"}`));
       $("joint-values").append(item);
     }
+    renderCalibration(observation.ego || {});
+  }
+
+  function calibrationLine(detail) {
+    const name = jointLabels[detail.joint] || detail.joint || "관절";
+    const values = [detail.current, detail.min, detail.max];
+    const unit = detail.unit === "%" || detail.joint === "gripper" ? "%" : "°";
+    let line = values.every((value) => typeof value === "number" && Number.isFinite(value))
+      ? `${name} ${values[0].toFixed(3)}${unit} / 허용 ${values[1].toFixed(3)}~${values[2].toFixed(3)}${unit}` : name;
+    if (detail.joint === "gripper" && [detail.raw, detail.raw_min, detail.raw_max].every(Number.isFinite)) {
+      line += ` · 센서 원시값 ${detail.raw} / 보정 ${detail.raw_min}~${detail.raw_max}`;
+    }
+    return `${line} · 해당 관절 이동 불가`;
+  }
+  function renderCalibration(ego) {
+    let panel = $("calibration-diagnostics");
+    if (!panel) {
+      panel = node("div", "calibration-diagnostics");
+      panel.id = "calibration-diagnostics";
+      panel.setAttribute("aria-label", "관절 범위 진단");
+      $("joint-values").after(panel);
+    }
+    // Older saved observations have joint limits but no structured diagnosis.
+    const issues = Array.isArray(ego.calibration_status?.out_of_range) ? ego.calibration_status.out_of_range
+      : Object.entries(ego.joints || {}).flatMap(([joint, current]) => {
+        const range = ego.limits?.[joint];
+        return range && [current, range.min, range.max].every(Number.isFinite) && (current < range.min - .001 || current > range.max + .001)
+          ? [{joint, current, min: range.min, max: range.max, unit: range.unit}] : [];
+      });
+    panel.hidden = issues.length === 0;
+    panel.replaceChildren();
+    if (!issues.length) return;
+    panel.append(node("strong", "", "현재 관절 범위 확인"));
+    issues.forEach((detail) => panel.append(node("p", "", calibrationLine(detail))));
+  }
+
+  function safeRejection(packet) {
+    return packet?.status === "rejected" && packet.execution?.outcome === "rejected" && packet.execution?.command_sent === false;
+  }
+  function rejectionReason(data) {
+    const code = data.error_code || data.error;
+    return rejectionLabels[code] || data.error || "실행 전 검사에서 명령을 거부했습니다.";
+  }
+  function rejectionGuidance(data) {
+    const code = data.error_code || data.error;
+    if (code === "arm_current_out_of_calibration") return "해당 관절의 목표만 바꿔서는 해결되지 않습니다. 새 관찰을 확인하고 제한된 관절을 제외한 계획을 검토합니다.";
+    if (code === "arm_target_out_of_range") return "새 관찰의 허용 범위 안으로 목표값을 수정합니다.";
+    if (code === "arm_speed_limit") return "이동량을 줄이거나 허용 시간 안에서 동작 시간을 늘려 다시 판단합니다.";
+    return data.source === "host" ? "이미 거부된 명령은 다시 전송하지 않았습니다. 새 관찰로 가능한 다른 행동을 판단합니다."
+      : "명령을 다시 보내기 전에 새 관찰로 원인을 확인하고 계획을 수정합니다.";
+  }
+  function renderRejection(run) {
+    let card = $("rejection-card");
+    if (!card) {
+      card = node("section", "rejection-card");
+      card.id = "rejection-card";
+      card.setAttribute("aria-label", "전송 전 명령 거부와 수정 지침");
+      $("command-details").before(card);
+    }
+    const resultEvent = latestEvent(run, "action_result");
+    const feedbackEvent = latestEvent(run, "rejection_feedback");
+    const feedbackSafe = feedbackEvent?.data?.command_sent === false;
+    const latestSafe = safeRejection(resultEvent?.data?.packet);
+    const event = feedbackSafe && (!resultEvent || feedbackEvent.seq >= resultEvent.seq) ? feedbackEvent : latestSafe ? resultEvent : null;
+    card.hidden = !event;
+    card.replaceChildren();
+    if (!event) return;
+    const data = event.event === "action_result" ? event.data.packet : event.data;
+    const head = node("div", "rejection-heading");
+    head.append(node("strong", "", "명령 거부 · 재관찰 후 수정"), node("span", "badge warning", "미전송 확인"));
+    card.append(head, node("p", "rejection-reason", rejectionReason(data)));
+    if (data.error_code === "arm_current_out_of_calibration" && data.error_details?.joint) card.append(node("p", "rejection-detail", calibrationLine(data.error_details)));
+    card.append(node("p", "", rejectionGuidance(data)));
+    const context = run?.active ? "이 명령은 전송되지 않았으며, 에이전트가 다음 판단을 진행합니다." : "이전에 거부된 명령의 기록입니다. 현재 작업 상태는 위에 표시됩니다.";
+    card.append(node("small", "", context));
   }
 
   function renderDecision(decision, feedback) {
@@ -271,7 +361,8 @@
   function renderEvent(event) {
     const kind = event.event;
     const data = event.data || {};
-    const category = kind === "decision" ? "decision" : kind.startsWith("action") ? "action" : kind === "error" || kind === "decision_rejected" ? "error" : "";
+    const rejected = kind === "rejection_feedback" || kind === "action_result" && safeRejection(data.packet);
+    const category = rejected ? "rejection" : kind === "decision" ? "decision" : kind.startsWith("action") ? "action" : kind === "error" || kind === "decision_rejected" ? "error" : "";
     const item = node("article", `timeline-event ${category}`);
     const head = node("div", "event-head");
     const finishedPhase = {observe_finished: "관찰", planning_finished: "판단", action_finished: "행동 실행", startup_finished: "작업 준비"}[kind];
@@ -298,9 +389,20 @@
     } else if (kind === "action_result") {
       const packet = data.packet || data;
       const execution = packet.execution || {};
-      item.append(node("p", "event-body", packet.status === "completed" ? "동작 응답 수신 · 새 관찰로 결과를 확인합니다." : packet.error || packet.observation_error || label(packet.status)));
+      const message = safeRejection(packet) ? "명령 거부 · 재관찰 후 수정. 이 명령은 로봇에 전송되지 않았습니다."
+        : execution.outcome === "uncertain_execution" ? "실행 여부 미확정 · 자동 재실행을 중단했습니다."
+          : packet.status === "completed" ? "동작 응답 수신 · 새 관찰로 결과를 확인합니다." : packet.error || packet.observation_error || label(packet.status);
+      item.append(node("p", "event-body", message));
+      if (safeRejection(packet)) eventLine(item, "거부 원인", rejectionReason(packet));
+      else if (execution.outcome === "uncertain_execution") eventLine(item, "오류", packet.error);
       if (typeof execution.arm_reached === "boolean") eventLine(item, "팔 목표", execution.arm_reached ? "엔코더 허용 오차 내 도달" : "도달 미확인");
       if (execution.base_stop_verified === false) eventLine(item, "베이스", "정지 명령 처리 · 실제 이동량·정지 상태는 미측정");
+    } else if (kind === "rejection_feedback") {
+      item.append(node("p", "event-body", rejectionReason(data)));
+      eventLine(item, "전송 상태", data.command_sent === false ? "미전송 · 새 관찰 후 수정 판단" : "확인 필요");
+      if (data.error_code === "arm_current_out_of_calibration" && data.error_details?.joint) eventLine(item, "관절 상태", calibrationLine(data.error_details));
+      eventLine(item, "수정 지침", rejectionGuidance(data));
+      eventLine(item, "거부 명령", commandLabel(data.command));
     } else if (kind === "motion_feedback") {
       const deltas = Object.entries(data.joint_delta || {}).filter(([, value]) => typeof value === "number");
       item.append(node("p", "event-body", deltas.length ? deltas.map(([name, value]) => `${jointLabels[name] || name} ${value >= 0 ? "+" : ""}${value.toFixed(1)}${name === "gripper" ? "%p" : "°"}`).join(" · ") : "동작 전후 관찰이 다음 판단에 전달됩니다."));

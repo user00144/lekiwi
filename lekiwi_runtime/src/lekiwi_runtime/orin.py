@@ -96,8 +96,9 @@ class OrinRobot:
     def execute_guarded(self, command: dict) -> dict:
         """Report what this driver verifies; base pose/stationarity are unknown.
 
-        Exceptions deliberately propagate: a partly transmitted serial command
-        cannot be classified as safe to retry by the network layer.
+        Only PreDispatchRejected certifies a validation failure before motor
+        writes. It and other exceptions propagate to the guard, which preserves
+        uncertainty for communication errors and partly transmitted commands.
         """
         accepted = self.execute(command)
         moving = command.get("action") == "move"

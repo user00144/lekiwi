@@ -3,6 +3,7 @@ from unittest.mock import Mock, patch
 from lekiwi_runtime.config import load_config
 from lekiwi_runtime.drivers.arm import ArmController, raw_to_unit, ARM_JOINTS
 from lekiwi_runtime.orin import OrinRobot
+from lekiwi_runtime.robot import PreDispatchRejected
 
 
 class ArmMotionTest(unittest.TestCase):
@@ -61,7 +62,7 @@ class ArmMotionTest(unittest.TestCase):
         arm=self.make_live()
         original=arm._read.side_effect
         arm._read.side_effect=lambda mid,addr,size=2: 1 if addr==33 else original(mid,addr,size)
-        with self.assertRaisesRegex(OSError,'position mode'):
+        with self.assertRaisesRegex(PreDispatchRejected,'position mode'):
             arm.move({'wrist_roll':10},1000)
         arm._write.assert_not_called()
 

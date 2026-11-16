@@ -35,6 +35,8 @@ uv run --project harness harness-gui --demo --port 8766
 
 GUI는 localhost에서만 열립니다. 기존 TEMP GUI가 8765를 사용하면 다른 포트를 지정하세요. TEMP GUI와 외부 lekiwi-console은 수정하지 않았습니다. 새 GUI의 화면 갱신은 실행 기록만 읽으며 별도의 로봇 관찰 요청을 보내지 않습니다.
 
+전송 전 검증에서 거부된 명령은 원인·새 관찰을 받아 자동으로 수정 판단을 이어갑니다. GUI에도 명령 거부와 보정 범위 진단을 표시합니다. 같은 불가능한 명령은 반복 전송하지 않으며, 실제 실행 여부가 불확실한 오류는 중단합니다. 이 구분에는 업데이트된 ORIN runtime과 GUI 재시작이 필요합니다. [오류 복구와 재시작 안내](../docs/agent-loop.md#실패와-재관찰)
+
 ## 기본 제안 모드
 
 ```bash

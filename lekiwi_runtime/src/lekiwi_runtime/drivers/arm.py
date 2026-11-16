@@ -8,6 +8,7 @@ from pathlib import Path
 import time
 
 from .servo import ServoBus
+from ..robot import PreDispatchRejected
 
 ARM_JOINTS = (
     ("shoulder_pan", 1), ("shoulder_lift", 2), ("elbow_flex", 3),
@@ -83,7 +84,8 @@ class ArmController:
         names = [name for name, _ in ARM_JOINTS]
         result = {"available": False, "port": ("mock" if self.mock else self.bus.port), "joints": {}, "angles": [],
                   "joint_names": names, "raw": {}, "timestamp": None, "error": None,
-                  "limits": self.limits(), "last_motion": self.last_motion}
+                  "limits": self.limits(), "last_motion": self.last_motion,
+                  "calibration_status": self.calibration_status({}, available=False)}
         if not self.enabled:
             return {**result, "error": "disabled"}
         if self.mock:
@@ -115,7 +117,26 @@ class ArmController:
                   for name, value in raw.items()}
         return {**result, "available": not errors, "port": ("mock" if self.mock else self.bus.port),
                 "joints": joints, "angles": [joints[n] for n in names if n in joints],
-                "raw": raw, "timestamp": time.time(), "error": "; ".join(errors) or None}
+                "raw": raw, "timestamp": time.time(), "error": "; ".join(errors) or None,
+                "calibration_status": self.calibration_status(raw, available=not errors)}
+
+    def calibration_status(self, raw: dict, *, available=True) -> dict:
+        """Report measured raw-range validity without changing bounds or feedback.
+
+        Gripper percentages are clamped for the legacy observation contract, so
+        raw encoder values, not those percentages, determine range validity.
+        """
+        missing = [name for name, _ in ARM_JOINTS if name not in raw]
+        outside = [self._calibration_details(name, raw[name]) for name in self.calibration
+                   if name in raw and not self.calibration[name]["range_min"] <= raw[name] <= self.calibration[name]["range_max"]]
+        return {"valid": (not outside) if available and self.enabled and not missing else None,
+                "out_of_range": outside, "missing_joints": missing}
+
+    def _calibration_details(self, name, raw):
+        cal, limit = self.calibration[name], self.limits()[name]
+        return {"joint": name, "raw": raw, "raw_min": cal["range_min"], "raw_max": cal["range_max"],
+                "current": round(raw_to_unit(raw, name, cal), 3),
+                "min": limit["min"], "max": limit["max"], "unit": limit["unit"]}
 
     def limits(self) -> dict:
         return {name: {"min": 0 if name == "gripper" else raw_to_unit(cal["range_min"], name, cal),
@@ -165,7 +186,7 @@ class ArmController:
 
     def move(self, joints: dict, duration_ms: int, base_motion=None):
         if not self.valid_target(joints, duration_ms):
-            raise ValueError("Invalid arm targets or duration")
+            raise PreDispatchRejected("invalid_arm_targets", "Invalid arm targets or duration")
         self.last_motion = None
         before = self.read_ego()
         if not before["available"]:
@@ -178,9 +199,15 @@ class ArmController:
             cal = self.calibration[name]
             current = before["raw"][name]
             if not cal["range_min"] <= current <= cal["range_max"]:
-                raise ValueError(f"Current {name} is outside calibration")
+                raise PreDispatchRejected("arm_current_out_of_calibration",
+                                          f"Current {name} is outside calibration",
+                                          **self._calibration_details(name, current))
             if abs(target - before["joints"][name]) > limits[name]["max_speed"] * seconds:
-                raise ValueError(f"Requested {name} motion exceeds speed limit {limits[name]['max_speed']} {limits[name]['unit']}/s")
+                raise PreDispatchRejected("arm_speed_limit",
+                                          f"Requested {name} motion exceeds speed limit {limits[name]['max_speed']} {limits[name]['unit']}/s",
+                                          joint=name, current=before["joints"][name], target=target,
+                                          max_speed=limits[name]["max_speed"], duration_ms=duration_ms,
+                                          unit=limits[name]["unit"])
             if name == "gripper":
                 percent = 100 - target if cal.get("drive_mode", 0) else target
                 raw = cal["range_min"] + percent / 100 * (cal["range_max"] - cal["range_min"])
@@ -197,13 +224,16 @@ class ArmController:
             for name in joints:
                 mid = ids[name]
                 if self._read(mid, 33, 1) != 0:
-                    raise OSError(f"Arm {mid} must already be in position mode")
+                    raise PreDispatchRejected("arm_position_mode_required",
+                                              f"Arm {mid} must already be in position mode", joint=name, motor_id=mid)
                 if self._read(mid, 63, 1) >= 65:
-                    raise OSError(f"Arm {mid} temperature exceeds limit")
+                    raise PreDispatchRejected("arm_temperature_limit",
+                                              f"Arm {mid} temperature exceeds limit", joint=name, motor_id=mid)
                 offset = self._read(mid, 31)
                 offset = -(offset & 0x7ff) if offset & 0x800 else offset
                 if offset != self.calibration[name].get("homing_offset"):
-                    raise OSError(f"Arm {mid} homing offset does not match calibration")
+                    raise PreDispatchRejected("arm_homing_offset_mismatch",
+                                              f"Arm {mid} homing offset does not match calibration", joint=name, motor_id=mid)
             try:
                 for name in joints:
                     mid = ids[name]

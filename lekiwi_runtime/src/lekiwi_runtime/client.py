@@ -3,7 +3,7 @@ import sys
 
 import zmq
 
-from .robot import Robot
+from .robot import PreDispatchRejected, Robot
 from .guard import CAPABILITIES, GUARD_FIELDS, ExecutionGuard
 
 
@@ -33,6 +33,12 @@ class RobotClient:
                     self.guard.invalidate()
                     try:
                         accepted = self.robot.execute(request)
+                    except PreDispatchRejected as exc:
+                        # This known no-write rejection must not poison later
+                        # guarded leases. Legacy replies keep their small shape.
+                        reply.update(status="rejected", error=str(exc),
+                                     error_code=exc.code, error_details=exc.details)
+                        accepted = False
                     except BaseException:
                         self.guard.halt()
                         raise

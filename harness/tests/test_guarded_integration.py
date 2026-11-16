@@ -254,7 +254,41 @@ class GuardedIntegrationTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(json.loads((run_dir / "result.json").read_text()), report)
             events = [json.loads(line)["event"] for line in (run_dir / "events.jsonl").read_text().splitlines()]
             self.assertLess(events.index("action_prepared"), events.index("action_result"))
-            self.assertEqual(len(list((run_dir / "observations").glob("*/*.jpg"))), 6)
+            # Each camera has its own capture thread. For this arm-only command
+            # the wrist may produce its post-motion frame before the front;
+            # the guard must omit that older front image, not save six images
+            # by reusing a pre-action frame. Verify the exact declared files
+            # and frame barrier instead of assuming synchronized cameras.
+            directories = sorted((run_dir / "observations").iterdir())
+            self.assertEqual(len(directories), 3)
+            for directory, context in zip(directories, contexts):
+                stored = json.loads((directory / "observation.json").read_text())
+                self.assertEqual(stored["observation"]["observation_id"],
+                                 context["current"]["observation"]["observation_id"])
+                manifest = json.loads((directory / "images.json").read_text())
+                expected = {name for name, camera in stored["observation"]["cameras"].items()
+                            if camera["available"] and camera["encoding"] == "jpeg_base64"}
+                self.assertIn("wrist", expected)
+                images = manifest["images"]
+                self.assertEqual(len(images), len(expected))
+                self.assertEqual({image["label"] for image in images}, expected)
+                self.assertEqual(set(directory.glob("*.jpg")),
+                                 {run_dir / image["path"] for image in images})
+                for image in images:
+                    self.assertGreater((run_dir / image["path"]).stat().st_size, 0)
+            post = contexts[1]["current"]
+            barrier = post["execution"]["motion_finished_at"]
+            post_images = json.loads((directories[1] / "images.json").read_text())["images"]
+            self.assertEqual({image["label"] for image in post_images},
+                             {label.removeprefix("CURRENT ") for label, _, _ in image_sets[1]
+                              if label.startswith("CURRENT ")})
+            for image in post_images:
+                self.assertGreater(post["observation"]["cameras"][image["label"]]["timestamp"], barrier)
+            front = post["observation"]["cameras"]["front"]
+            if not front["available"]:
+                self.assertEqual(front["error"], "no_fresh_post_action_frame")
+                self.assertIsNone(front["data"])
+                self.assertNotIn("front", {image["label"] for image in post_images})
 
 
 if __name__ == "__main__":
