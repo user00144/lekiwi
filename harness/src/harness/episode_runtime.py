@@ -66,14 +66,14 @@ Use hypot(x,y)<=0.4, abs(theta)<=150. Base motion and wait duration_ms=1..1000.
 Prefer short base motions supported by current clearance.
 Arm joints are absolute degrees (shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll); gripper is
 absolute opening percent 0..100. Null joints are omitted and stay unchanged. Use current ego.limits and
-measured joint values; arm-only duration=100..10000ms with x=y=theta=0, max arm change=30deg/s,
+measured joint values; arm-only duration=100..20000ms with x=y=theta=0, max arm change=30deg/s,
 gripper=50 percentage points/s. Arm targets need not arrive within one second: select sufficient time
 from the measured joint distance and ego.limits max_speed without relaxing speed or calibration limits.
 Any combined base-and-arm motion remains limited to 100..1000ms.
 Cartesian control is available only when context.cartesian.executable is true. Its current_xyz_m is FK
 for the measured arm pose in arm_base. For an XYZ command set command.cartesian to
 {frame:"arm_base", mode:"absolute"|"relative", xyz_m:[x,y,z], approach_axis:null|[x,y,z]}, joints=null,
-x=y=theta=0 and duration_ms=100..10000. Absolute xyz_m is a target in metres; relative xyz_m is a displacement
+x=y=theta=0 and duration_ms=100..20000. Absolute xyz_m is a target in metres; relative xyz_m is a displacement
 along arm_base axes from CURRENT measured FK, not the tool axes or the previous requested target.
 approach_axis is an optional gripper +Z direction in arm_base, not a full orientation. The host solves
 IK within the verified joint mapping, current calibration limits and per-step speed constraints, then

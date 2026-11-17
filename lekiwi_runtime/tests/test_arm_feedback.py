@@ -31,7 +31,7 @@ class FakeClock:
 class ArmFeedbackTest(unittest.TestCase):
     def make_arm(self):
         bus = SimpleNamespace(port='memory', port_handler=object(), close=Mock())
-        arm = ArmController(load_config()['arm'], bus=bus)
+        arm = ArmController({**load_config()['arm'], 'p_coefficient': None}, bus=bus)
         packets = test_profile_readback.MemoryPackets(arm)
         packets.follow_goals = False
         packets.read2ByteTxRx = lambda port, mid, address: (packets.raw[packets.names[mid]], 0, 0)
@@ -99,7 +99,7 @@ class ArmFeedbackTest(unittest.TestCase):
         self.assertTrue(fresh['available'])
         self.assertEqual(fresh['control']['revision'], 'verified-arm-reconcile-v3')
         self.assertEqual(fresh['control']['feedback_timeout_s'], 2.)
-        self.assertEqual(fresh['control']['max_duration_ms'], 10000)
+        self.assertEqual(fresh['control']['max_duration_ms'], 20000)
         self.assertEqual(fresh['last_motion'], feedback)
         self.assertNotEqual(fresh['raw']['wrist_roll'], feedback['measured_raw']['wrist_roll'])
         json.dumps(feedback, allow_nan=False)

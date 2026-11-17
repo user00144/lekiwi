@@ -18,7 +18,7 @@ from test_profile_readback import MemoryPackets, status_packet
 class ArmReconcileTest(unittest.TestCase):
     def make_arm(self, progress=None):
         bus = SimpleNamespace(port='memory', port_handler=object(), close=Mock())
-        arm = ArmController(load_config()['arm'], bus=bus)
+        arm = ArmController({**load_config()['arm'], 'p_coefficient': None}, bus=bus)
         packets = MemoryPackets(arm)
         packets.follow_goals = False
         packets.read2ByteTxRx = lambda port, mid, address: (packets.raw[packets.names[mid]], 0, 0)

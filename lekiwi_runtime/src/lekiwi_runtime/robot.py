@@ -2,7 +2,7 @@ from typing import Protocol
 
 
 BASE_MAX_DURATION_MS = 1000
-ARM_MAX_DURATION_MS = 10000
+ARM_MAX_DURATION_MS = 20000
 
 
 class PreDispatchRejected(ValueError):

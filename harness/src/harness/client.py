@@ -7,7 +7,7 @@ import zmq.asyncio
 
 
 class ServerClient:
-    def __init__(self, endpoint: str, timeout: float = 25):
+    def __init__(self, endpoint: str, timeout: float = 45):
         if timeout <= 0:
             raise ValueError("timeout must be positive")
         self.endpoint = endpoint

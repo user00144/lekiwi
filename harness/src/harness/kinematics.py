@@ -26,7 +26,11 @@ MAX_IK_STARTS = 4
 MAX_IK_NFEV_PER_START = 100
 MAX_QP_ITERATIONS = 2000
 MAX_IK_STEP_RAD = math.radians(10.)
-MAX_CARTESIAN_DURATION_MS = 10000
+MAX_CARTESIAN_DURATION_MS = 20000
+# The runtime interpolates joints linearly. A long single command can sweep the
+# tip below both endpoints, so its sampled joint-space path is checked too.
+SWEPT_PATH_SAMPLES = 21
+SWEPT_PATH_MAX_DIP_M = .01
 SEED_REGULARIZATION_M_PER_RAD = .0001
 DATA_DIR = Path(__file__).with_name('data')
 DEFAULT_URDF = DATA_DIR / 'so101_new_calib.urdf'
@@ -624,6 +628,19 @@ class CartesianController:
         result['solution_runtime_joints_deg'] = dict(zip(ARM_JOINTS, solution_runtime.tolist()))
         result['solution_urdf_joints_deg'] = solved['solution_joints_deg']
         result['effective_runtime_limits_deg'] = {name: bounded_runtime[i].tolist() for i, name in enumerate(ARM_JOINTS)}
+        heights = [self.geometry.forward(dict(zip(ARM_JOINTS, (
+            (runtime + s * (solution_runtime - runtime)) * self.signs + self.offsets).tolist())))['xyz_m'][2]
+            for s in np.linspace(0., 1., SWEPT_PATH_SAMPLES)]
+        floor = min(heights[0], heights[-1])
+        result['swept_path'] = {'interpolation': 'runtime joint-linear', 'samples': SWEPT_PATH_SAMPLES,
+                                'start_z_m': heights[0], 'end_z_m': heights[-1], 'min_z_m': min(heights),
+                                'dip_below_endpoints_m': max(0., floor - min(heights)),
+                                'max_dip_m': SWEPT_PATH_MAX_DIP_M, 'collision_checked': False}
+        if floor - min(heights) > SWEPT_PATH_MAX_DIP_M:
+            result['success'] = False
+            self._reason(result, 'swept_path_dips', f'관절 직선 보간 경로에서 집게 끝이 양 끝점보다 '
+                         f'{floor - min(heights):.3f} m 내려갑니다. 중간 경유점을 먼저 지정하세요.')
+            return result
         result['executable'] = state['executable'] and solved['success']
         result['mode'] = 'ready' if result['executable'] else 'preview'
         if result['executable']:

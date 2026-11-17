@@ -35,7 +35,8 @@
     "enabled": true,
     "port": null,
     "baudrate": 1000000,
-    "calib_path": "follower.json"
+    "calib_path": "follower.json",
+    "p_coefficient": 32
   },
   "imu": {
     "enabled": true,

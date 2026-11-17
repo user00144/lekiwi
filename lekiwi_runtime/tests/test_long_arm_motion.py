@@ -62,7 +62,7 @@ class LongArmMotionTest(unittest.TestCase):
         cases = [
             {**base, axis: value} for axis, value in [('x', .01), ('y', -.01), ('theta', .01)]
         ] + [
-            {**base, 'duration_ms': value} for value in [99, 10001, True, 2000.5]
+            {**base, 'duration_ms': value} for value in [99, 20001, True, 2000.5]
         ] + [
             {**base, 'joints': value} for value in [{}, None, {'unknown': 0}, {'wrist_roll': True}]
         ] + [
@@ -104,7 +104,7 @@ class LongArmMotionTest(unittest.TestCase):
         self.assertIsNone(ExecutionGuard._validate(command))
         self.assertIsNone(ExecutionGuard._validate({**command, 'x': 0, 'y': 0., 'theta': -0.}))
         for change in ({'joints': {}}, {'joints': None}, {'x': .001}, {'theta': .001},
-                       {'action': 'wait'}, {'duration_ms': 10001}, {'duration_ms': True}):
+                       {'action': 'wait'}, {'duration_ms': 20001}, {'duration_ms': True}):
             with self.subTest(change=change):
                 self.assertEqual(ExecutionGuard._validate({**command, **change}), 'invalid_duration')
 

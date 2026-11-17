@@ -9,7 +9,7 @@ import zmq
 import zmq.asyncio
 
 
-DEFAULT_TIMEOUT_S = 20.0
+DEFAULT_TIMEOUT_S = 35.0
 
 
 class RobotServer:

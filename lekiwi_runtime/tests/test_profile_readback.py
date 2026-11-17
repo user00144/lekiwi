@@ -67,7 +67,7 @@ class MemoryPackets:
 class ProfileReadbackTest(unittest.TestCase):
     def make_arm(self):
         bus = SimpleNamespace(port='memory', port_handler=SimpleNamespace(is_using=False))
-        arm = ArmController(load_config()['arm'], bus=bus)
+        arm = ArmController({**load_config()['arm'], 'p_coefficient': None}, bus=bus)
         bus.packet_handler = packets = MemoryPackets(arm)
 
         def read_ego():

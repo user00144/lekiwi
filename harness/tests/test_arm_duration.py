@@ -24,8 +24,8 @@ def command(*, duration=3000, action='move', x=0., y=0., theta=0., joint='wrist_
 
 
 class ArmDurationSchemaTest(unittest.TestCase):
-    def test_arm_and_gripper_only_allow_up_to_ten_seconds_without_duration_clamping(self):
-        for duration in (100, 1000, 1001, 3000, 10000):
+    def test_arm_and_gripper_only_allow_up_to_twenty_seconds_without_duration_clamping(self):
+        for duration in (100, 1000, 1001, 3000, 10000, 20000):
             for joint in ('wrist_roll', 'gripper'):
                 with self.subTest(duration=duration, joint=joint):
                     value = Command.model_validate(command(duration=duration, joint=joint)).wire()
@@ -34,13 +34,13 @@ class ArmDurationSchemaTest(unittest.TestCase):
                     self.assertEqual(build_command('move', 0., 0., 0., duration, {joint: 30.}), value)
 
     def test_cartesian_accepts_longer_arm_only_duration_and_still_requires_resolution(self):
-        for duration in (100, 1000, 3000, 10000):
+        for duration in (100, 1000, 3000, 10000, 20000):
             value = Command.model_validate(command(duration=duration, cartesian=True))
             self.assertEqual(value.request()['duration_ms'], duration)
             with self.assertRaisesRegex(ValueError, 'resolved by the host'):
                 value.wire()
         schema = planner_decision_schema()['$defs']['Command']['properties']['duration_ms']
-        self.assertEqual(schema['maximum'], 10000)
+        self.assertEqual(schema["maximum"], 20000)
 
     def test_base_combined_wait_and_empty_move_retain_one_second_limit(self):
         cases = [command(joint=None), command(action='wait', joint=None)]
@@ -58,7 +58,7 @@ class ArmDurationSchemaTest(unittest.TestCase):
                 self.assertEqual(accepted.wire()['duration_ms'], 1000)
 
     def test_no_duration_type_or_empty_target_bypass(self):
-        for duration in (True, 3000., '3000', 0, 99, 10001):
+        for duration in (True, 3000., '3000', 0, 99, 20001):
             with self.subTest(duration=duration), self.assertRaises(ValueError):
                 Command.model_validate(command(duration=duration))
             with self.subTest(duration=duration), self.assertRaises(ValueError):
@@ -74,8 +74,8 @@ class ArmDurationSchemaTest(unittest.TestCase):
             with self.subTest(axis=axis), self.assertRaises(ValueError):
                 Command.model_validate(command(cartesian=True, **{axis: .1}))
 
-    def test_client_default_outlasts_twenty_second_broker(self):
-        self.assertGreater(ServerClient('inproc://unused').timeout, 20.)
+    def test_client_default_outlasts_thirty_five_second_broker(self):
+        self.assertGreater(ServerClient("inproc://unused").timeout, 35.)
         self.assertEqual(ServerClient('inproc://unused', timeout=2.).timeout, 2.)
 
 
@@ -84,7 +84,7 @@ class ArmDurationToolTest(unittest.IsolatedAsyncioTestCase):
         client = AsyncMock()
         client.request.return_value = {'status': 'completed'}
         tool = Tool.from_function(RobotTools(client).execute, structured_output=False)
-        self.assertEqual(tool.parameters['properties']['duration_ms']['maximum'], 10000)
+        self.assertEqual(tool.parameters['properties']["duration_ms"]["maximum"], 20000)
         fields = {'observation_id': 'observation', 'runtime_id': 'runtime',
                   'action_id': 'action', 'reason': 'Measured arm target with sufficient motion time'}
         content = await tool.run({'robot_id': 'test', 'joints': {'wrist_roll': 90.},

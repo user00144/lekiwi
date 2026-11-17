@@ -165,7 +165,7 @@ class GuiPreviewTest(unittest.IsolatedAsyncioTestCase):
                  {'source': 'recorded', 'run_id': 'saved', 'joints_deg': MODEL_SEED},
                  {'source': 'model', 'joints_deg': {'shoulder_pan': 0}},
                  {'source': 'model', 'joints_deg': {**MODEL_SEED, 'shoulder_pan': True}},
-                 {'source': 'model', 'duration_ms': True}, {'source': 'model', 'duration_ms': 10001},
+                 {'source': 'model', 'duration_ms': True}, {'source': 'model', 'duration_ms': 20001},
                  {'source': 'model', 'target': {**TARGET, 'xyz_m': [1, 2]}},
                  {'source': 'model', 'target': {**TARGET, 'frame': 'camera'}}]
         for payload in cases:

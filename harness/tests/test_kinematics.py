@@ -301,7 +301,7 @@ class CartesianSolveTest(unittest.TestCase):
 
     def test_malformed_requests_fail_before_optimization(self):
         controller = CartesianController(config())
-        inputs = [(request([0., 0., 0.]), duration) for duration in (True, 0, 99, 10001, 100.5, None)]
+        inputs = [(request([0., 0., 0.]), duration) for duration in (True, 0, 99, 20001, 100.5, None)]
         for xyz in ([True, 0, 0], ['.1', 0, 0], [float('nan'), 0, 0], [0, 0], [3., 0, 0]):
             inputs.append((request(xyz), 500))
         for axis in ([0, 0, 0], [0, float('inf'), 1], [0, 1]):

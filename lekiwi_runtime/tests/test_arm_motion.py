@@ -8,7 +8,7 @@ from lekiwi_runtime.robot import PreDispatchRejected
 
 class ArmMotionTest(unittest.TestCase):
     def make_live(self):
-        arm=ArmController(load_config()['arm'],bus=Mock())
+        arm=ArmController({**load_config()['arm'], 'p_coefficient': None},bus=Mock())
         raw=dict(arm._mock_raw)
         initial={'available':True,'raw':dict(raw),'joints':{
             n:raw_to_unit(v,n,arm.calibration[n]) for n,v in raw.items()}}

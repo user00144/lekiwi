@@ -17,7 +17,7 @@ class PreviewInput(BaseModel):
     observation_id: str | None = Field(default=None, min_length=1, max_length=256)
     joints_deg: dict[str, float] | None = None
     target: CartesianTarget | None = None
-    duration_ms: int = Field(default=3000, ge=100, le=10000)
+    duration_ms: int = Field(default=3000, ge=100, le=20000)
 
     @model_validator(mode='after')
     def source_fields(self):
@@ -67,11 +67,11 @@ def calculate_preview(request, *, observed=None, config=None):
                       observed_at=packet.get('observation', {}).get('timestamp'))
         result = (controller.solve(packet, request.target.model_dump(), request.duration_ms)
                   if request.target is not None else None)
-        if (result is not None and not result['success'] and request.duration_ms < 10000
+        if (result is not None and not result['success'] and request.duration_ms < 20000
                 and 'ik_no_solution' in result.get('reason_codes', [])):
             # Diagnose a tighter time/speed bound without replacing the requested
             # result, changing motor limits, or creating an executable command.
-            for checked_duration in (1000, 2000, 3000, 5000, 10000):
+            for checked_duration in (1000, 2000, 3000, 5000, 10000, 20000):
                 if checked_duration <= request.duration_ms:
                     continue
                 slower = controller.solve(packet, request.target.model_dump(), checked_duration)

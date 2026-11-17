@@ -130,7 +130,7 @@ class OsqpEndpointTest(unittest.TestCase):
         short = controller.solve(packet, target, 1000)
         self.assertFalse(short['success'])
         self.assertGreater(short['residual_m'], .05)
-        for duration in (2000, 3000, 10000):
+        for duration in (2000, 3000, 10000, 20000):
             with self.subTest(duration_ms=duration):
                 result = controller.solve(packet, target, duration)
                 self.assertTrue(result['success'], result)
@@ -143,7 +143,7 @@ class OsqpEndpointTest(unittest.TestCase):
                     maximum = maxima[ARM_JOINTS.index(name)]
                     self.assertGreaterEqual(value, -maximum - 1e-9)
                     self.assertLessEqual(value, maximum + 1e-9)
-        for invalid in (True, 99, 10000.5, 10001):
+        for invalid in (True, 99, 20000.5, 20001):
             with self.subTest(invalid=invalid), self.assertRaises(ValueError):
                 controller.solve(packet, target, invalid)
 

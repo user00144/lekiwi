@@ -12,7 +12,7 @@ def main():
     parser.add_argument("--bind", default="tcp://*:5555")
     parser.add_argument("--api", default="tcp://127.0.0.1:5556")
     parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_S,
-                        help="Robot response timeout in seconds (default: 20; includes arm feedback and observation)")
+                        help="Robot response timeout in seconds (default: 35; includes a 20 s arm move, feedback and observation)")
     args = parser.parse_args()
 
     async def serve():

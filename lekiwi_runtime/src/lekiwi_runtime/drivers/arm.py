@@ -17,8 +17,12 @@ ARM_JOINTS = (
     ("wrist_flex", 4), ("wrist_roll", 5), ("gripper", 6),
 )
 PRESENT_POSITION = 56
+P_COEFFICIENT = 21
+EEPROM_LOCK = 55
+# Position P gain is set on the five arm joints only; the gripper keeps its own gain.
+GAIN_JOINTS = ("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll")
 ARM_FEEDBACK_TIMEOUT_S = 2.0
-ARM_CONTROL_REVISION = 'arm-warning-v6'
+ARM_CONTROL_REVISION = 'arm-gain-v7'
 ARM_WARNING_MAX_ERROR_DEG = 10.0
 HOLD_STABILITY_INTERVAL_S = .2
 HOLD_STABILITY_SAMPLES = 3
@@ -84,6 +88,11 @@ class ArmController:
         self.calibration = load_calibration(config["calib_path"]) if self.enabled else {}
         self.calibration_id = sha256(json.dumps(self.calibration, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
         self.bus = bus if bus is not None else ServoBus(config)
+        gain = config.get("p_coefficient")
+        if gain is not None and (type(gain) is not int or not 1 <= gain <= 254):
+            raise ValueError("arm.p_coefficient must be an integer from 1 to 254, or null")
+        self.p_coefficient = gain
+        self.gain_status = {"configured": gain, "joints": {}, "error": None, "applied_at": None}
         self.error = None
         self.last_motion = None
         self._pending = set()
@@ -96,8 +105,35 @@ class ArmController:
         try:
             self.bus.connect()
             self.error = None
+            self._apply_gains()
         except Exception as exc:
             self.error = str(exc)
+
+    def _apply_gains(self) -> None:
+        """Set the configured position P gain and verify it by readback.
+
+        Only register 21 is written; torque, goals and the EEPROM lock are left
+        unchanged. A failure is reported and later arm moves are rejected before
+        dispatch, so a stale gain never silently drives the arm.
+        """
+        if self.p_coefficient is None:
+            return
+        ids, joints, errors = dict(ARM_JOINTS), {}, []
+        for name in GAIN_JOINTS:
+            try:
+                before = self._read(ids[name], P_COEFFICIENT, 1)
+                if before != self.p_coefficient:
+                    self._write(ids[name], P_COEFFICIENT, self.p_coefficient, 1)
+                after = self._read(ids[name], P_COEFFICIENT, 1)
+                joints[name] = {"before": before, "after": after,
+                                "eeprom_lock": self._read(ids[name], EEPROM_LOCK, 1)}
+                if after != self.p_coefficient:
+                    errors.append(f"{name}: P readback {after} != {self.p_coefficient}")
+            except Exception as exc:
+                errors.append(f"{name}: {exc}")
+        self.gain_status = {"configured": self.p_coefficient, "joints": joints,
+                            "error": "; ".join(errors) or None, "applied_at": time.time()}
+        print(f"Arm P gain status: {self.gain_status}", file=sys.stderr, flush=True)
 
     def close(self) -> None:
         errors = []
@@ -123,7 +159,8 @@ class ArmController:
                   "control": {"revision": ARM_CONTROL_REVISION, "max_duration_ms": ARM_MAX_DURATION_MS,
                               "feedback_timeout_s": ARM_FEEDBACK_TIMEOUT_S, "tolerance_deg": 2,
                               "tolerance_percent": 5, "warning_max_error_deg": ARM_WARNING_MAX_ERROR_DEG,
-                              "hold_stability_timeout_s": HOLD_STABILITY_TIMEOUT_S},
+                              "hold_stability_timeout_s": HOLD_STABILITY_TIMEOUT_S,
+                              "p_coefficient": deepcopy(self.gain_status)},
                   "calibration_status": self.calibration_status({}, available=False),
                   "communication_retries": []}
         if not self.enabled:
@@ -507,6 +544,12 @@ class ArmController:
                 if offset != self.calibration[name].get("homing_offset"):
                     raise PreDispatchRejected("arm_homing_offset_mismatch",
                                               f"Arm {mid} homing offset does not match calibration", joint=name, motor_id=mid)
+                if name in GAIN_JOINTS and self.p_coefficient is not None:
+                    gain = self._read(mid, P_COEFFICIENT, 1)
+                    if gain != self.p_coefficient:
+                        raise PreDispatchRejected("arm_gain_mismatch",
+                                                  f"Arm {mid} P gain {gain} is not the configured {self.p_coefficient}",
+                                                  joint=name, motor_id=mid, measured=gain, configured=self.p_coefficient)
             try:
                 for name in joints:
                     mid = ids[name]

@@ -49,7 +49,7 @@ class Command(BaseModel):
     y: float
     theta: float
     duration_ms: int = Field(ge=1, le=ARM_MAX_DURATION_MS,
-                             description='Arm-only targets: 100..10000ms; base, wait or combined motion: at most 1000ms')
+                             description='Arm-only targets: 100..20000ms; base, wait or combined motion: at most 1000ms')
     joints: JointTargets | None
     cartesian: CartesianTarget | None = None
 
@@ -58,7 +58,7 @@ class Command(BaseModel):
         if self.cartesian is not None and (self.action != 'move' or self.joints is not None
                                           or any((self.x, self.y, self.theta))
                                           or not ARM_MIN_DURATION_MS <= self.duration_ms <= ARM_MAX_DURATION_MS):
-            raise ValueError('Cartesian move requires zero base velocity, joints=null and duration_ms=100..10000')
+            raise ValueError('Cartesian move requires zero base velocity, joints=null and duration_ms=100..20000')
         if self.cartesian is None:
             joints = self.joints.model_dump(exclude_none=True) if self.joints else None
             build_command(self.action, self.x, self.y, self.theta, self.duration_ms, joints)

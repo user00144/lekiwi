@@ -12,7 +12,7 @@ from .client import ServerClient, SnapshotClient
 
 BASE_MAX_DURATION_MS = 1000
 ARM_MIN_DURATION_MS = 100
-ARM_MAX_DURATION_MS = 10000
+ARM_MAX_DURATION_MS = 20000
 
 
 def build_command(action, x, y, theta, duration_ms, joints=None):
@@ -87,7 +87,7 @@ class RobotTools:
         move accepts optional joints: absolute degrees, gripper 0..100%; omitted joints unchanged.
         Omitted base velocities default to zero. Supply both to move base and arm together.
         wait pauses without motion targets.
-        Arm-only duration 100..10000ms when x=y=theta=0; base/wait/combined duration <=1000ms.
+        Arm-only duration 100..20000ms when x=y=theta=0; base/wait/combined duration <=1000ms.
         Choose enough arm time for the joint distance; speed <=30deg/s or 50%/s, calibrated limits from observe.
         Arm completion includes joint feedback; torque remains on to hold posture.
         Timeout means outcome unknown; do not blindly retry.
