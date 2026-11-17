@@ -30,7 +30,7 @@ uv run --project lekiwi_runtime lekiwi-runtime calibrate --port /dev/ttyACM0
 
 각 관절을 손으로 사용할 최소·최대 위치까지 천천히 움직이고, 양 끝에서 잠시 유지한 뒤 Enter로 다음 관절로 넘어갑니다. 현재 raw 값과 측정 범위를 표시합니다. `r`+Enter는 현재 관절 재측정, `q`+Enter 또는 Ctrl+C는 취소입니다. 마지막 범위 비교표를 검토하고 `save`를 입력해야 저장합니다. 끝을 억지로 밀지 마세요. 종료 후에도 토크는 꺼져 있습니다.
 
-기본적으로 runtime 설정의 `arm.calib_path` 파일을 갱신하고, 덮어쓰기 전 원본 그대로 `*.backup-시각-ID`를 만듭니다. `--config`를 쓰는 runtime이라면 여기에도 같은 설정 파일을 지정하세요. `--output 새파일.json`은 별도 저장하며 이후 runtime 설정에 그 경로를 지정해야 합니다. 범위에 여유를 두려면 `--margin-ticks 10`을 사용합니다. 팔꿈치만 다시 측정할 수도 있습니다.
+기본으로 그리퍼를 제외한 팔 5관절(shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll)만 측정하고 그리퍼는 기존 보정을 그대로 유지합니다. 그리퍼도 측정하려면 `--joints ... gripper`로 명시합니다. 유지하는 관절은 하드웨어 homing_offset이 기존 파일과 같아야 합니다. runtime 설정의 `arm.calib_path` 파일을 갱신하고, 덮어쓰기 전 원본 그대로 `*.backup-시각-ID`를 만듭니다. `--config`를 쓰는 runtime이라면 여기에도 같은 설정 파일을 지정하세요. `--output 새파일.json`은 별도 저장하며 이후 runtime 설정에 그 경로를 지정해야 합니다. 범위에 여유를 두려면 `--margin-ticks 10`을 사용합니다. 팔꿈치만 다시 측정할 수도 있습니다.
 
 ```bash
 uv run --project lekiwi_runtime lekiwi-runtime calibrate \

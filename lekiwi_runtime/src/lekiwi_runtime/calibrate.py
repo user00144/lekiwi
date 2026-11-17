@@ -22,6 +22,8 @@ from .drivers.arm import ARM_JOINTS, ArmController, load_calibration
 
 MIN_SPAN_TICKS = 32
 JOINT_NAMES = [name for name, _ in ARM_JOINTS]
+# The gripper keeps its existing calibration unless it is requested explicitly.
+DEFAULT_JOINTS = [name for name in JOINT_NAMES if name != 'gripper']
 
 
 class RangeCapture:
@@ -86,7 +88,9 @@ def build_calibration(original, captures, offsets, margin_ticks=0):
     for name in JOINT_NAMES:
         if name not in captures:
             if offsets[name] != original[name].get('homing_offset'):
-                raise ValueError(f"{name}: 기존 보정과 하드웨어 영점이 다릅니다. 해당 관절도 측정해야 합니다.")
+                raise ValueError(f"{name}: 기존 보정의 homing_offset({original[name].get('homing_offset')})과 "
+                                 f"하드웨어 영점({offsets[name]})이 다릅니다. 기존 범위를 그대로 유지할 수 없으니 "
+                                 f"해당 관절도 측정해야 합니다.")
             continue
         low, high = captures[name].limits(margin_ticks)
         result[name].update(range_min=low, range_max=high, homing_offset=offsets[name])
@@ -217,8 +221,9 @@ def main(argv=None):
     parser.add_argument('--config', type=Path, help='runtime과 같은 로봇 설정 JSON')
     parser.add_argument('--port', help='서보 포트 (예: /dev/ttyACM0). 생략하면 runtime 설정 사용')
     parser.add_argument('--output', type=Path, help='저장 경로. 기본값은 runtime의 arm.calib_path')
-    parser.add_argument('--joints', nargs='+', choices=JOINT_NAMES, default=JOINT_NAMES,
-                        help='측정할 관절. 기본값은 그리퍼를 포함한 6관절 전체')
+    parser.add_argument('--joints', nargs='+', choices=JOINT_NAMES, default=DEFAULT_JOINTS,
+                        help='측정할 관절. 기본값은 그리퍼를 제외한 팔 5관절이며 그리퍼는 기존 보정을 유지합니다. '
+                             '그리퍼도 측정하려면 gripper를 명시하세요.')
     parser.add_argument('--margin-ticks', type=int, default=0,
                         help='측정 범위 양 끝에서 제외할 여유 ticks (기본 0, 예: 10)')
     args = parser.parse_args(argv)
