@@ -36,7 +36,7 @@
     "port": null,
     "baudrate": 1000000,
     "calib_path": "follower.json",
-    "p_coefficient": 32
+    "p_coefficient": 48
   },
   "imu": {
     "enabled": true,
