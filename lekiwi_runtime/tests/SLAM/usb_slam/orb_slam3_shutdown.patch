@@ -1,0 +1,73 @@
+--- a/src/System.cc
++++ b/src/System.cc
+@@ -514,51 +514,37 @@
+ 
+ void System::Shutdown()
+ {
++    bool first_shutdown;
+     {
+         unique_lock<mutex> lock(mMutexReset);
++        first_shutdown = !mbShutDown;
+         mbShutDown = true;
+     }
+-
+-    cout << "Shutdown" << endl;
+-
++    if(first_shutdown)
++        cout << "Shutdown" << endl;
++
++    // usb_slam: wait for workers before trajectory export
+     mpLocalMapper->RequestFinish();
+     mpLoopCloser->RequestFinish();
+-    /*if(mpViewer)
+-    {
++    if(mpViewer)
+         mpViewer->RequestFinish();
++
++    while(!mpLocalMapper->isFinished() || !mpLoopCloser->isFinished()
++          || mpLoopCloser->isRunningGBA())
++        usleep(5000);
++
++    // Shutdown may also be called by the Viewer's Stop action.
++    // Never wait for the calling viewer thread to finish itself.
++    if(mpViewer && mptViewer->get_id() != std::this_thread::get_id())
+         while(!mpViewer->isFinished())
+             usleep(5000);
+-    }*/
+-
+-    // Wait until all thread have effectively stopped
+-    /*while(!mpLocalMapper->isFinished() || !mpLoopCloser->isFinished() || mpLoopCloser->isRunningGBA())
+-    {
+-        if(!mpLocalMapper->isFinished())
+-            cout << "mpLocalMapper is not finished" << endl;*/
+-        /*if(!mpLoopCloser->isFinished())
+-            cout << "mpLoopCloser is not finished" << endl;
+-        if(mpLoopCloser->isRunningGBA()){
+-            cout << "mpLoopCloser is running GBA" << endl;
+-            cout << "break anyway..." << endl;
+-            break;
+-        }*/
+-        /*usleep(5000);
+-    }*/
+-
+-    if(!mStrSaveAtlasToFile.empty())
+-    {
+-        Verbose::PrintMess("Atlas saving to file " + mStrSaveAtlasToFile, Verbose::VERBOSITY_NORMAL);
++
++    if(first_shutdown && !mStrSaveAtlasToFile.empty())
+         SaveAtlas(FileType::BINARY_FILE);
+-    }
+-
+-    /*if(mpViewer)
+-        pangolin::BindToContext("ORB-SLAM2: Map Viewer");*/
+-
+ #ifdef REGISTER_TIMES
+-    mpTracker->PrintTimeStats();
++    if(first_shutdown)
++        mpTracker->PrintTimeStats();
+ #endif
+-
+-
+ }
+ 
+ bool System::isShutDown() {

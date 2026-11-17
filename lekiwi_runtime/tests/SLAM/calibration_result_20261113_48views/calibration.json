@@ -1,0 +1,813 @@
+{
+  "created_at": "2026-11-13T20:38:28.818604+09:00",
+  "opencv_version": "5.0.0",
+  "model": "OpenCV pinhole, k1 k2 p1 p2 k3",
+  "image_size": [
+    640,
+    480
+  ],
+  "inner_corners": [
+    8,
+    6
+  ],
+  "square_size_m": 0.024,
+  "camera_matrix": [
+    [
+      384.87149739379595,
+      0.0,
+      292.6579572522445
+    ],
+    [
+      0.0,
+      382.5848697981937,
+      221.19725820121457
+    ],
+    [
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "distortion": [
+    -0.20950985362330468,
+    0.05802808060130078,
+    -0.0014926446571697331,
+    0.00022465172848778998,
+    -0.007765176329630558
+  ],
+  "rms_px": 0.18824611513533882,
+  "std_intrinsics": [
+    0.758577218242098,
+    0.7557183919141026,
+    0.6043003548825125,
+    0.628015403254536,
+    0.0011905498247706018,
+    0.0020743166996083236,
+    0.0001291459824817611,
+    0.00010126750641995379,
+    0.0010987836044455562,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+  ],
+  "coverage_grid_4x3": [
+    [
+      9,
+      15,
+      14,
+      6
+    ],
+    [
+      7,
+      24,
+      33,
+      8
+    ],
+    [
+      2,
+      2,
+      1,
+      1
+    ]
+  ],
+  "corner_bounds_xy": [
+    [
+      64.64618682861328,
+      18.759449005126953
+    ],
+    [
+      599.3981323242188,
+      409.92327880859375
+    ]
+  ],
+  "sources": [
+    {
+      "file": "/home/irsadmin/LeKiwi/lekiwi/lekiwi_runtime/tests/SLAM/calibration_20261113_202759_950486/images/frame_001.png",
+      "pixel_sha256": "9ecbc0213f85459f55c1228be2c9db3c037076efb66842cbe5b1723ee5d41d02",
+      "rms_px": 0.13181219880577738,
+      "board_rvec": [
+        -0.06055564852765533,
+        0.08531401787675505,
+        -0.007564351172776091
+      ],
+      "board_tvec_m": [
+        -0.029089890456652178,
+        -0.0704217927062114,
+        0.40084176802443994
+      ]
+    },
+    {
+      "file": "/home/irsadmin/LeKiwi/lekiwi/lekiwi_runtime/tests/SLAM/calibration_20261113_202759_950486/images/frame_002.png",
+      "pixel_sha256": "53ab869c7a59b7ea1a685a741bb23ecd188a9f70d35231b0c6d57354a0748575",
+      "rms_px": 0.12420693462175908,
+      "board_rvec": [
+        0.7825141938789827,
+        0.3961433405638636,
+        3.001933666251657
+      ],
+      "board_tvec_m": [
+        0.1941271738017083,
+        0.05536867750331614,
+        0.4341999936918352
+      ]
+    },
+    {
+      "file": "/home/irsadmin/LeKiwi/lekiwi/lekiwi_runtime/tests/SLAM/calibration_20261113_202759_950486/images/frame_003.png",
+      "pixel_sha256": "69cca36f7726ed796bcbd8491de28ef57befc122f1d56e2871f7f60c28cc0872",
+      "rms_px": 0.1710496808638914,
+      "board_rvec": [
+        0.4695453827764054,
+        -0.282449205571159,
+        -3.0708532747866877
+      ],
+      "board_tvec_m": [
+        0.14580711919998718,
+        0.0630031969822433,
+        0.5152488014520787
+      ]
+    },
+    {
+      "file": "/home/irsadmin/LeKiwi/lekiwi/lekiwi_runtime/tests/SLAM/calibration_20261113_202759_950486/images/frame_004.png",
+      "pixel_sha256": "8e37e7f857537a29c35924b2907705fc06a0ace47fbdb5bc7ff138e6e900019b",
+      "rms_px": 0.13020529877512618,
+      "board_rvec": [
+        -0.23888274155294048,
+        -0.1747487273825835,
+        -0.0014642495520083153
+      ],
+      "board_tvec_m": [
+        -0.046374453077463455,
+        -0.04962112422388372,
+        0.536940143796871
+      ]
+    },
+    {
+      "file": "/home/irsadmin/LeKiwi/lekiwi/lekiwi_runtime/tests/SLAM/calibration_20261113_202759_950486/images/frame_005.png",
+      "pixel_sha256": "d33a53682c85823efd09735edb991420410ecfef892c7f403dcb9d7dbb68cae8",
+      "rms_px": 0.13194310976752538,
+      "board_rvec": [
+        -0.7966632398480046,
+        -0.35405129164326526,
+        -3.009540805180479
+      ],
+      "board_tvec_m": [
+        0.15781139649346446,
+        0.06752053708107841,
+        0.5963660504714143
+      ]
+    },
+    {
+      "file": "/home/irsadmin/LeKiwi/lekiwi/lekiwi_runtime/tests/SLAM/calibration_20261113_202759_950486/images/frame_006.png",
+      "pixel_sha256": "b2e0a4e899f6d4506ee41184785875614cfe6c6694839102648b7ba027995687",
+      "rms_px": 0.1518854678026293,
+      "board_rvec": [
+        0.13782405082830995,
+        0.17688133837033207,
+        -0.04008458068766869
+      ],
+      "board_tvec_m": [
+        -0.013755978031360111,
+        -0.0252847484846258,
+        0.6195603133354588
+      ]
+    },
+    {
+      "file": "/home/irsadmin/LeKiwi/lekiwi/lekiwi_runtime/tests/SLAM/calibration_20261113_202759_950486/images/frame_007.png",
+      "pixel_sha256": "060bcfd4ea2e6598bb87685a1f52861628ad436ebf5e7e4891ab195995b92e0f",
+      "rms_px": 0.1650457867124904,
+      "board_rvec": [
+        0.7427282429920103,
+        -0.17377851440419684,
+        -3.005355010428286
+      ],
+      "board_tvec_m": [
+        0.11396230727689774,
+        0.09570300136404059,
+        0.6901433327361057
+      ]
+    },
+    {
+      "file": "/home/irsadmin/LeKiwi/lekiwi/lekiwi_runtime/tests/SLAM/calibration_20261113_202759_950486/images/frame_008.png",
+      "pixel_sha256": "04b02233f4f0579c04eed369fd0d4b1ddff3ad20dd27137953d73fe1d3dcf61d",
+      "rms_px": 0.11923173638519767,
+      "board_rvec": [
+        0.7519091722041188,
+        -0.2699021087622313,
+        -3.0037614293602344
+      ],
+      "board_tvec_m": [
+        0.08976348773627107,
+        0.09786685636431698,
+        0.6951565681208077
+      ]
+    },
+    {
+      "file": "/home/irsadmin/LeKiwi/lekiwi/lekiwi_runtime/tests/SLAM/calibration_20261113_202759_950486/images/frame_009.png",
+      "pixel_sha256": "781e55fcf6950d5ba98c69b020d5c4cab15ea19d000a086d856a69ba5eb0f83e",
+      "rms_px": 0.08783579113149605,
+      "board_rvec": [
+        0.6825711233559139,
+        0.3417177003460774,
+        3.014007287413698
+      ],
+      "board_tvec_m": [
+        0.27747607293305143,
+        0.08571297806827537,
+        0.6366528450104513
+      ]
+    },
+    {
+      "file": "/home/irsadmin/LeKiwi/lekiwi/lekiwi_runtime/tests/SLAM/calibration_20261113_202759_950486/images/frame_010.png",
+      "pixel_sha256": "441d651090ede841c3843eeebf434414a6f9c4de012cb1fb409e736611f02797",
+      "rms_px": 0.34263070218283914,
+      "board_rvec": [
+        -0.2249981770098356,
+        0.5542786568247473,
+        0.07152796790229687
+      ],
+      "board_tvec_m": [
+        0.17573417262153748,
+        -0.0812009209559603,
+        0.6616159323186362
+      ]
+    },
+    {
+      "file": "/home/irsadmin/LeKiwi/lekiwi/lekiwi_runtime/tests/SLAM/calibration_20261113_202759_950486/images/frame_011.png",
+      "pixel_sha256": "d352c40cc178c1579bf51eae206aaaf1a1d3239ae47252dec71cf4434dddb435",
+      "rms_px": 0.16388160253718306,
+      "board_rvec": [
+        -0.16792593808303044,
+        -0.3306196109632997,
+        0.022679554122986566
+      ],
+      "board_tvec_m": [
+        -0.15400445147785352,
+        -0.07271432369725697,
+        0.38436375304344755
+      ]
+    },
+    {
+      "file": "/home/irsadmin/LeKiwi/lekiwi/lekiwi_runtime/tests/SLAM/calibration_20261113_202759_950486/images/frame_012.png",
+      "pixel_sha256": "e70636b333dd671f44326e7bfb932d5f13620df2c0943551490fa58179bfc8bc",
+      "rms_px": 0.12117405275846063,
+      "board_rvec": [
+        -0.2178506305537445,
+        0.27735472157383145,
+        -0.014416167226128316
+      ],
+      "board_tvec_m": [
+        0.052164196881904455,
+        -0.05881354300334965,
+        0.47582471663201414
+      ]
+    },
+    {
+      "file": "/home/irsadmin/LeKiwi/lekiwi/lekiwi_runtime/tests/SLAM/calibration_20261113_202759_950486/images/frame_013.png",
+      "pixel_sha256": "aa5f8e1cc29961e7318efa4b0cbacc4422b1d5f2227e8b937315f48184ca0b50",
+      "rms_px": 0.15782186462096753,
+      "board_rvec": [
+        -0.19336767883119602,
+        0.1871226885860133,
+        -0.007430558432989152
+      ],
+      "board_tvec_m": [
+        -0.0019263296102594873,
+        -0.07046088877407362,
+        0.41234944873412654
+      ]
+    },
+    {
+      "file": "/home/irsadmin/LeKiwi/lekiwi/lekiwi_runtime/tests/SLAM/calibration_20261113_202759_950486/images/frame_014.png",
+      "pixel_sha256": "efa98b81a6b9388d31a6cd35a13796ee81b17533622223719f8205244339c03d",
+      "rms_px": 0.41832041612141224,
+      "board_rvec": [
+        0.6227609743395822,
+        0.08710326444581448,
+        2.9800106484687325
+      ],
+      "board_tvec_m": [
+        0.23337190544915917,
+        0.03984869183353872,
+        0.49221667738221736
+      ]
+    },
+    {
+      "file": "/home/irsadmin/LeKiwi/lekiwi/lekiwi_runtime/tests/SLAM/calibration_20261113_202759_950486/images/frame_015.png",
+      "pixel_sha256": "9d3d8b47c3da170f748c7c79e80d7783a8dd8551679e946824f5736cd3d88cdc",
+      "rms_px": 0.1275319242653259,
+      "board_rvec": [
+        -0.2362906554656436,
+        0.34751830322864263,
+        -0.06718836925513623
+      ],
+      "board_tvec_m": [
+        0.13373253343533575,
+        -0.04535554333295777,
+        0.5969927281995488
+      ]
+    },
+    {
+      "file": "/home/irsadmin/LeKiwi/lekiwi/lekiwi_runtime/tests/SLAM/calibration_20261113_202759_950486/images/frame_016.png",
+      "pixel_sha256": "28abfa78e8e1faee8e367123bf3c5d0ad5809211a570110eb391217ebd0d8199",
+      "rms_px": 0.14541050462089483,
+      "board_rvec": [
+        -0.6321512415621875,
+        0.1802711689927342,
+        3.041492690660107
+      ],
+      "board_tvec_m": [
+        0.20812704290444947,
+        0.07787696771374857,
+        0.692158334433034
+      ]
+    },
+    {
+      "file": "/home/irsadmin/LeKiwi/lekiwi/lekiwi_runtime/tests/SLAM/calibration_20261113_202759_950486/images/frame_017.png",
+      "pixel_sha256": "33b57f7eb91ea35f257f98ea2debeb5ab1286dc2b631cc8a6641f7ba08800039",
+      "rms_px": 0.11152142107294478,
+      "board_rvec": [
+        -0.25660421967353175,
+        0.16545024471838488,
+        -0.008923187445772689
+      ],
+      "board_tvec_m": [
+        0.05849055489824897,
+        0.0117705303691944,
+        0.9055106814451452
+      ]
+    },
+    {
+      "file": "/home/irsadmin/LeKiwi/lekiwi/lekiwi_runtime/tests/SLAM/calibration_20261113_202759_950486/images/frame_018.png",
+      "pixel_sha256": "fd8a7fc7151dd68e8b8d39df416cd3fe05dc0459407d211a3ba545b9d4a73256",
+      "rms_px": 0.11885624185612138,
+      "board_rvec": [
+        -0.3269931951836906,
+        0.1672210875300918,
+        0.000379549318499639
+      ],
+      "board_tvec_m": [
+        0.03837753826010753,
+        -0.017646439279892946,
+        0.7186065474934195
+      ]
+    },
+    {
+      "file": "/home/irsadmin/LeKiwi/lekiwi/lekiwi_runtime/tests/SLAM/calibration_20261113_202759_950486/images/frame_019.png",
+      "pixel_sha256": "e8799ca2ba675e1a7d6af3019cdbef0e0fead9a76f105ce1612ed823904b4bcd",
+      "rms_px": 0.31069713234248575,
+      "board_rvec": [
+        -0.16845145156519428,
+        0.26152873071698657,
+        -0.027250945744581468
+      ],
+      "board_tvec_m": [
+        0.1282871277698475,
+        -0.03025818259987649,
+        0.6582195913937392
+      ]
+    },
+    {
+      "file": "/home/irsadmin/LeKiwi/lekiwi/lekiwi_runtime/tests/SLAM/calibration_20261113_202759_950486/images/frame_020.png",
+      "pixel_sha256": "565fb1ddc00ed130a3ba210e00eefbc45a9ea0a10ac7eea00606c92f3a040592",
+      "rms_px": 0.11282770274132455,
+      "board_rvec": [
+        -0.1594940849976035,
+        0.25283404153013345,
+        -0.04919948959887473
+      ],
+      "board_tvec_m": [
+        0.17711711730937535,
+        -0.02563918133348272,
+        0.6986885078423413
+      ]
+    },
+    {
+      "file": "/home/irsadmin/LeKiwi/lekiwi/lekiwi_runtime/tests/SLAM/calibration_20261113_202759_950486/images/frame_021.png",
+      "pixel_sha256": "474df22c351cc93f32db7a2b09734b913061dc757e5e637cc0ea74c9bc32bf38",
+      "rms_px": 0.13584324207469073,
+      "board_rvec": [
+        -0.6720737899149288,
+        0.3211990473329364,
+        0.056021708313772886
+      ],
+      "board_tvec_m": [
+        0.22512285020300607,
+        0.013872127825600206,
+        0.7858288423275616
+      ]
+    },
+    {
+      "file": "/home/irsadmin/LeKiwi/lekiwi/lekiwi_runtime/tests/SLAM/calibration_20261113_202759_950486/images/frame_022.png",
+      "pixel_sha256": "e37aee3d0496ae7b095bcdf916d2b011cc3a4b60bdde48395925d2fd1343cf86",
+      "rms_px": 0.17609475357051463,
+      "board_rvec": [
+        -0.736370218910781,
+        -0.12201297684665424,
+        -0.02688933669021454
+      ],
+      "board_tvec_m": [
+        -0.05567955485931425,
+        0.0052781721511753876,
+        0.692833141631511
+      ]
+    },
+    {
+      "file": "/home/irsadmin/LeKiwi/lekiwi/lekiwi_runtime/tests/SLAM/calibration_20261113_202759_950486/images/frame_023.png",
+      "pixel_sha256": "e9a98f2105974b3b03ba096ef738ca8b641cc8e4a0b04f4470d4b97290144e27",
+      "rms_px": 0.10225954627241488,
+      "board_rvec": [
+        1.043277024175534,
+        -0.04518064328412506,
+        2.833453209547348
+      ],
+      "board_tvec_m": [
+        0.37705162639581685,
+        0.08284681016970931,
+        0.5886643090035014
+      ]
+    },
+    {
+      "file": "/home/irsadmin/LeKiwi/lekiwi/lekiwi_runtime/tests/SLAM/calibration_20261113_202759_950486/images/frame_024.png",
+      "pixel_sha256": "866877ac62dd73ef84c385184b727bd98aa4a5965ae53d07cc83f6b1e7f5b057",
+      "rms_px": 0.1667083354351509,
+      "board_rvec": [
+        -0.3389307526553804,
+        0.2817597511330688,
+        0.008021028690173817
+      ],
+      "board_tvec_m": [
+        0.06389258647795142,
+        -0.03135068932012045,
+        0.6674312892435639
+      ]
+    },
+    {
+      "file": "/home/irsadmin/LeKiwi/lekiwi/lekiwi_runtime/tests/SLAM/calibration_20261113_202759_950486/images/frame_025.png",
+      "pixel_sha256": "5bf37192dc536c39830571f8c7397c9e31f32dddc904e69318f4d3fb0cda69ae",
+      "rms_px": 0.105173687984184,
+      "board_rvec": [
+        0.566680719678556,
+        -0.004479233568778147,
+        3.0128044729214376
+      ],
+      "board_tvec_m": [
+        0.2600658292768101,
+        -0.05367649345715068,
+        0.7307125399744737
+      ]
+    },
+    {
+      "file": "/home/irsadmin/LeKiwi/lekiwi/lekiwi_runtime/tests/SLAM/calibration_20261113_202759_950486/images/frame_026.png",
+      "pixel_sha256": "bb00858008d6adaa42ab131f8dabe6f14b18ae1a358a2895df55640a1afdbba1",
+      "rms_px": 0.17565212649864087,
+      "board_rvec": [
+        -0.060603227622309,
+        0.24233938871142935,
+        -0.03883507127260772
+      ],
+      "board_tvec_m": [
+        0.03418256982775279,
+        -0.06729353584841907,
+        0.6504775312381796
+      ]
+    },
+    {
+      "file": "/home/irsadmin/LeKiwi/lekiwi/lekiwi_runtime/tests/SLAM/calibration_20261113_202759_950486/images/frame_027.png",
+      "pixel_sha256": "6f312ec972b60b52361d9af53c5fd4f50f3e75b3d96a4aae9abf587db82e7191",
+      "rms_px": 0.1230613363323281,
+      "board_rvec": [
+        -0.21699277474938164,
+        0.18150097375919697,
+        -0.012111709991969304
+      ],
+      "board_tvec_m": [
+        0.006926382989815058,
+        -0.05854076532883956,
+        0.47414277240491437
+      ]
+    },
+    {
+      "file": "/home/irsadmin/LeKiwi/lekiwi/lekiwi_runtime/tests/SLAM/calibration_20261113_202759_950486/images/frame_028.png",
+      "pixel_sha256": "cea73031aec99eb7d97263aec82d1e7a6c5ad6ce996350137ff3a21170556c4e",
+      "rms_px": 0.1929550767244694,
+      "board_rvec": [
+        -0.22329674024363474,
+        -0.39526357520564376,
+        0.03298602926431397
+      ],
+      "board_tvec_m": [
+        -0.11585872096105572,
+        -0.08151205532976241,
+        0.35514620322841206
+      ]
+    },
+    {
+      "file": "/home/irsadmin/LeKiwi/lekiwi/lekiwi_runtime/tests/SLAM/calibration_20261113_202759_950486/images/frame_029.png",
+      "pixel_sha256": "3f697441a37406b81e5b23879e038ce827cb2a9e229e135a993b0d0688ce9d82",
+      "rms_px": 0.17336748612592287,
+      "board_rvec": [
+        -0.13543727473337588,
+        0.6882076761549647,
+        -0.014062585069075654
+      ],
+      "board_tvec_m": [
+        0.1027360462904617,
+        -0.07768222694721469,
+        0.4498320552375254
+      ]
+    },
+    {
+      "file": "/home/irsadmin/LeKiwi/lekiwi/lekiwi_runtime/tests/SLAM/calibration_20261113_202759_950486/images/frame_030.png",
+      "pixel_sha256": "cf652704005131ef4a5f36a381c5fd9992daee4f31550e77f2bef81bc932e0ba",
+      "rms_px": 0.29683186129493816,
+      "board_rvec": [
+        -0.24895706549535163,
+        0.03589467347376977,
+        0.0008461127783664245
+      ],
+      "board_tvec_m": [
+        -0.08318991236395828,
+        -0.09109595375597276,
+        0.29355990983518643
+      ]
+    },
+    {
+      "file": "/home/irsadmin/LeKiwi/lekiwi/lekiwi_runtime/tests/SLAM/calibration_20261113_203350_929316/images/frame_001.png",
+      "pixel_sha256": "b8368757c79b8c7737c16300b1f8aaa19f3c0b12f68ba4b009210cf7a0d0813e",
+      "rms_px": 0.16115634858930636,
+      "board_rvec": [
+        0.46462278466162105,
+        -0.32841717628873757,
+        3.0159988733765646
+      ],
+      "board_tvec_m": [
+        0.39817827324142635,
+        -0.10665567812161138,
+        0.42376618716979825
+      ]
+    },
+    {
+      "file": "/home/irsadmin/LeKiwi/lekiwi/lekiwi_runtime/tests/SLAM/calibration_20261113_203350_929316/images/frame_002.png",
+      "pixel_sha256": "f8383c1d817fff182e2d0f189e6b67dfb3797c482d43503928f390f0f2bbb40c",
+      "rms_px": 0.1546262376336726,
+      "board_rvec": [
+        0.34662149064886305,
+        -0.2608288253737805,
+        3.0875386519483534
+      ],
+      "board_tvec_m": [
+        0.3372845863515618,
+        -0.10242321267989594,
+        0.3950062677934005
+      ]
+    },
+    {
+      "file": "/home/irsadmin/LeKiwi/lekiwi/lekiwi_runtime/tests/SLAM/calibration_20261113_203350_929316/images/frame_003.png",
+      "pixel_sha256": "2d764434cbcf6f631ca42d053f1669f946a31758577d08bab5c475db6a39a55e",
+      "rms_px": 0.1535348341952709,
+      "board_rvec": [
+        0.06674169733364903,
+        0.16750214520358692,
+        -0.06198937605742578
+      ],
+      "board_tvec_m": [
+        0.11551758944749278,
+        -0.18326769149985433,
+        0.3670791580151
+      ]
+    },
+    {
+      "file": "/home/irsadmin/LeKiwi/lekiwi/lekiwi_runtime/tests/SLAM/calibration_20261113_203350_929316/images/frame_004.png",
+      "pixel_sha256": "4249a741eacf6830fa492b18536b4972b008379a3cf48ef0bcc663268064467f",
+      "rms_px": 0.12821466863080366,
+      "board_rvec": [
+        0.08277653989985725,
+        0.24134489103214032,
+        -0.04819992838236994
+      ],
+      "board_tvec_m": [
+        0.082603378548606,
+        -0.17950562555991906,
+        0.36921345775324355
+      ]
+    },
+    {
+      "file": "/home/irsadmin/LeKiwi/lekiwi/lekiwi_runtime/tests/SLAM/calibration_20261113_203350_929316/images/frame_005.png",
+      "pixel_sha256": "f1ebfdcd270b3c7aa3ad4306fd0eceedd1f16250233977529db67a1fcc19a8f9",
+      "rms_px": 0.2626891235443495,
+      "board_rvec": [
+        0.07657721033028911,
+        0.27538423354203706,
+        -0.032595216868419964
+      ],
+      "board_tvec_m": [
+        3.591199307570885e-05,
+        -0.17482196403027386,
+        0.37814963115413136
+      ]
+    },
+    {
+      "file": "/home/irsadmin/LeKiwi/lekiwi/lekiwi_runtime/tests/SLAM/calibration_20261113_203350_929316/images/frame_006.png",
+      "pixel_sha256": "a6c1030402af4e5e487ea451d6c2d5a3b87da7c1fd3431c3f190d3309bdbeb2f",
+      "rms_px": 0.2904222233311475,
+      "board_rvec": [
+        -0.16465323031435747,
+        0.07540193473356967,
+        -3.095006590377948
+      ],
+      "board_tvec_m": [
+        -0.018605591154119284,
+        -0.07122238969445953,
+        0.35987934716303704
+      ]
+    },
+    {
+      "file": "/home/irsadmin/LeKiwi/lekiwi/lekiwi_runtime/tests/SLAM/calibration_20261113_203350_929316/images/frame_007.png",
+      "pixel_sha256": "93dc8e9da0184d81763c87b720ad6186b5e2613cdd89e62b40a064e641a6f778",
+      "rms_px": 0.20758476424066058,
+      "board_rvec": [
+        0.24170891119663834,
+        0.08365408278729153,
+        -3.0348761759845155
+      ],
+      "board_tvec_m": [
+        -0.06499487946942188,
+        -0.07633252539772607,
+        0.3808809799451262
+      ]
+    },
+    {
+      "file": "/home/irsadmin/LeKiwi/lekiwi/lekiwi_runtime/tests/SLAM/calibration_20261113_203350_929316/images/frame_008.png",
+      "pixel_sha256": "82fe4c0a626a99943bebf56aad17bacd859c991bdb0ba5874fca81c5f4df0784",
+      "rms_px": 0.1403806906344843,
+      "board_rvec": [
+        0.1926746085436653,
+        -0.22212840289940566,
+        0.09299911619433407
+      ],
+      "board_tvec_m": [
+        -0.2052229951786013,
+        -0.19079631434428582,
+        0.34887242927609746
+      ]
+    },
+    {
+      "file": "/home/irsadmin/LeKiwi/lekiwi/lekiwi_runtime/tests/SLAM/calibration_20261113_203350_929316/images/frame_009.png",
+      "pixel_sha256": "f31867435688e230cc31cc9f87b06ccad8cf71019f9599860e076425c4af1d9b",
+      "rms_px": 0.16766253273316753,
+      "board_rvec": [
+        0.08726005886875515,
+        -0.2549342660458423,
+        -0.027065444230423175
+      ],
+      "board_tvec_m": [
+        -0.2128329174558484,
+        -0.15898899252524015,
+        0.3374642595879207
+      ]
+    },
+    {
+      "file": "/home/irsadmin/LeKiwi/lekiwi/lekiwi_runtime/tests/SLAM/calibration_20261113_203350_929316/images/frame_010.png",
+      "pixel_sha256": "d6ba7caf3e2a22134a3960078340f0318384bf0ffa7907a185a9c180ca9112d0",
+      "rms_px": 0.38018418479770455,
+      "board_rvec": [
+        0.06486361408243455,
+        -0.2801144086254959,
+        -0.015536062087983955
+      ],
+      "board_tvec_m": [
+        -0.18420104705079296,
+        -0.11823212598543843,
+        0.2997181029842985
+      ]
+    },
+    {
+      "file": "/home/irsadmin/LeKiwi/lekiwi/lekiwi_runtime/tests/SLAM/calibration_20261113_203350_929316/images/frame_011.png",
+      "pixel_sha256": "2bedc7dc9628aca087a82e186016d2ace7c419ea33f0c6bcace441f8ea5cf94a",
+      "rms_px": 0.17514662706028994,
+      "board_rvec": [
+        0.20323928308866035,
+        0.032164639913554144,
+        -3.110864977146594
+      ],
+      "board_tvec_m": [
+        0.018405296808948726,
+        0.038320683047921196,
+        0.3236751803204265
+      ]
+    },
+    {
+      "file": "/home/irsadmin/LeKiwi/lekiwi/lekiwi_runtime/tests/SLAM/calibration_20261113_203350_929316/images/frame_012.png",
+      "pixel_sha256": "c1cf58bfd008072faca145bc9ca11e477530a0dbf3a2a8d58398bd41d721d5f0",
+      "rms_px": 0.1612082601538901,
+      "board_rvec": [
+        -0.05942615862600961,
+        -0.09065403247573002,
+        0.008325494189483012
+      ],
+      "board_tvec_m": [
+        -0.1164597789013017,
+        -0.08514287725769402,
+        0.310523560981455
+      ]
+    },
+    {
+      "file": "/home/irsadmin/LeKiwi/lekiwi/lekiwi_runtime/tests/SLAM/calibration_20261113_203609_690502/images/frame_001.png",
+      "pixel_sha256": "dafa336d4ed7e71bef247a7d31fc1471293220dca731862b80fec42625add526",
+      "rms_px": 0.161798188897777,
+      "board_rvec": [
+        -0.5977050766831998,
+        0.666391468813228,
+        0.11697480878058428
+      ],
+      "board_tvec_m": [
+        0.18517631326776926,
+        0.10717501421234961,
+        0.48088768429284756
+      ]
+    },
+    {
+      "file": "/home/irsadmin/LeKiwi/lekiwi/lekiwi_runtime/tests/SLAM/calibration_20261113_203609_690502/images/frame_002.png",
+      "pixel_sha256": "c6e0ed304e1feb138339b71497d034031ca9e7d32138465a39b0ff58c231ba30",
+      "rms_px": 0.19654398761435965,
+      "board_rvec": [
+        0.8131684354505773,
+        -0.5558519816000101,
+        -2.776578639308529
+      ],
+      "board_tvec_m": [
+        -0.05764627045407642,
+        0.1704173416112133,
+        0.40276743990860686
+      ]
+    },
+    {
+      "file": "/home/irsadmin/LeKiwi/lekiwi/lekiwi_runtime/tests/SLAM/calibration_20261113_203609_690502/images/frame_003.png",
+      "pixel_sha256": "674e51ece524cc01d6f82664fffe1785ed11612104cd954200ac116eb4cb7dec",
+      "rms_px": 0.21156120545124935,
+      "board_rvec": [
+        -0.7614296311110013,
+        -0.1912511506592084,
+        0.1262927682468416
+      ],
+      "board_tvec_m": [
+        -0.15052700928058005,
+        0.02982927613363463,
+        0.34641332644234346
+      ]
+    },
+    {
+      "file": "/home/irsadmin/LeKiwi/lekiwi/lekiwi_runtime/tests/SLAM/calibration_20261113_203609_690502/images/frame_004.png",
+      "pixel_sha256": "b1ee65c1fa3ca6c75d4c1d33a368760e3365aee0043f8dde668915d5d7a20006",
+      "rms_px": 0.1210944503091494,
+      "board_rvec": [
+        0.07975580264224824,
+        -0.06226715312384271,
+        0.10708680878394229
+      ],
+      "board_tvec_m": [
+        -0.09147422763330817,
+        -0.28013047736829494,
+        0.5788606011779868
+      ]
+    },
+    {
+      "file": "/home/irsadmin/LeKiwi/lekiwi/lekiwi_runtime/tests/SLAM/calibration_20261113_203609_690502/images/frame_005.png",
+      "pixel_sha256": "92543b8bb9ade3a3869759a4a53f7668cfd1fbaf3e5d27a8c2a9cd365d1b2dd7",
+      "rms_px": 0.15045847282451813,
+      "board_rvec": [
+        -0.10039380709993853,
+        -0.2992760676008546,
+        -0.0037906674594538306
+      ],
+      "board_tvec_m": [
+        -0.2676508980022384,
+        -0.2467508664889139,
+        0.4211240190690776
+      ]
+    },
+    {
+      "file": "/home/irsadmin/LeKiwi/lekiwi/lekiwi_runtime/tests/SLAM/calibration_20261113_203609_690502/images/frame_006.png",
+      "pixel_sha256": "0673046758be665d53f04c3c625c3d898038384672812a59995dbf82beca5be0",
+      "rms_px": 0.13353095471177764,
+      "board_rvec": [
+        -0.25712333876962334,
+        0.29502042072536955,
+        0.06562425436061911
+      ],
+      "board_tvec_m": [
+        0.26686109556439375,
+        -0.23472014623946494,
+        0.5864779851506936
+      ]
+    }
+  ],
+  "skipped": [],
+  "conditions": "640x480 MJPG, original orientation, unchanged focus; BGR input. Training reprojection error is not independent accuracy validation."
+}

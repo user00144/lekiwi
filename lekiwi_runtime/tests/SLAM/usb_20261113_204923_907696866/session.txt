@@ -1,0 +1,17 @@
+device=/dev/v4l/by-id/usb-Arducam_Arducam_5MP_USB_Camera_YL20240927V0-video-index0
+vocabulary="/home/irsadmin/slam_ws/ORB_SLAM3/Vocabulary/ORBvoc.txt"
+settings="/home/irsadmin/LeKiwi/lekiwi/lekiwi_runtime/tests/SLAM/calibration_result_20261113_48views/OV5648.yaml"
+viewer=1
+duration_s=120
+timestamp=host steady_clock seconds since capture start, after frame read; not exposure timestamp
+pose=Twc camera-to-world; translation has arbitrary monocular scale
+online_trajectory=only Tracking::OK; not retrospectively optimized; map resets may change world frame
+keyframe_trajectory=ORB-SLAM3 final TUM export; may contain multiple maps
+reported_fps=30
+reported_fourcc=1.19644e+09
+reported_autofocus=0
+reported_focus=0
+end_reason=signal
+processed_frames=1182
+valid_poses=843
+exit_code=0

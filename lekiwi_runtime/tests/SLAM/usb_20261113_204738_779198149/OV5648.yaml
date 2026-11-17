@@ -1,0 +1,33 @@
+%YAML:1.0
+---
+# OV5648: raw BGR 640x480, unchanged focus and orientation.
+File.version: "1.0"
+Camera.type: "PinHole"
+Camera1.fx: 384.871497393796
+Camera1.fy: 382.584869798194
+Camera1.cx: 292.657957252245
+Camera1.cy: 221.197258201215
+Camera1.k1: -0.209509853623
+Camera1.k2: 0.058028080601
+Camera1.p1: -0.001492644657
+Camera1.p2: 0.000224651728
+Camera1.k3: -0.007765176330
+Camera.fps: 30.000000000000
+Camera.RGB: 0
+Camera.width: 640
+Camera.height: 480
+ORBextractor.nFeatures: 1000
+ORBextractor.scaleFactor: 1.200000000000
+ORBextractor.nLevels: 8
+ORBextractor.iniThFAST: 20
+ORBextractor.minThFAST: 7
+Viewer.KeyFrameSize: 0.050000000000
+Viewer.KeyFrameLineWidth: 1.000000000000
+Viewer.GraphLineWidth: 0.900000000000
+Viewer.PointSize: 2.000000000000
+Viewer.CameraSize: 0.080000000000
+Viewer.CameraLineWidth: 3.000000000000
+Viewer.ViewpointX: 0.000000000000
+Viewer.ViewpointY: -0.700000000000
+Viewer.ViewpointZ: -1.800000000000
+Viewer.ViewpointF: 500.000000000000
