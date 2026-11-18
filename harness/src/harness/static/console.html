@@ -1,127 +1,314 @@
 <!doctype html>
-<html lang="ko">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
-  <title>LeKiwi · Agent console</title>
+  <title>LeKiwi · Operator Console</title>
   <link rel="stylesheet" href="/static/console.css">
-  <script type="importmap">{"imports":{"three":"/static/vendor/three/build/three.module.js","three/":"/static/vendor/three/"}}</script>
   <script src="/static/console.js" defer></script>
 </head>
 <body>
-  <header class="app-header">
-    <a class="brand" href="/" aria-label="LeKiwi 콘솔 홈"><span class="brand-mark" aria-hidden="true">L<span>↗</span></span><span><b>LeKiwi</b><small>AGENT CONSOLE</small></span></a>
-    <div class="header-right"><span class="connection" id="connection"><i aria-hidden="true"></i>GUI 연결 중</span><span class="badge" id="mode-badge">LOCAL</span></div>
-  </header>
-
-  <main class="workspace">
-    <div class="page-heading"><div><p class="eyebrow">OBSERVE · DECIDE · ACT · REVIEW</p><h1>판단부터 결과까지, 한눈에.</h1><p class="subtitle">작업을 지시하고, 로봇의 계획과 관찰 변화를 확인하세요.</p></div><span class="local-note"><span aria-hidden="true">⌘</span> 로컬 작업 공간</span></div>
-    <div id="notice" class="notice" role="alert" hidden></div>
-    <div id="history-notice" class="history-notice" hidden><span>저장된 실행 기록을 보고 있습니다.</span><button id="back-live" type="button">현재 실행으로 돌아가기 ↗</button></div>
-
-    <div class="workspace-grid">
-      <aside class="sidebar">
-        <section class="panel task-panel" aria-labelledby="task-title">
-          <div class="section-heading"><h2 id="task-title">새 작업</h2><span class="section-index">01</span></div>
-          <form id="task-form">
-            <label for="instruction">로봇에게 할 일을 알려주세요.</label>
-            <textarea id="instruction" name="instruction" rows="5" maxlength="8000" required placeholder="예: 전방과 손목 카메라를 확인하고, 물체를 잡기 위한 다음 동작을 진행해줘."></textarea>
-            <div class="field-row"><div class="field"><label for="robot-id">로봇 ID</label><input id="robot-id" name="robot_id" value="kiwi-01" maxlength="128" autocomplete="off" required></div><div class="field"><label for="model">모델 <span class="optional">선택</span></label><input id="model" name="model" placeholder="기본 모델" maxlength="128" autocomplete="off"></div></div>
-            <details class="settings" open><summary>실행 한도 <span>행동 · 판단 · 시간</span></summary><div class="budget-inputs"><div class="field"><label for="max-actions">최대 행동</label><div class="unit-input"><input id="max-actions" type="number" min="1" max="100" value="20" required><span>회</span></div></div><div class="field"><label for="max-steps">최대 판단</label><div class="unit-input"><input id="max-steps" type="number" min="1" max="200" value="40" required><span>회</span></div></div><div class="field"><label for="max-seconds">시간 한도</label><div class="unit-input"><input id="max-seconds" type="number" min="1" max="3600" value="300" required><span>초</span></div></div></div></details>
-            <button class="button primary start-button" id="start" type="submit"><span class="play-icon" aria-hidden="true"></span><span id="start-label">에이전트 실행</span><span class="button-arrow" aria-hidden="true">↗</span></button>
-            <button class="button stop-button" id="stop" type="button" disabled><span class="stop-icon" aria-hidden="true"></span>루프 중지</button>
-            <p class="control-note" id="stop-note">루프 중지는 다음 명령을 막습니다. 이미 전송된 동작의 즉시 정지를 보장하지 않습니다.</p>
-            <p class="control-note" id="live-note" hidden>실행하면 연결된 runtime을 통해 실제 로봇이 움직일 수 있습니다.</p>
-            <p class="demo-note" id="demo-note" hidden>데모는 입력한 지시와 무관한 고정 예시를 실행합니다. 모델과 로봇에는 연결하지 않습니다.</p>
-          </form>
-        </section>
-
-        <section class="panel history-panel" aria-labelledby="history-title"><div class="section-heading"><h2 id="history-title">실행 기록</h2><button class="icon-button" id="refresh-history" type="button" title="실행 기록 새로고침" aria-label="실행 기록 새로고침">↻</button></div><p class="section-note">지난 작업의 관찰과 판단을 다시 확인합니다.</p><div id="history-list" class="history-list"><p class="empty-small">저장된 실행을 불러오는 중입니다.</p></div></section>
-        <div class="sidebar-foot"><span class="mini-mark">L↗</span><p>한 번에 한 행동.<br>새 관찰로 다음 판단.</p></div>
-      </aside>
-
-      <div class="main-column">
-        <section class="panel status-panel" aria-labelledby="status-title">
-          <div class="status-top"><div class="status-heading"><span id="status-light" class="status-light" aria-hidden="true"></span><div><p class="eyebrow" id="run-label">READY FOR YOUR NEXT TASK</p><h2 id="status-title">작업을 기다리고 있습니다</h2></div></div><div class="status-badges"><span class="badge" id="run-mode" hidden></span><span class="badge neutral" id="result-badge">대기</span></div></div>
-          <div class="run-task" id="run-task" hidden><p id="run-instruction"></p><span id="run-context"></span></div>
-          <div class="metrics"><div><span>경과 시간</span><strong id="elapsed">00:00</strong></div><div><span>행동 실행</span><strong><span id="action-count">0</span><small id="action-limit"> / 20</small></strong></div><div><span>판단 단계</span><strong><span id="step-count">0</span><small id="step-limit"> / 40</small></strong></div><div><span>현재 관찰</span><strong class="observation-label" id="observation-id">—</strong></div></div>
-          <ol class="phase-track" aria-label="에이전트 진행 단계"><li data-phase="observing"><span>01</span>관찰</li><li data-phase="thinking"><span>02</span>판단</li><li data-phase="executing"><span>03</span>실행</li><li data-phase="reviewing"><span>04</span>결과 확인</li></ol>
-          <p id="run-summary" class="run-summary" hidden></p>
-        </section>
-
-        <section class="panel xyz-panel" aria-labelledby="xyz-title">
-          <div class="section-heading"><div><h2 id="xyz-title">팔 끝 XYZ 테스트</h2><p class="section-note">팔 끝을 어디로, 얼마나 옮길지 확인하세요.</p></div><span id="xyz-mode-badge" class="badge neutral">계산 전용</span></div>
-          <div class="segmented xyz-tabs" role="group" aria-label="XYZ 테스트 방식"><button id="xyz-preview-tab" type="button" class="selected" aria-pressed="true">계산만 보기</button><button id="xyz-manual-tab" type="button" aria-pressed="false">실제 팔 1회 이동</button></div>
-          <p id="xyz-agent-state" class="kinematics-note"></p><p class="kinematics-note xyz-agent-links">에이전트 추론: <a href="#task-title">작업 지시 후 실행</a> · <a href="#decision-title">판단 근거 보기</a>. 아래 계산·수동 이동은 모델을 호출하지 않습니다.</p>
-          <div id="xyz-preview-content">
-          <p id="xyz-availability" class="kinematics-reason" hidden></p>
-          <button type="button" id="xyz-capture" class="button xyz-secondary">현재 로봇 자세 읽고 기본 자세와 비교</button>
-          <p class="kinematics-note">관절·카메라를 한 번 읽어 저장합니다. 팔·그리퍼는 움직이지 않습니다.</p>
-          <div class="xyz-workspace">
-            <form id="xyz-form">
-              <label for="xyz-source">시작 자세</label><select id="xyz-source"><option value="model">URDF 예시 자세 · 로봇 연결 불필요</option></select>
-              <details id="xyz-joint-editor" class="settings"><summary>예시 관절각 수정 <span>URDF 기준 · °</span></summary><div id="xyz-joint-inputs" class="xyz-joint-inputs"></div></details>
-              <button type="button" id="xyz-load" class="button xyz-secondary">자세 불러오기 · FK 계산</button>
-              <div class="field-row"><div class="field"><label for="xyz-mode">목표 방식</label><select id="xyz-mode"><option value="relative">현재 위치 + 이동량</option><option value="absolute">절대 좌표</option></select></div><div class="field"><label for="xyz-duration">목표까지 이동 시간</label><select id="xyz-duration"><option value="3000">3,000 ms (3초)</option><option value="2000">2,000 ms (2초)</option><option value="5000">5,000 ms (5초)</option><option value="10000">10,000 ms (10초)</option><option value="20000">20,000 ms (20초)</option><option value="1000">1,000 ms (1초)</option><option value="500">500 ms (0.5초)</option><option value="100">100 ms</option></select></div></div>
-              <div class="xyz-inputs"><div class="field"><label for="xyz-x">X (m)</label><input id="xyz-x" type="number" step="any" min="-1.99" max="1.99" value="0" required></div><div class="field"><label for="xyz-y">Y (m)</label><input id="xyz-y" type="number" step="any" min="-1.99" max="1.99" value="0" required></div><div class="field"><label for="xyz-z">Z (m)</label><input id="xyz-z" type="number" step="any" min="-1.99" max="1.99" value="0.01" required></div></div>
-              <p class="kinematics-note">0.01 m = 1 cm · 원점은 팔 장착부입니다.</p>
-              <button type="submit" id="xyz-solve" class="button primary">XYZ 미리보기 계산</button>
-            </form>
-            <div class="xyz-visual"><div class="xyz-visual-head"><strong>SO-101 · URDF 3D</strong><select id="xyz-view" aria-label="미리보기 3D 시점"><option value="iso">3D 시점</option><option value="xz">옆 (XZ)</option><option value="xy">위 (XY)</option><option value="yz">정면 (YZ)</option></select></div>
-              <div class="urdf-toolbar"><label for="xyz-display">표시 자세</label><select id="xyz-display"><option value="current">현재 자세</option><option value="target">계산된 목표 자세</option><option value="overlay">현재 + 목표 겹쳐 보기</option></select></div>
-              <div id="xyz-plot" class="urdf-viewport" role="img" aria-label="URDF 외형 메시로 표시한 3D 로봇 팔"></div><p class="urdf-help">드래그: 회전 · 휠: 확대 · 격자: 5cm</p>
-              <p id="xyz-movement" class="xyz-movement">목표를 계산하면 팔 끝의 이동량을 표시합니다.</p><div class="xyz-legend"><span>파랑 점: 현재 팔 끝</span><span>초록 모델: 목표 자세</span><span>주황 점: XYZ 목표</span></div><p class="kinematics-note">팔 5관절에 관절각을 적용합니다. 집게 벌림은 모델 기본 자세입니다. 축은 팔 장착부 기준입니다.</p></div>
-          </div>
-          <p id="xyz-provenance" class="kinematics-note">URDF 예시 자세를 불러오는 중입니다.</p>
-          <div id="xyz-output" class="kinematics-panel" aria-live="polite"><p>시작 자세를 불러오면 현재 XYZ가 표시됩니다.</p></div>
-          <div id="xyz-reference" class="kinematics-panel" aria-live="polite" hidden></div>
-          </div>
-          <div id="xyz-manual-content" hidden>
-            <p class="manual-intro">① 현재 상태를 읽고 목표 확인 → ② 버튼을 눌러 한 번 이동</p>
-            <p class="kinematics-note">이동 거리 2mm 초과~10mm · 1초 · 관절당 최대 3° · 베이스와 그리퍼 목표는 유지합니다.</p>
-            <p id="manual-availability" class="kinematics-reason"></p>
-            <form id="manual-form">
-              <div class="xyz-inputs"><div class="field"><label for="manual-x">X 방향 이동량 (mm)</label><input id="manual-x" type="number" step="any" min="-10" max="10" value="0" required></div><div class="field"><label for="manual-y">Y 방향 이동량 (mm)</label><input id="manual-y" type="number" step="any" min="-10" max="10" value="0" required></div><div class="field"><label for="manual-z">Z 방향 이동량 (mm)</label><input id="manual-z" type="number" step="any" min="-10" max="10" value="5" required></div></div>
-              <p class="kinematics-note">처음 값은 Z +5mm입니다. 방향은 아래 그림의 팔 장착부 기준축을 따릅니다.</p>
-              <details class="settings manual-mapping"><summary>실물과 3D 자세가 다를 때 <span>관절 방향·영점 맞추기</span></summary><p class="kinematics-note">부호는 관절 회전 방향, 영점은 실제 관절각에 더하는 각도입니다. 설정 파일을 편집하지 않고 여기서 바꿔 다시 계산할 수 있습니다. 단순히 이동을 허용하려고 확인란에 체크하지 마세요.</p><label class="manual-check"><input id="manual-custom-mapping" type="checkbox"> 아래 방향·영점을 이번 계산에 사용</label><div id="manual-mapping-inputs" class="manual-mapping-inputs"></div></details>
-              <button id="manual-prepare" class="button xyz-secondary" type="submit">① 로봇 상태 읽고 계산 · 아직 이동 안 함</button>
-            </form>
-            <div id="manual-review" hidden>
-              <div class="manual-review-grid"><div class="xyz-visual"><div class="xyz-visual-head"><strong>SO-101 · URDF 3D</strong><select id="manual-view" aria-label="실제 팔 3D 시점"><option value="iso">3D 시점</option><option value="xz">옆 (XZ)</option><option value="xy">위 (XY)</option><option value="yz">정면 (YZ)</option></select></div>
-              <div class="urdf-toolbar"><label for="manual-display">표시 자세</label><select id="manual-display"><option value="current">현재 자세</option><option value="target">계산된 목표 자세</option><option value="overlay">현재 + 목표 겹쳐 보기</option></select></div>
-              <div id="manual-plot" class="urdf-viewport" role="img" aria-label="URDF 외형 메시로 표시한 3D 로봇 팔"></div><p class="urdf-help">드래그: 회전 · 휠: 확대 · 격자: 5cm</p>
-              <p id="manual-movement" class="xyz-movement">목표를 계산하면 팔 끝의 이동량을 표시합니다.</p><div class="xyz-legend"><span>파랑 점: 현재 팔 끝</span><span>초록 모델: 목표 자세</span><span>주황 점: XYZ 목표</span></div><p class="kinematics-note">팔 5관절에 관절각을 적용합니다. 집게 벌림은 모델 기본 자세입니다. 축은 팔 장착부 기준입니다.</p></div><div><p class="label-caps">계산에 사용한 새 카메라 관찰</p><div id="manual-cameras" class="manual-cameras"></div></div></div>
-              <div id="manual-targets" class="kinematics-panel"></div>
-              <label id="manual-alignment-label" class="manual-check"><input id="manual-alignment" type="checkbox"> 실물과 3D 모델을 비교해 관절 자세·축 방향이 맞는 것을 확인했습니다. (이번 1회에만 적용)</label>
-              <label class="manual-check"><input id="manual-clearance" type="checkbox"> 팔이 움직일 공간을 확인했고, 표시된 목표로 실제 이동하겠습니다.</label>
-              <p id="manual-expiry" class="kinematics-note"></p>
-              <div class="field-row"><button id="manual-execute" class="button manual-execute" type="button" disabled>② 실제 팔 한 번 이동</button><button id="manual-cancel" class="button xyz-secondary" type="button">준비 취소 · 전송 안 함</button></div>
-            </div>
-            <p id="manual-status" class="manual-status" role="status">① 버튼을 누르기 전에는 로봇에 연결하지 않습니다.</p>
-            <button id="manual-history" class="button xyz-secondary" type="button" hidden>이번 실험의 관찰·실행 결과 보기</button>
-          </div>
-        </section>
-
-        <section class="panel observation-panel" aria-labelledby="observation-title"><div class="section-heading"><div><h2 id="observation-title">로봇의 시야</h2><p class="section-note">각 판단에 사용한 관찰 이미지입니다.</p></div><div class="segmented" role="group" aria-label="관찰 비교 모드"><button type="button" data-view="current" class="selected" aria-pressed="true">현재</button><button type="button" data-view="compare" aria-pressed="false">동작 전후 비교</button></div></div>
-          <div class="camera-grid" id="camera-grid">
-            <article class="camera-unit" data-camera="front"><div class="camera-head"><h3><span class="camera-dot" aria-hidden="true"></span>전방 카메라</h3><span>FRONT</span></div><div class="camera-pair"><figure class="camera-frame before-frame" hidden><img id="front-before" alt="직전 동작 전 전방 카메라 관찰" hidden><div class="camera-empty"><span aria-hidden="true">◫</span><p>동작 전 관찰이 없습니다</p></div><figcaption>직전 동작 전</figcaption></figure><figure class="camera-frame current-frame"><img id="front-current" alt="현재 전방 카메라 관찰" hidden><div class="camera-empty"><span aria-hidden="true">◫</span><p>첫 관찰을 기다리고 있습니다</p></div><figcaption><span>현재 관찰</span><time id="front-time">—</time></figcaption></figure></div></article>
-            <article class="camera-unit" data-camera="wrist"><div class="camera-head"><h3><span class="camera-dot" aria-hidden="true"></span>손목 카메라</h3><span>WRIST</span></div><div class="camera-pair"><figure class="camera-frame before-frame" hidden><img id="wrist-before" alt="직전 동작 전 손목 카메라 관찰" hidden><div class="camera-empty"><span aria-hidden="true">◫</span><p>동작 전 관찰이 없습니다</p></div><figcaption>직전 동작 전</figcaption></figure><figure class="camera-frame current-frame"><img id="wrist-current" alt="현재 손목 카메라 관찰" hidden><div class="camera-empty"><span aria-hidden="true">◫</span><p>첫 관찰을 기다리고 있습니다</p></div><figcaption><span>현재 관찰</span><time id="wrist-time">—</time></figcaption></figure></div></article>
-          </div>
-          <div class="observation-footer"><span id="camera-source">관찰 대기 · 실시간 영상 스트림이 아닙니다</span><span class="badge subtle" id="sensor-badge">센서 대기</span></div><div id="joint-values" class="joint-values" hidden></div>
-        </section>
-
-        <section class="panel decision-panel" aria-labelledby="decision-title"><div class="section-heading"><div><h2 id="decision-title">지금의 판단</h2><p class="section-note">에이전트가 출력한 계획과 공개 판단 근거입니다.</p></div><span class="badge neutral" id="decision-tool">판단 대기</span></div>
-          <div class="decision-content"><div class="reason-column"><p class="label-caps">판단 근거</p><p id="decision-reason" class="reason-text empty-text">관찰을 읽고 다음 행동을 정하면, 그 근거가 여기에 표시됩니다.</p><div class="expected-block"><p class="label-caps">예상 변화</p><p id="decision-expected">—</p></div></div><div class="plan-column"><p class="label-caps">작업 계획</p><ol id="decision-plan" class="plan-list"><li class="empty-text">아직 작성된 계획이 없습니다.</li></ol></div></div>
-          <div class="feedback-row"><span class="feedback-label">피드백</span><span id="decision-feedback" class="badge neutral">대기</span><p id="decision-evidence">실행 후 관찰과 측정값을 바탕으로 확인합니다.</p></div>
-          <details class="command-details" id="command-details" hidden><summary>명령과 측정 결과 보기</summary><pre id="command-json"></pre></details>
-        </section>
-
-        <section class="panel timeline-panel" aria-labelledby="timeline-title"><div class="section-heading"><div><h2 id="timeline-title">실행 타임라인</h2><p class="section-note">관찰, 판단, 명령과 결과가 순서대로 쌓입니다.</p></div><span class="event-count" id="event-count">0 EVENTS</span></div><div id="timeline" class="timeline"><div class="timeline-empty"><span aria-hidden="true">↳</span><p>첫 작업을 시작해보세요.<small>이곳에서 전체 실행 흐름을 확인할 수 있습니다.</small></p></div></div></section>
+  <header class="topbar">
+    <div class="topbar-left">
+      <a class="brand" href="/">
+        <span class="brand-mark" aria-hidden="true">LK</span>
+        <span class="brand-text"><b>LeKiwi</b> <small>Operator Console</small></span>
+      </a>
+      <div class="chip-group">
+        <span class="chip" id="conn-chip"><i class="dot" id="conn-dot"></i><span id="conn-text">Connecting</span></span>
+        <span class="chip neutral" id="mode-chip">LIVE</span>
+        <span class="chip teal" id="nav-chip" title="Operates directly from front &amp; wrist cameras without SLAM">SLAM OFF · Visual-Only</span>
+        <span class="chip subtle" id="ik-chip">Joint Control</span>
       </div>
     </div>
-    <footer class="page-footer"><span>LEKIWI / LOCAL AGENT WORKSPACE</span><span id="endpoint-label">관찰 → 판단 → 행동 → 재관찰</span></footer>
+    <div class="topbar-right">
+      <button type="button" class="btn secondary sm" id="observe-once-btn" title="Capture front/wrist cameras and joint angles once without moving the robot">
+        Observe Once
+      </button>
+    </div>
+  </header>
+
+  <main class="shell">
+    <div id="alert-banner" class="banner error" role="alert" hidden></div>
+    <div id="history-banner" class="banner info" hidden>
+      <span id="history-banner-text">Viewing saved run</span>
+      <button type="button" class="btn ghost sm" id="return-live-btn">Back to Live</button>
+    </div>
+
+    <div class="layout-grid">
+      <!-- LEFT SIDEBAR: Controls + History -->
+      <aside class="sidebar">
+        <section class="card control-card">
+          <div class="card-head">
+            <h2>Run Control</h2>
+            <div class="segmented" role="tablist" aria-label="Execution mode">
+              <button type="button" id="tab-direct" class="seg-btn active" role="tab" aria-selected="true">Direct Task</button>
+              <button type="button" id="tab-policy" class="seg-btn" role="tab" aria-selected="false">Policy.py</button>
+            </div>
+          </div>
+
+          <!-- Mode 1: Direct Visual Episode -->
+          <form id="direct-form" class="control-form">
+            <div class="field">
+              <label for="direct-instruction">Task Instruction <span class="hint">Visual camera loop · No SLAM needed</span></label>
+              <textarea id="direct-instruction" rows="4" maxlength="8000" required placeholder="e.g. Inspect front and wrist cameras, align base with the red mug, grasp it, and lift slightly to verify hold."></textarea>
+            </div>
+            <div class="row-2">
+              <div class="field">
+                <label for="direct-robot-id">Robot ID</label>
+                <input id="direct-robot-id" value="kiwi-01" maxlength="128" autocomplete="off" required>
+              </div>
+              <div class="field">
+                <label for="direct-model">Model <span class="hint">opt</span></label>
+                <input id="direct-model" placeholder="default" maxlength="128" autocomplete="off">
+              </div>
+            </div>
+            <details class="compact-details">
+              <summary>Budgets <span id="budget-summary">20 actions · 40 steps · 300s</span></summary>
+              <div class="row-3">
+                <div class="field">
+                  <label for="max-actions">Actions</label>
+                  <input id="max-actions" type="number" min="1" max="100" value="20" required>
+                </div>
+                <div class="field">
+                  <label for="max-steps">Steps</label>
+                  <input id="max-steps" type="number" min="1" max="200" value="40" required>
+                </div>
+                <div class="field">
+                  <label for="max-seconds">Seconds</label>
+                  <input id="max-seconds" type="number" min="1" max="3600" value="300" required>
+                </div>
+              </div>
+            </details>
+            <div class="action-row">
+              <button type="submit" class="btn primary" id="direct-start-btn">Run Task</button>
+              <button type="button" class="btn danger" id="direct-stop-btn" disabled>Stop</button>
+            </div>
+          </form>
+
+          <!-- Mode 2: ASPIRE Block-by-Block Policy.py -->
+          <form id="policy-form" class="control-form" hidden>
+            <div class="field">
+              <label for="policy-instruction">Task Goal</label>
+              <input id="policy-instruction" maxlength="2000" required value="Locate target visually and grasp it safely" placeholder="Natural-language task goal">
+            </div>
+            <div class="field">
+              <div class="label-bar">
+                <label for="policy-source">policy.py <span class="hint">import math only · no _ vars</span></label>
+                <div class="preset-btns">
+                  <button type="button" class="link-btn" id="preset-visual-btn" title="Insert SLAM-free camera inspection + grasp policy">Visual Template</button>
+                  <button type="button" class="link-btn" id="preset-memory-btn" title="Insert SLAM/ChromaDB fallback policy">Memory Template</button>
+                </div>
+              </div>
+              <textarea id="policy-source" class="code-editor" rows="12" maxlength="12000" spellcheck="false" required></textarea>
+            </div>
+            <div class="row-2">
+              <div class="field">
+                <label for="policy-backend">Backend</label>
+                <select id="policy-backend">
+                  <option value="live">Live Robot (Visual / Optional SLAM)</option>
+                  <option value="sim">Sim Sandbox (Offline Dry-Run)</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="policy-robot-id">Robot ID</label>
+                <input id="policy-robot-id" value="kiwi-01" maxlength="128" autocomplete="off" required>
+              </div>
+            </div>
+            <div class="action-row">
+              <button type="submit" class="btn primary" id="policy-start-btn">Run Policy</button>
+              <button type="button" class="btn danger" id="policy-stop-btn" disabled>Stop</button>
+            </div>
+          </form>
+
+          <p class="safety-footnote" id="mode-footnote">Stop prevents subsequent commands; an already-dispatched slice finishes its bounded duration.</p>
+        </section>
+
+        <section class="card history-card">
+          <div class="card-head">
+            <h2>History</h2>
+            <button type="button" class="btn ghost sm" id="refresh-btn" title="Refresh state">↻</button>
+          </div>
+          <div id="history-list" class="history-list">
+            <p class="empty-msg">No recorded runs yet.</p>
+          </div>
+        </section>
+      </aside>
+
+      <!-- RIGHT WORKSPACE: Status + Cameras + Decision/Trace + Events -->
+      <div class="main-stack">
+        <!-- 1. Status Strip -->
+        <section class="card status-card">
+          <div class="status-header">
+            <div class="status-title-wrap">
+              <span class="status-led" id="status-led"></span>
+              <div>
+                <h1 id="status-headline">Idle · Ready</h1>
+                <p class="subline" id="status-subline">Select Direct Task or Policy.py to begin, or click Observe Once.</p>
+              </div>
+            </div>
+            <div class="status-chips">
+              <span class="chip neutral" id="run-type-chip" hidden>LIVE</span>
+              <span class="chip neutral" id="status-badge">idle</span>
+            </div>
+          </div>
+
+          <div id="uncertain-alert" class="uncertain-box" hidden>
+            <strong>Uncertain Execution Halt:</strong> Transport or arrival confirmation was lost while an action was in flight. Verify physical arm/base clearance before starting another run.
+          </div>
+
+          <div class="metrics-bar">
+            <div class="metric-cell">
+              <span class="metric-label">Elapsed</span>
+              <strong id="metric-elapsed">00:00</strong>
+            </div>
+            <div class="metric-cell">
+              <span class="metric-label" id="metric-actions-label">Actions</span>
+              <strong id="metric-actions">0 / 20</strong>
+            </div>
+            <div class="metric-cell">
+              <span class="metric-label">Steps</span>
+              <strong id="metric-steps">0 / 40</strong>
+            </div>
+            <div class="metric-cell">
+              <span class="metric-label">Observation</span>
+              <strong class="mono" id="metric-obs">—</strong>
+            </div>
+          </div>
+        </section>
+
+        <!-- 2. Cameras & Joint Strip (Immediately Visible) -->
+        <section class="card camera-card">
+          <div class="card-head">
+            <div>
+              <h2>Cameras &amp; Robot State</h2>
+            </div>
+            <div class="segmented" role="group" aria-label="Camera view mode">
+              <button type="button" id="cam-mode-current" class="seg-btn active">Current</button>
+              <button type="button" id="cam-mode-compare" class="seg-btn">Before / After</button>
+            </div>
+          </div>
+
+          <div class="camera-grid" id="camera-grid">
+            <div class="camera-box">
+              <div class="camera-box-head">
+                <span>Front Camera</span>
+                <time id="front-time" class="mono">—</time>
+              </div>
+              <div class="camera-frames" id="front-frames">
+                <figure class="cam-frame before-slot" id="front-before-slot" hidden>
+                  <img id="front-before-img" alt="Front camera before last motion" hidden>
+                  <div class="cam-placeholder" id="front-before-empty">No prior frame</div>
+                  <figcaption>Before Motion</figcaption>
+                </figure>
+                <figure class="cam-frame">
+                  <img id="front-current-img" alt="Current front camera observation" hidden>
+                  <div class="cam-placeholder" id="front-current-empty">Waiting for observation</div>
+                  <figcaption id="front-current-cap" hidden>Current</figcaption>
+                </figure>
+              </div>
+            </div>
+
+            <div class="camera-box">
+              <div class="camera-box-head">
+                <span>Wrist Camera</span>
+                <time id="wrist-time" class="mono">—</time>
+              </div>
+              <div class="camera-frames" id="wrist-frames">
+                <figure class="cam-frame before-slot" id="wrist-before-slot" hidden>
+                  <img id="wrist-before-img" alt="Wrist camera before last motion" hidden>
+                  <div class="cam-placeholder" id="wrist-before-empty">No prior frame</div>
+                  <figcaption>Before Motion</figcaption>
+                </figure>
+                <figure class="cam-frame">
+                  <img id="wrist-current-img" alt="Current wrist camera observation" hidden>
+                  <div class="cam-placeholder" id="wrist-current-empty">Waiting for observation</div>
+                  <figcaption id="wrist-current-cap" hidden>Current</figcaption>
+                </figure>
+              </div>
+            </div>
+          </div>
+
+          <div id="joint-strip" class="joint-strip">
+            <span class="empty-inline">Joint telemetry appears when an observation is captured.</span>
+          </div>
+        </section>
+
+        <!-- 3. Policy Cursor & Step-by-Step Reasoning Inspector -->
+        <section class="card inspector-card">
+          <div class="card-head">
+            <h2 id="inspector-title">Reasoning &amp; Tool Call Inspector</h2>
+            <span class="chip neutral" id="decision-tool-badge">idle</span>
+          </div>
+
+          <!-- Shown for Policy.py runs -->
+          <div id="policy-inspector" class="policy-inspector" hidden>
+            <div class="stage-bar">
+              <span class="subhead-inline">Stages:</span>
+              <div class="stage-pills" id="stage-pills"></div>
+            </div>
+            <div class="inspector-two-col">
+              <div>
+                <p class="subhead">Active Policy Cursor (<code>&gt;&gt;&gt;</code>)</p>
+                <pre id="policy-cursor-pre" class="code-block">Waiting for policy call...</pre>
+              </div>
+              <div>
+                <p class="subhead">Policy Report &amp; Stdout</p>
+                <pre id="policy-output-pre" class="code-block">—</pre>
+              </div>
+            </div>
+          </div>
+
+          <!-- Step-by-Step Planner Reasoning (Direct Task OR Selected Stage inside Policy.py) -->
+          <div id="decision-inspector" class="decision-inspector">
+            <div class="step-nav-bar" id="step-nav-bar" hidden>
+              <span class="subhead-inline">Planner Steps:</span>
+              <div class="step-pills" id="step-pills"></div>
+            </div>
+            <div class="decision-grid">
+              <div>
+                <p class="subhead">Reasoning <span class="hint" id="decision-feedback-tag"></span></p>
+                <p id="decision-reason" class="body-copy muted">No planner decision recorded yet.</p>
+                <p class="subhead mt-sm">Expected Outcome &amp; Observed Evidence</p>
+                <p id="decision-evidence" class="body-copy muted">—</p>
+              </div>
+              <div>
+                <p class="subhead">Plan</p>
+                <ol id="decision-plan" class="plan-ol">
+                  <li class="muted">—</li>
+                </ol>
+              </div>
+            </div>
+            <details id="raw-cmd-details" class="compact-details mt-sm" hidden>
+              <summary>Selected Step Tool Call / Command JSON</summary>
+              <pre id="raw-cmd-pre" class="code-block"></pre>
+            </details>
+          </div>
+        </section>
+
+        <!-- 4. Expandable Tool Call & Event Trace -->
+        <section class="card timeline-card">
+          <div class="card-head">
+            <div>
+              <h2>Full Trace <span class="hint">Click any row to inspect full args / output / JSON</span></h2>
+            </div>
+            <div class="trace-controls">
+              <div class="segmented" role="group" aria-label="Trace filter">
+                <button type="button" class="seg-btn active" data-filter="all">All</button>
+                <button type="button" class="seg-btn" data-filter="reasoning">Reasoning</button>
+                <button type="button" class="seg-btn" data-filter="tools">Tool Calls</button>
+                <button type="button" class="seg-btn" data-filter="alerts">Warnings</button>
+              </div>
+              <span class="mono muted-sm" id="event-count">0 items</span>
+            </div>
+          </div>
+          <div id="event-log" class="event-log">
+            <p class="empty-msg">Reasoning turns, policy tool calls, IK checks, and motor results stream here.</p>
+          </div>
+        </section>
+      </div>
+    </div>
   </main>
-  <div class="sr-only" id="announcer" aria-live="polite" aria-atomic="true"></div>
 </body>
 </html>
