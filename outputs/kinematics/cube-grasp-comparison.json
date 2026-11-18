@@ -1,0 +1,557 @@
+{
+  "version": 1,
+  "kind": "grasp_pose_reference",
+  "preview_only": true,
+  "executable": false,
+  "executed": false,
+  "reference_valid": true,
+  "reference_validity": "model_space_only",
+  "frame": "arm_base",
+  "tip_frame": "gripper_frame_link",
+  "model_hash": "3a65d2d35e68a8d2f0c2cc176d19b884506543c93ba72980145b80abe276022c",
+  "mapping_id": "aebb25f1c270aa13e5d8b0951dd76a4333d20a894b30a662ed505eb6cbb10890",
+  "joint_mapping": {
+    "shoulder_pan": {
+      "sign": 1,
+      "offset_deg": 0.0
+    },
+    "shoulder_lift": {
+      "sign": 1,
+      "offset_deg": 0.0
+    },
+    "elbow_flex": {
+      "sign": 1,
+      "offset_deg": 0.0
+    },
+    "wrist_flex": {
+      "sign": 1,
+      "offset_deg": 0.0
+    },
+    "wrist_roll": {
+      "sign": 1,
+      "offset_deg": 0.0
+    }
+  },
+  "hardware_alignment_verified": false,
+  "mapping_was_verified": false,
+  "kinematics_library": "pinocchio",
+  "kinematics_version": "4.1.0",
+  "provenance": {
+    "observation_id": "b511b586-7bb8-4c4e-9fd8-caf27281be1e",
+    "runtime_id": "1c8619f4-2eba-4a0f-bbba-fbe660ea437c",
+    "timestamp": 1794831043.8512113,
+    "ego_timestamp": 1794831043.8669837,
+    "simulated": false,
+    "calibration_id": "48ffd8991a301a58556c0e965992fe7c0dc36575fdd26fb51636224f4c5a25fe",
+    "calibration_status": {
+      "valid": true,
+      "out_of_range": [],
+      "missing_joints": []
+    },
+    "raw": {
+      "shoulder_pan": 2017,
+      "shoulder_lift": 2562,
+      "elbow_flex": 2088,
+      "wrist_flex": 2399,
+      "wrist_roll": 1998,
+      "gripper": 2986
+    },
+    "joints": {
+      "shoulder_pan": -2.813,
+      "shoulder_lift": 49.231,
+      "elbow_flex": 6.549,
+      "wrist_flex": 36.396,
+      "wrist_roll": -4.352,
+      "gripper": 29.827
+    },
+    "gripper": {
+      "value": 29.827,
+      "unit": "%",
+      "used_in_arm_ik": false
+    },
+    "source": null
+  },
+  "poses": {
+    "current": {
+      "label": "측정한 파지 관절값의 모델 TCP",
+      "urdf_joints_deg": {
+        "shoulder_pan": -2.813,
+        "shoulder_lift": 49.231,
+        "elbow_flex": 6.549,
+        "wrist_flex": 36.396,
+        "wrist_roll": -4.352
+      },
+      "xyz_m": [
+        0.23876184897570363,
+        0.010414004421094556,
+        -0.09853227248351411
+      ],
+      "approach_axis": [
+        -0.03791451475063913,
+        -0.0018571981227213934,
+        -0.9992792604604366
+      ],
+      "urdf_limit_violations": {},
+      "runtime_joints_deg": {
+        "shoulder_pan": -2.813,
+        "shoulder_lift": 49.231,
+        "elbow_flex": 6.549,
+        "wrist_flex": 36.396,
+        "wrist_roll": -4.352
+      }
+    },
+    "default": {
+      "label": "GUI 기본 URDF 예시 자세 (실물 홈 아님)",
+      "urdf_joints_deg": {
+        "shoulder_pan": 0.0,
+        "shoulder_lift": -15.0,
+        "elbow_flex": 35.0,
+        "wrist_flex": -20.0,
+        "wrist_roll": 0.0
+      },
+      "xyz_m": [
+        0.35491516020895303,
+        -9.328438804873232e-06,
+        0.18342868753748579
+      ],
+      "approach_axis": [
+        0.9999999999094106,
+        9.866499962153392e-06,
+        9.155999529123722e-06
+      ],
+      "urdf_limit_violations": {}
+    },
+    "zero": {
+      "label": "URDF 모든 팔 관절 0° (실물 홈 아님)",
+      "urdf_joints_deg": {
+        "shoulder_pan": 0.0,
+        "shoulder_lift": 0.0,
+        "elbow_flex": 0.0,
+        "wrist_flex": 0.0,
+        "wrist_roll": 0.0
+      },
+      "xyz_m": [
+        0.3913614702201581,
+        -9.212063114585043e-06,
+        0.2264697102403329
+      ],
+      "approach_axis": [
+        0.9999999999094104,
+        9.866499961562103e-06,
+        9.155999529048846e-06
+      ],
+      "urdf_limit_violations": {}
+    }
+  },
+  "delta": {
+    "current_minus_default_xyz_m": [
+      -0.1161533112332494,
+      0.01042333285989943,
+      -0.2819609600209999
+    ],
+    "current_minus_default_urdf_joints_deg": {
+      "shoulder_pan": -2.813,
+      "shoulder_lift": 64.231,
+      "elbow_flex": -28.451,
+      "wrist_flex": 56.396,
+      "wrist_roll": -4.352
+    }
+  },
+  "effective_urdf_limits_deg": {
+    "shoulder_pan": [
+      -109.99987525598623,
+      109.99987525598623
+    ],
+    "shoulder_lift": [
+      -100.00004285756798,
+      100.00004285756798
+    ],
+    "elbow_flex": [
+      -95.07692307692308,
+      95.07692307692308
+    ],
+    "wrist_flex": [
+      -94.99984017946129,
+      94.99984017946129
+    ],
+    "wrist_roll": [
+      -157.21102461697095,
+      162.78934171036462
+    ]
+  },
+  "checks": {
+    "current_round_trip": {
+      "seed_pose": "current",
+      "target_pose": "current",
+      "seed_joints_deg": {
+        "shoulder_pan": -2.813,
+        "shoulder_lift": 49.231,
+        "elbow_flex": 6.549,
+        "wrist_flex": 36.396,
+        "wrist_roll": -4.352
+      },
+      "target_xyz_m": [
+        0.23876184897570363,
+        0.010414004421094556,
+        -0.09853227248351411
+      ],
+      "success": true,
+      "skipped": false,
+      "reason_codes": [],
+      "reasons": [],
+      "mode": "preview",
+      "frame": "urdf_base_link",
+      "tip_frame": "gripper_frame_link",
+      "model_hash": "3a65d2d35e68a8d2f0c2cc176d19b884506543c93ba72980145b80abe276022c",
+      "model_name": "so101_new_calib",
+      "joint_units": "degrees",
+      "position_units": "metres",
+      "kinematics_library": "pinocchio",
+      "kinematics_version": "4.1.0",
+      "hardware_alignment_verified": false,
+      "executable": false,
+      "collision_checked": false,
+      "mapping_note": "입력 각도를 URDF 관절각으로 사용한 계산입니다. 실물 축 방향·영점·카메라 좌표 정합은 검증되지 않았습니다.",
+      "solution_joints_deg": {
+        "shoulder_pan": -2.813,
+        "shoulder_lift": 49.231,
+        "elbow_flex": 6.549,
+        "wrist_flex": 36.39600000000001,
+        "wrist_roll": -4.352
+      },
+      "best_candidate_joints_deg": {
+        "shoulder_pan": -2.813,
+        "shoulder_lift": 49.231,
+        "elbow_flex": 6.549,
+        "wrist_flex": 36.39600000000001,
+        "wrist_roll": -4.352
+      },
+      "achieved_xyz_m": [
+        0.23876184897570363,
+        0.010414004421094556,
+        -0.09853227248351411
+      ],
+      "residual_m": 0.0,
+      "tolerance_m": 0.002,
+      "effective_limits_deg": {
+        "shoulder_pan": [
+          -109.99987525598623,
+          109.99987525598623
+        ],
+        "shoulder_lift": [
+          -100.00004285756798,
+          100.00004285756798
+        ],
+        "elbow_flex": [
+          -95.07692307692308,
+          95.07692307692308
+        ],
+        "wrist_flex": [
+          -94.99984017946129,
+          94.99984017946129
+        ],
+        "wrist_roll": [
+          -157.21102461697095,
+          162.78934171036462
+        ]
+      },
+      "target_approach_axis": null,
+      "achieved_approach_axis": [
+        -0.03791451475063913,
+        -0.0018571981227213934,
+        -0.9992792604604366
+      ],
+      "orientation_error_deg": null,
+      "orientation_checked": false,
+      "orientation_tolerance_deg": null,
+      "orientation_constrained": false,
+      "solver": "pinocchio+osqp",
+      "qp_library": "osqp",
+      "qp_version": "1.1.3",
+      "jacobian": "pinocchio.LOCAL_WORLD_ALIGNED.analytic",
+      "algorithm": "bounded_damped_differential_ik",
+      "attempts": [],
+      "residual_calls": 1,
+      "max_starts": 4,
+      "max_nfev_per_start": 100,
+      "max_qp_iterations": 2000,
+      "max_step_deg": 10.0,
+      "note": "URDF 내 수치 해를 찾은 미리보기입니다. 선택한 +Z 접근 방향 외 전체 자세·충돌·실물 도달은 검증되지 않았습니다.",
+      "solution_runtime_joints_deg": {
+        "shoulder_pan": -2.813,
+        "shoulder_lift": 49.231,
+        "elbow_flex": 6.549,
+        "wrist_flex": 36.39600000000001,
+        "wrist_roll": -4.352
+      },
+      "preview_only": true,
+      "executed": false,
+      "joints": null,
+      "geometric_only": true,
+      "speed_time_constrained": false
+    },
+    "current_to_default": {
+      "seed_pose": "current",
+      "target_pose": "default",
+      "seed_joints_deg": {
+        "shoulder_pan": -2.813,
+        "shoulder_lift": 49.231,
+        "elbow_flex": 6.549,
+        "wrist_flex": 36.396,
+        "wrist_roll": -4.352
+      },
+      "target_xyz_m": [
+        0.35491516020895303,
+        -9.328438804873232e-06,
+        0.18342868753748579
+      ],
+      "success": true,
+      "skipped": false,
+      "reason_codes": [],
+      "reasons": [],
+      "mode": "preview",
+      "frame": "urdf_base_link",
+      "tip_frame": "gripper_frame_link",
+      "model_hash": "3a65d2d35e68a8d2f0c2cc176d19b884506543c93ba72980145b80abe276022c",
+      "model_name": "so101_new_calib",
+      "joint_units": "degrees",
+      "position_units": "metres",
+      "kinematics_library": "pinocchio",
+      "kinematics_version": "4.1.0",
+      "hardware_alignment_verified": false,
+      "executable": false,
+      "collision_checked": false,
+      "mapping_note": "입력 각도를 URDF 관절각으로 사용한 계산입니다. 실물 축 방향·영점·카메라 좌표 정합은 검증되지 않았습니다.",
+      "solution_joints_deg": {
+        "shoulder_pan": 0.10610051813713281,
+        "shoulder_lift": -2.966880297976551,
+        "elbow_flex": -11.57463974922162,
+        "wrist_flex": 44.33559577582783,
+        "wrist_roll": -4.251652893083166
+      },
+      "best_candidate_joints_deg": {
+        "shoulder_pan": 0.10610051813713281,
+        "shoulder_lift": -2.966880297976551,
+        "elbow_flex": -11.57463974922162,
+        "wrist_flex": 44.33559577582783,
+        "wrist_roll": -4.251652893083166
+      },
+      "achieved_xyz_m": [
+        0.35491513126064067,
+        -9.326751386237232e-06,
+        0.18342864086266808
+      ],
+      "residual_m": 5.4948983410689075e-08,
+      "tolerance_m": 0.002,
+      "effective_limits_deg": {
+        "shoulder_pan": [
+          -109.99987525598623,
+          109.99987525598623
+        ],
+        "shoulder_lift": [
+          -100.00004285756798,
+          100.00004285756798
+        ],
+        "elbow_flex": [
+          -95.07692307692308,
+          95.07692307692308
+        ],
+        "wrist_flex": [
+          -94.99984017946129,
+          94.99984017946129
+        ],
+        "wrist_roll": [
+          -157.21102461697095,
+          162.78934171036462
+        ]
+      },
+      "target_approach_axis": null,
+      "achieved_approach_axis": [
+        0.8678199042659779,
+        -0.001596881038449121,
+        -0.4968763062682091
+      ],
+      "orientation_error_deg": null,
+      "orientation_checked": false,
+      "orientation_tolerance_deg": null,
+      "orientation_constrained": false,
+      "solver": "pinocchio+osqp",
+      "qp_library": "osqp",
+      "qp_version": "1.1.3",
+      "jacobian": "pinocchio.LOCAL_WORLD_ALIGNED.analytic",
+      "algorithm": "bounded_damped_differential_ik",
+      "attempts": [
+        {
+          "nfev": 18,
+          "qp_solves": 9,
+          "qp_iterations": 1575,
+          "qp_status": "solved",
+          "stop_reason": "target_converged",
+          "solver_converged": true,
+          "residual_m": 5.4948983410689075e-08,
+          "orientation_error_deg": null
+        }
+      ],
+      "residual_calls": 19,
+      "max_starts": 4,
+      "max_nfev_per_start": 100,
+      "max_qp_iterations": 2000,
+      "max_step_deg": 10.0,
+      "note": "URDF 내 수치 해를 찾은 미리보기입니다. 선택한 +Z 접근 방향 외 전체 자세·충돌·실물 도달은 검증되지 않았습니다.",
+      "solution_runtime_joints_deg": {
+        "shoulder_pan": 0.10610051813713281,
+        "shoulder_lift": -2.966880297976551,
+        "elbow_flex": -11.57463974922162,
+        "wrist_flex": 44.33559577582783,
+        "wrist_roll": -4.251652893083166
+      },
+      "preview_only": true,
+      "executed": false,
+      "joints": null,
+      "geometric_only": true,
+      "speed_time_constrained": false
+    },
+    "default_to_current": {
+      "seed_pose": "default",
+      "target_pose": "current",
+      "seed_joints_deg": {
+        "shoulder_pan": 0.0,
+        "shoulder_lift": -15.0,
+        "elbow_flex": 35.0,
+        "wrist_flex": -20.0,
+        "wrist_roll": 0.0
+      },
+      "target_xyz_m": [
+        0.23876184897570363,
+        0.010414004421094556,
+        -0.09853227248351411
+      ],
+      "success": true,
+      "skipped": false,
+      "reason_codes": [],
+      "reasons": [],
+      "mode": "preview",
+      "frame": "urdf_base_link",
+      "tip_frame": "gripper_frame_link",
+      "model_hash": "3a65d2d35e68a8d2f0c2cc176d19b884506543c93ba72980145b80abe276022c",
+      "model_name": "so101_new_calib",
+      "joint_units": "degrees",
+      "position_units": "metres",
+      "kinematics_library": "pinocchio",
+      "kinematics_version": "4.1.0",
+      "hardware_alignment_verified": false,
+      "executable": false,
+      "collision_checked": false,
+      "mapping_note": "입력 각도를 URDF 관절각으로 사용한 계산입니다. 실물 축 방향·영점·카메라 좌표 정합은 검증되지 않았습니다.",
+      "solution_joints_deg": {
+        "shoulder_pan": -2.9813791235342704,
+        "shoulder_lift": 39.76502911038747,
+        "elbow_flex": 41.37297852200969,
+        "wrist_flex": -12.389664890558926,
+        "wrist_roll": -0.07801986107643921
+      },
+      "best_candidate_joints_deg": {
+        "shoulder_pan": -2.9813791235342704,
+        "shoulder_lift": 39.76502911038747,
+        "elbow_flex": 41.37297852200969,
+        "wrist_flex": -12.389664890558926,
+        "wrist_roll": -0.07801986107643921
+      },
+      "achieved_xyz_m": [
+        0.2387617717186059,
+        0.010413996828320138,
+        -0.09853154031414954
+      ],
+      "residual_m": 7.362732426092088e-07,
+      "tolerance_m": 0.002,
+      "effective_limits_deg": {
+        "shoulder_pan": [
+          -109.99987525598623,
+          109.99987525598623
+        ],
+        "shoulder_lift": [
+          -100.00004285756798,
+          100.00004285756798
+        ],
+        "elbow_flex": [
+          -95.07692307692308,
+          95.07692307692308
+        ],
+        "wrist_flex": [
+          -94.99984017946129,
+          94.99984017946129
+        ],
+        "wrist_roll": [
+          -157.21102461697095,
+          162.78934171036462
+        ]
+      },
+      "target_approach_axis": null,
+      "achieved_approach_axis": [
+        0.3619826148376291,
+        0.01886105154905351,
+        -0.9319940167671558
+      ],
+      "orientation_error_deg": null,
+      "orientation_checked": false,
+      "orientation_tolerance_deg": null,
+      "orientation_constrained": false,
+      "solver": "pinocchio+osqp",
+      "qp_library": "osqp",
+      "qp_version": "1.1.3",
+      "jacobian": "pinocchio.LOCAL_WORLD_ALIGNED.analytic",
+      "algorithm": "bounded_damped_differential_ik",
+      "attempts": [
+        {
+          "nfev": 16,
+          "qp_solves": 8,
+          "qp_iterations": 875,
+          "qp_status": "solved",
+          "stop_reason": "target_converged",
+          "solver_converged": true,
+          "residual_m": 7.362732426092088e-07,
+          "orientation_error_deg": null
+        }
+      ],
+      "residual_calls": 17,
+      "max_starts": 4,
+      "max_nfev_per_start": 100,
+      "max_qp_iterations": 2000,
+      "max_step_deg": 10.0,
+      "note": "URDF 내 수치 해를 찾은 미리보기입니다. 선택한 +Z 접근 방향 외 전체 자세·충돌·실물 도달은 검증되지 않았습니다.",
+      "solution_runtime_joints_deg": {
+        "shoulder_pan": -2.9813791235342704,
+        "shoulder_lift": 39.76502911038747,
+        "elbow_flex": 41.37297852200969,
+        "wrist_flex": -12.389664890558926,
+        "wrist_roll": -0.07801986107643921
+      },
+      "preview_only": true,
+      "executed": false,
+      "joints": null,
+      "geometric_only": true,
+      "speed_time_constrained": false
+    }
+  },
+  "reason_codes": [
+    "hardware_alignment_unverified"
+  ],
+  "reasons": [
+    "실물 관절 부호·영점 매핑이 검증되지 않아 미리보기만 가능합니다."
+  ],
+  "scope": {
+    "geometric_only": true,
+    "speed_time_constrained": false,
+    "collision_checked": false,
+    "position_only": true,
+    "calibration_estimated": false,
+    "cube_centre_measured": false
+  },
+  "notes": [
+    "XYZ는 arm_base 기준 gripper_frame_link의 모델 좌표입니다. 실제 큐브 중심을 측정한 값이 아닙니다.",
+    "현재 관절값과 FK 결과 한 쌍으로 실물 영점·회전 부호·좌표 정합이 검증되지는 않습니다.",
+    "기본값은 GUI URDF 예시 (0, -15, 35, -20, 0)°이며 실물 홈 자세를 지정하지 않습니다.",
+    "IK 비교는 전체 보정 범위의 끝점 계산입니다. 속도·시간 제한, 경로·충돌·실물 이동을 검증하지 않습니다.",
+    "XYZ만 같아도 관절 자세는 여러 개일 수 있습니다. 원래 파지 자세를 재현할 때는 저장한 관절값과 접근 방향도 확인해야 합니다."
+  ]
+}

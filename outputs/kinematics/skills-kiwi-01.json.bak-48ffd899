@@ -1,0 +1,51 @@
+{
+  "version": 1,
+  "robot_id": "kiwi-01",
+  "calibration_id": "48ffd8991a301a58556c0e965992fe7c0dc36575fdd26fb51636224f4c5a25fe",
+  "home": {
+    "joints_deg": {
+      "shoulder_pan": -3.077,
+      "shoulder_lift": -99.78,
+      "elbow_flex": 90.33,
+      "wrist_flex": 70.418,
+      "wrist_roll": -4.44
+    },
+    "xyz_m": [
+      0.15595532491831607,
+      0.006897762144006843,
+      0.009312544121469465
+    ],
+    "approach_axis": [
+      0.4846060039333877,
+      0.02605895809790748,
+      -0.8743442981197774
+    ],
+    "source": "runs/20261116T111315Z-507d3f0d/observations/0001/observation.json"
+  },
+  "grasp": {
+    "approach_axis": [
+      -0.11717894935984499,
+      0.008108753338158525,
+      -0.9930777119370996
+    ],
+    "reference_xyz_m": [
+      0.2513707283353363,
+      -0.014070485836629601,
+      -0.09047301111248823
+    ],
+    "floor_grasp_z_m": -0.09,
+    "hover_m": 0.04,
+    "source": "outputs/kinematics/cube-reach-limit-20261116T1353Z.json"
+  },
+  "gripper": {
+    "open_percent": 54.6,
+    "close_percent": 26.0,
+    "duration_ms": 1500,
+    "held_margin_percent": 1.0
+  },
+  "motion": {
+    "speed_margin": 1.4,
+    "min_duration_ms": 2000,
+    "max_duration_ms": 20000
+  }
+}

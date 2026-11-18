@@ -1,0 +1,8 @@
+{
+  "status": "completed",
+  "action_attempts": 1,
+  "observations": 2,
+  "physical_success_verified": false,
+  "automatic_resume": false,
+  "motion_failure_feedback": null
+}

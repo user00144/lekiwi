@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "frame": "arm_base",
+  "tip_frame": "gripper_frame_link",
+  "hardware_alignment_verified": true,
+  "calibration_id": "a625581e511a08697ab45cecd30f9e6d9ad0b651d595c17999e20ca5195a344f",
+  "model_hash": "3a65d2d35e68a8d2f0c2cc176d19b884506543c93ba72980145b80abe276022c",
+  "joint_mapping": {
+    "shoulder_pan": {
+      "sign": 1,
+      "offset_deg": 3.2967
+    },
+    "shoulder_lift": {
+      "sign": 1,
+      "offset_deg": -2.9011
+    },
+    "elbow_flex": {
+      "sign": 1,
+      "offset_deg": -0.5275
+    },
+    "wrist_flex": {
+      "sign": 1,
+      "offset_deg": 2.2418
+    },
+    "wrist_roll": {
+      "sign": 1,
+      "offset_deg": 78.8132
+    }
+  }
+}

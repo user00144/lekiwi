@@ -1,0 +1,216 @@
+{
+  "version": 1,
+  "camera": "front",
+  "image_size": [
+    640,
+    480
+  ],
+  "feature": "bbox_top_center",
+  "camera_matrix": [
+    [
+      384.87149739379595,
+      0.0,
+      292.6579572522445
+    ],
+    [
+      0.0,
+      382.5848697981937,
+      221.19725820121457
+    ],
+    [
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "distortion": [
+    -0.20950985362330468,
+    0.05802808060130078,
+    -0.0014926446571697331,
+    0.00022465172848778998,
+    -0.007765176329630558
+  ],
+  "intrinsics_source": "lekiwi_runtime/tests/SLAM/calibration_result_20261113_48views/calibration.json",
+  "T_base_camera": [
+    [
+      0.09719004662296349,
+      0.15581161189551762,
+      0.9829938130201771,
+      0.14678936761584083
+    ],
+    [
+      -0.9952631425425051,
+      0.017515381918218897,
+      0.09562681889865612,
+      0.0053559931116904675
+    ],
+    [
+      -0.002317743265254295,
+      -0.9876314864334671,
+      0.15677587528499673,
+      -0.0613694655023477
+    ],
+    [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "grasp_plane_z_m": -0.09006,
+  "floor_z_m": -0.10980324739734974,
+  "calibrated_region_m": {
+    "x": [
+      0.253,
+      0.2954
+    ],
+    "y": [
+      -0.0496,
+      0.0479
+    ]
+  },
+  "calibration_id": "a625581e511a08697ab45cecd30f9e6d9ad0b651d595c17999e20ca5195a344f",
+  "mapping_id": "e1f47611daa9b6bdb379f66101101d196d08454c8d63707a12c25db59ca6bc4e",
+  "created_at": "2026-11-17T11:42:14.225979+00:00",
+  "capture": "/home/jwshin/Lekiwi/outputs/camera-calibration/front-20261117T2016",
+  "report": {
+    "cube_points": 5,
+    "pnp6_camera_position_m": [
+      0.14816707302729992,
+      0.0041722992938244535,
+      -0.05493739594818353
+    ],
+    "method": "board pitch/roll + 4-DOF cube fit",
+    "reprojection_rms_px": 2.9688170714047732,
+    "leave_one_out_xy_error_m": [
+      0.0023313257472367867,
+      0.0017691267432888601,
+      0.004232161668229795,
+      0.0005013486540035788,
+      0.013036406306560418
+    ],
+    "leave_one_out_max_m": 0.013036406306560418,
+    "board_rms_px": 0.6215735673904419,
+    "camera_height_above_board_m": 0.04843378189500204,
+    "floor_z_m": -0.10980324739734974,
+    "grasp_height_above_floor_m": 0.019743247397349742,
+    "pnp6_vs_fit_optical_axis_deg": 3.0983701849225,
+    "placements": [
+      {
+        "index": 0,
+        "release_fk_xyz_m": [
+          0.2548,
+          -0.0496,
+          -0.0899
+        ],
+        "detection": {
+          "bbox_px": [
+            465,
+            375,
+            577,
+            480
+          ],
+          "feature_px": [
+            521.0,
+            375.0
+          ],
+          "area_px": 8264,
+          "touches_edge": false,
+          "bottom_cut": true
+        }
+      },
+      {
+        "index": 1,
+        "release_fk_xyz_m": [
+          0.253,
+          -0.0004,
+          -0.0899
+        ],
+        "detection": {
+          "bbox_px": [
+            297,
+            386,
+            411,
+            480
+          ],
+          "feature_px": [
+            354.0,
+            386.0
+          ],
+          "area_px": 8735,
+          "touches_edge": false,
+          "bottom_cut": true
+        }
+      },
+      {
+        "index": 2,
+        "release_fk_xyz_m": [
+          0.2539,
+          0.0479,
+          -0.09
+        ],
+        "detection": {
+          "bbox_px": [
+            128,
+            381,
+            232,
+            480
+          ],
+          "feature_px": [
+            180.0,
+            381.0
+          ],
+          "area_px": 8205,
+          "touches_edge": false,
+          "bottom_cut": true
+        }
+      },
+      {
+        "index": 3,
+        "release_fk_xyz_m": [
+          0.2761,
+          0.0003,
+          -0.0901
+        ],
+        "detection": {
+          "bbox_px": [
+            300,
+            367,
+            393,
+            480
+          ],
+          "feature_px": [
+            346.5,
+            367.0
+          ],
+          "area_px": 8198,
+          "touches_edge": false,
+          "bottom_cut": true
+        }
+      },
+      {
+        "index": 4,
+        "release_fk_xyz_m": [
+          0.2954,
+          0.0472,
+          -0.0904
+        ],
+        "detection": {
+          "bbox_px": [
+            186,
+            350,
+            265,
+            436
+          ],
+          "feature_px": [
+            225.5,
+            350.0
+          ],
+          "area_px": 5064,
+          "touches_edge": false,
+          "bottom_cut": false
+        }
+      }
+    ]
+  }
+}

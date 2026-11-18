@@ -146,3 +146,39 @@ FK와 해석적 Jacobian은 **Pinocchio (`pin`)**, 관절 제한 안의 미분 I
 업데이트 전 GUI 프로세스는 **GUI 터미널만** Ctrl+C로 종료하고 같은 `harness-gui` 명령으로 다시 실행한 뒤 브라우저를 새로고침하세요. 실행 중인 에이전트가 있다면 종료된 뒤 재시작하세요. 서버가 이전 버전이면 미리보기 패널에 재시작 안내가 나옵니다.
 
 에이전트 루프에서 `cartesian` 목표(arm_base 기준 XYZ, m)를 SO-101 IK로 관절각으로 변환해 기존 guarded 경로로 실행할 수 있습니다. GUI에는 현재 FK, 목표·계산된 관절각·오차와 미리보기/실행 준비 상태가 표시됩니다. `--kinematics-config 로봇별설정.json`으로 실물 부호·영점 매핑과 보정 ID를 지정하며, 미검증 또는 보정 파일이 바뀐 상태는 실행하지 않습니다. 설정 예제는 `src/harness/data/cartesian.example.json`입니다. [설정·명령·오프라인 미리보기](../docs/agent-loop.md#xyz-팔-제어)
+
+## Plan-Act 루프 (Planning → Action Loop → Verify/재계획)
+
+`--loop plan-act`는 한 번에 작은 명령 하나를 고르는 기본 루프 대신 다음 구조로 동작합니다.
+
+1. **Planning**(높은 reasoning): 작업·현재 영상·이전 시도·`runs/experience.jsonl`의 과거 교훈을 보고 전체 계획(최대 10단계)을 세웁니다.
+2. **Action Loop**(짧은 reasoning): 한 턴에 큰 스킬 하나를 고릅니다. `locate`(front 영상의 상자 → 팔 기준 XYZ), `pick`/`place`(XYZ에서 집기·놓기), `move_to`, `home`, `gripper`, `drive`, `observe`. 루프가 스스로 `done` 또는 `failed`를 선언할 때까지 반복합니다.
+3. `failed` → 기록 후 다시 Planning. `done` → 새 관찰로 **Verify** 턴이 독립적으로 확인(confirm)하거나 재계획을 요청합니다.
+4. 모든 스킬 결과·판정·교훈(lesson)을 `experience.jsonl`에 쌓고 다음 Planning에 넣습니다.
+
+스킬은 호스트가 실측 관절값으로 계산한 명령을 기존 `EpisodeRunner.execute`로 하나씩 보냅니다. runtime의 신선도·속도·보정·경고·재조정 검사는 그대로입니다. XYZ 목표 하나는 IK 명령 하나(최대 20초, 관절 거리로 시간 자동 결정)이며, IK는 wrist_roll을 현재 값에 고정한 해를 먼저 찾습니다(roll은 접근축 회전이라 위치에만 약간 영향).
+
+```bash
+cd /home/jwshin/Lekiwi
+uv run --project harness harness-gui --loop plan-act \
+  --kinematics-config outputs/kinematics/cartesian-kiwi-01.json \
+  --skills-config outputs/kinematics/skills-kiwi-01.json \
+  --camera-config outputs/kinematics/camera-front-kiwi-01.json
+```
+
+`harness-run --execute --loop plan-act ...`도 같은 옵션을 받습니다. 기본 예산은 행동 120·판단 60·1200초입니다.
+
+## front 카메라 위치 보정 (locate용)
+
+1. 렌즈 보정: `lekiwi_runtime/tests/SLAM/calibration_result_20261113_48views/calibration.json`(OV5648, 640×480).
+2. 체커보드(8×6 내부 코너, 24 mm)를 front 카메라에 전체가 보이게 바닥에 놓고, 팔을 홈에 둔 채 촬영합니다.
+   `python -m harness.front_camera_capture OUT_DIR --board-only`
+3. 보드를 치우고 큐브를 그리퍼에 물린 뒤 실행합니다. 큐브를 바닥 6곳에 놓고 홈으로 물러나 촬영한 다음 다시 집습니다(베이스는 움직이지 않음).
+   `python -m harness.front_camera_capture OUT_DIR`
+4. OpenCV가 있는 환경에서 계산합니다. 보드로 카메라 기울기·높이를, 큐브 점으로 팔 기준 위치·방향(yaw)을 맞추고 leave-one-out 오차를 보고합니다.
+   ```bash
+   lekiwi_runtime/.venv/bin/python harness/util/solve_front_camera.py OUT_DIR \
+     --intrinsics lekiwi_runtime/tests/SLAM/calibration_result_20261113_48views/calibration.json \
+     --output outputs/kinematics/camera-front-kiwi-01.json
+   ```
+`locate`의 XYZ는 바닥에 놓인 물체의 집기 점 추정치입니다. 멀수록 픽셀당 오차가 커지므로(`xy_change_per_3px_m`) 가까이 이동한 뒤 다시 locate합니다. 팔 보정을 다시 하면 `python -m harness.calibration_shift`로 XYZ 매핑과 홈 자세의 0점을 옮깁니다(기본은 미리보기).

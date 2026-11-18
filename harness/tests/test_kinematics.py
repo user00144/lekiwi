@@ -180,8 +180,8 @@ class CartesianReadinessTest(unittest.TestCase):
         examples = []
         outside_runtime = packet({'elbow_flex': 91.})
         examples.append((outside_runtime, 'runtime_seed_out_of_range'))
-        outside_urdf = packet({'shoulder_pan': 115.})
-        outside_urdf['observation']['ego']['limits']['shoulder_pan']['max'] = 120
+        outside_urdf = packet({'shoulder_pan': 125.})  # >10 deg past URDF 110
+        outside_urdf['observation']['ego']['limits']['shoulder_pan']['max'] = 130
         examples.append((outside_urdf, 'urdf_seed_out_of_range'))
         for valid in (False, None):
             bad_cal = packet()

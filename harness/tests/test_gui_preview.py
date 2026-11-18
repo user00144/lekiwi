@@ -106,14 +106,14 @@ class GuiPreviewTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(value['state']['fk']['executable'])
 
     async def test_outside_urdf_seed_displays_fk_and_reason_without_clamping(self):
-        joints = {**MODEL_SEED, 'shoulder_lift': -100.484}
+        joints = {**MODEL_SEED, 'shoulder_lift': -110.5}  # >10 deg past URDF -100
         self.record(joints)
         for source in ({'source': 'recorded', 'run_id': 'saved'}, {'source': 'model', 'joints_deg': joints}):
             value = await self.preview({**source, 'target': TARGET})
             self.assertTrue(value['state']['available'])
             self.assertTrue(value['current_points'])
             self.assertFalse(value['result']['success'])
-            self.assertEqual(value['state']['fk']['joints_deg']['shoulder_lift'], -100.484)
+            self.assertEqual(value['state']['fk']['joints_deg']['shoulder_lift'], -110.5)
             self.assertIn('shoulder_lift', value['state']['fk']['urdf_limit_violations'])
 
     async def test_duration_failure_explained_without_changing_request_or_authorizing_motion(self):

@@ -1,0 +1,30 @@
+{
+  "executed": false,
+  "reason": "Runtime remains locked; fresh eligible observation required before any dispatch",
+  "duration_ms": 3000,
+  "max_step_deg": 15,
+  "from_measured": {
+    "shoulder_pan": -2.901,
+    "shoulder_lift": 33.758,
+    "elbow_flex": 26.945,
+    "wrist_flex": 42.374,
+    "wrist_roll": -4.44,
+    "gripper": 54.579
+  },
+  "home": {
+    "shoulder_pan": -3.077,
+    "shoulder_lift": -99.78,
+    "elbow_flex": 90.33,
+    "wrist_flex": 70.418,
+    "wrist_roll": -4.44
+  },
+  "example_next_targets": {
+    "shoulder_pan": -2.920769653581752,
+    "shoulder_lift": 18.758000000000003,
+    "elbow_flex": 34.06488347885995,
+    "wrist_flex": 45.52411457412872,
+    "wrist_roll": -4.44
+  },
+  "gripper": "unchanged",
+  "base": "stationary"
+}

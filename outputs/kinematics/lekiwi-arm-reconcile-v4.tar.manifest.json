@@ -1,0 +1,10 @@
+{
+  "revision": "arm-only-reconcile-v4",
+  "files": {
+    "lekiwi_runtime/src/lekiwi_runtime/drivers/arm.py": "a655723383737a42d176ba8b0756c4c84026cd18561a143b4741d9a6192a66e8"
+  },
+  "scope": "Uncommanded passive gripper does not require powered hold; actual position and fault checks retained",
+  "tests": "No mock tests run per user request; syntax and source review only",
+  "runtime_restart_required": true,
+  "server_gui_restart_required": false
+}

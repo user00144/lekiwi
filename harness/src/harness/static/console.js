@@ -24,7 +24,9 @@
     host_error: "실행 오류", gui_error: "GUI 실행 오류", startup_error: "시작 실패", error: "오류", cancelled: "취소됨",
     interrupted_unknown: "종료 상태 미확정", preparing: "상태 확인 중", completed: "이동 응답 확인", expired: "계산 만료", prepared: "이동 준비", rejected: "이동 거부", executing: "이동 중",
   };
-  const toolLabels = {observe: "재관찰", execute: "행동 실행", task_complete: "완료 주장", blocked: "작업 보류"};
+  const toolLabels = {observe: "재관찰", execute: "행동 실행", task_complete: "완료 주장", blocked: "작업 보류",
+    plan: "계획 수립", locate: "위치 찾기(XYZ)", pick: "집기", place: "내려놓기", move_to: "XYZ 이동", home: "홈 복귀",
+    gripper: "그리퍼", drive: "베이스 주행", done: "루프 완료", failed: "루프 실패 → 재계획", confirm: "완료 확인", replan: "재계획 요청"};
   const feedbackLabels = {initial: "첫 판단", progress: "진전 확인", stalled: "진전 없음", uncertain: "판단 유보"};
   const eventLabels = {
     startup: "작업 준비", startup_started: "작업 준비", startup_finished: "준비 완료", demo_started: "데모 시작",

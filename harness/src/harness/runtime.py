@@ -72,12 +72,18 @@ class CodexRuntime:
         return json.loads(result.final_response)
 
     def run_episode(self, robot_id: str, instruction: str, *, run_dir=None,
-                    max_actions=20, max_steps=40, max_seconds=300, kinematics_config=None):
+                    max_actions=20, max_steps=40, max_seconds=300, kinematics_config=None, plan_act=None):
         """Explicit execution mode; the legacy run() remains proposal-only."""
         import asyncio
         from .episode import EpisodeLimits
         from .episode_runtime import run_episode
 
+        if plan_act is not None:
+            from .plan_loop import run_plan_episode
+            return asyncio.run(run_plan_episode(
+                self.server, self.model, robot_id, instruction, snapshot=self.snapshot, run_dir=run_dir,
+                limits=EpisodeLimits(max_actions, max_steps, max_seconds), kinematics_config=kinematics_config,
+                **plan_act))
         return asyncio.run(run_episode(
             self.server, self.model, robot_id, instruction, snapshot=self.snapshot,
             run_dir=run_dir, limits=EpisodeLimits(max_actions, max_steps, max_seconds),
@@ -100,6 +106,12 @@ def main():
     parser.add_argument("--max-seconds", type=float, default=300)
     parser.add_argument("--run-dir", type=Path, help="New inspection-only run directory; never resumes motors")
     parser.add_argument("--kinematics-config", type=Path, help="Verified local joint mapping for guarded XYZ execution")
+    parser.add_argument("--loop", choices=("step", "plan-act"), default="step",
+                        help="step: one small action per decision; plan-act: Planning → big-skill Action Loop → Verify/replan")
+    parser.add_argument("--skills-config", type=Path, help="plan-act: home/grasp/gripper skill settings")
+    parser.add_argument("--camera-config", type=Path, help="plan-act: calibrated front camera for locate (optional)")
+    parser.add_argument("--experience", type=Path, help="plan-act: experience JSONL (default: runs/experience.jsonl)")
+    parser.add_argument("--max-replans", type=int, default=3)
     args = parser.parse_args()
     if args.execute and args.snapshot:
         parser.error("--execute cannot be combined with --snapshot")
@@ -107,9 +119,16 @@ def main():
         parser.error("--kinematics-config requires --execute")
     runtime = CodexRuntime(args.server, args.model, args.snapshot)
     if args.execute:
+        plan_act = None
+        if args.loop == "plan-act":
+            if not args.kinematics_config or not args.skills_config:
+                parser.error("--loop plan-act needs --kinematics-config and --skills-config")
+            plan_act = {"skills_config": args.skills_config, "camera_config": args.camera_config,
+                        "experience_path": args.experience, "max_replans": args.max_replans}
         result = runtime.run_episode(args.robot_id, args.instruction, run_dir=args.run_dir,
                                      max_actions=args.max_actions, max_steps=args.max_steps,
-                                     max_seconds=args.max_seconds, kinematics_config=args.kinematics_config)
+                                     max_seconds=args.max_seconds, kinematics_config=args.kinematics_config,
+                                     plan_act=plan_act)
     else:
         result = runtime.run(args.robot_id, args.instruction)
     print(json.dumps(result, ensure_ascii=False, indent=2))

@@ -1,0 +1,259 @@
+{
+  "user_confirmed_home": {
+    "shoulder_pan": -3.077,
+    "shoulder_lift": -99.78,
+    "elbow_flex": 90.33,
+    "wrist_flex": 70.418,
+    "wrist_roll": -4.44
+  },
+  "captured_grasp": {
+    "shoulder_pan": -2.813,
+    "shoulder_lift": 49.231,
+    "elbow_flex": 6.549,
+    "wrist_flex": 36.396,
+    "wrist_roll": -4.352
+  },
+  "home_xyz_m": [
+    0.15595532491831607,
+    0.006897762144006843,
+    0.009312544121469465
+  ],
+  "grasp_xyz_m": [
+    0.23876184897570363,
+    0.010414004421094556,
+    -0.09853227248351411
+  ],
+  "delta_grasp_minus_home_xyz_m": [
+    0.08280652405738756,
+    0.003516242277087713,
+    -0.10784481660498357
+  ],
+  "geometric_ik": {
+    "home_to_grasp": {
+      "mode": "preview",
+      "frame": "urdf_base_link",
+      "tip_frame": "gripper_frame_link",
+      "model_hash": "3a65d2d35e68a8d2f0c2cc176d19b884506543c93ba72980145b80abe276022c",
+      "model_name": "so101_new_calib",
+      "joint_units": "degrees",
+      "position_units": "metres",
+      "kinematics_library": "pinocchio",
+      "kinematics_version": "4.1.0",
+      "hardware_alignment_verified": false,
+      "executable": false,
+      "collision_checked": false,
+      "mapping_note": "입력 각도를 URDF 관절각으로 사용한 계산입니다. 실물 축 방향·영점·카메라 좌표 정합은 검증되지 않았습니다.",
+      "success": true,
+      "target_xyz_m": [
+        0.23876184897570363,
+        0.010414004421094556,
+        -0.09853227248351411
+      ],
+      "solution_joints_deg": {
+        "shoulder_pan": -2.772783377123383,
+        "shoulder_lift": 49.22515538901573,
+        "elbow_flex": 6.56164506198156,
+        "wrist_flex": 36.388273740961786,
+        "wrist_roll": -5.376596857702496
+      },
+      "best_candidate_joints_deg": {
+        "shoulder_pan": -2.772783377123383,
+        "shoulder_lift": 49.22515538901573,
+        "elbow_flex": 6.56164506198156,
+        "wrist_flex": 36.388273740961786,
+        "wrist_roll": -5.376596857702496
+      },
+      "seed_joints_deg": {
+        "shoulder_pan": -3.077,
+        "shoulder_lift": -99.78,
+        "elbow_flex": 90.33,
+        "wrist_flex": 70.418,
+        "wrist_roll": -4.44
+      },
+      "achieved_xyz_m": [
+        0.23876158608655648,
+        0.010414002859633375,
+        -0.09853201629353397
+      ],
+      "residual_m": 3.6707825837072505e-07,
+      "tolerance_m": 0.002,
+      "effective_limits_deg": {
+        "shoulder_pan": [
+          -109.99987525598623,
+          109.99987525598623
+        ],
+        "shoulder_lift": [
+          -100.00004285756798,
+          100.00004285756798
+        ],
+        "elbow_flex": [
+          -95.07692307692308,
+          95.07692307692308
+        ],
+        "wrist_flex": [
+          -94.99984017946129,
+          94.99984017946129
+        ],
+        "wrist_roll": [
+          -157.21102461697095,
+          162.78934171036462
+        ]
+      },
+      "target_approach_axis": [
+        -0.037914514750639124,
+        -0.001857198122721393,
+        -0.9992792604604364
+      ],
+      "achieved_approach_axis": [
+        -0.0378996870465292,
+        -0.0018298510676377153,
+        -0.9992798733922575
+      ],
+      "orientation_error_deg": 0.0017827155603230207,
+      "orientation_checked": true,
+      "orientation_tolerance_deg": 5.0,
+      "orientation_constrained": true,
+      "solver": "pinocchio+osqp",
+      "qp_library": "osqp",
+      "qp_version": "1.1.3",
+      "jacobian": "pinocchio.LOCAL_WORLD_ALIGNED.analytic",
+      "algorithm": "bounded_damped_differential_ik",
+      "attempts": [
+        {
+          "nfev": 100,
+          "qp_solves": 41,
+          "qp_iterations": 3925,
+          "qp_status": "solved",
+          "stop_reason": "evaluation_budget",
+          "solver_converged": false,
+          "residual_m": 3.6707825837072505e-07,
+          "orientation_error_deg": 0.0017827155603230207
+        }
+      ],
+      "residual_calls": 101,
+      "max_starts": 4,
+      "max_nfev_per_start": 100,
+      "max_qp_iterations": 2000,
+      "max_step_deg": 10.0,
+      "note": "URDF 내 수치 해를 찾은 미리보기입니다. 선택한 +Z 접근 방향 외 전체 자세·충돌·실물 도달은 검증되지 않았습니다."
+    },
+    "grasp_to_home": {
+      "mode": "preview",
+      "frame": "urdf_base_link",
+      "tip_frame": "gripper_frame_link",
+      "model_hash": "3a65d2d35e68a8d2f0c2cc176d19b884506543c93ba72980145b80abe276022c",
+      "model_name": "so101_new_calib",
+      "joint_units": "degrees",
+      "position_units": "metres",
+      "kinematics_library": "pinocchio",
+      "kinematics_version": "4.1.0",
+      "hardware_alignment_verified": false,
+      "executable": false,
+      "collision_checked": false,
+      "mapping_note": "입력 각도를 URDF 관절각으로 사용한 계산입니다. 실물 축 방향·영점·카메라 좌표 정합은 검증되지 않았습니다.",
+      "success": true,
+      "target_xyz_m": [
+        0.15595532491831607,
+        0.006897762144006843,
+        0.009312544121469465
+      ],
+      "solution_joints_deg": {
+        "shoulder_pan": -3.078227489783834,
+        "shoulder_lift": -99.7598093174907,
+        "elbow_flex": 90.32535499613434,
+        "wrist_flex": 70.40611096288185,
+        "wrist_roll": -4.4209408448257665
+      },
+      "best_candidate_joints_deg": {
+        "shoulder_pan": -3.078227489783834,
+        "shoulder_lift": -99.7598093174907,
+        "elbow_flex": 90.32535499613434,
+        "wrist_flex": 70.40611096288185,
+        "wrist_roll": -4.4209408448257665
+      },
+      "seed_joints_deg": {
+        "shoulder_pan": -2.813,
+        "shoulder_lift": 49.231,
+        "elbow_flex": 6.549,
+        "wrist_flex": 36.396,
+        "wrist_roll": -4.352
+      },
+      "achieved_xyz_m": [
+        0.15595635013455614,
+        0.006897714418609812,
+        0.00931282018301835
+      ],
+      "residual_m": 1.0628057353985152e-06,
+      "tolerance_m": 0.002,
+      "effective_limits_deg": {
+        "shoulder_pan": [
+          -109.99987525598623,
+          109.99987525598623
+        ],
+        "shoulder_lift": [
+          -100.00004285756798,
+          100.00004285756798
+        ],
+        "elbow_flex": [
+          -95.07692307692308,
+          95.07692307692308
+        ],
+        "wrist_flex": [
+          -94.99984017946129,
+          94.99984017946129
+        ],
+        "wrist_roll": [
+          -157.21102461697095,
+          162.78934171036462
+        ]
+      },
+      "target_approach_axis": [
+        0.4846060039333874,
+        0.026058958097907464,
+        -0.8743442981197769
+      ],
+      "achieved_approach_axis": [
+        0.48454972414897113,
+        0.02606634424018073,
+        -0.87437526870624
+      ],
+      "orientation_error_deg": 0.003704846831299968,
+      "orientation_checked": true,
+      "orientation_tolerance_deg": 5.0,
+      "orientation_constrained": true,
+      "solver": "pinocchio+osqp",
+      "qp_library": "osqp",
+      "qp_version": "1.1.3",
+      "jacobian": "pinocchio.LOCAL_WORLD_ALIGNED.analytic",
+      "algorithm": "bounded_damped_differential_ik",
+      "attempts": [
+        {
+          "nfev": 80,
+          "qp_solves": 26,
+          "qp_iterations": 1375,
+          "qp_status": "solved",
+          "stop_reason": "stationary",
+          "solver_converged": false,
+          "residual_m": 1.0628057353985152e-06,
+          "orientation_error_deg": 0.003704846831299968
+        }
+      ],
+      "residual_calls": 81,
+      "max_starts": 4,
+      "max_nfev_per_start": 100,
+      "max_qp_iterations": 2000,
+      "max_step_deg": 10.0,
+      "note": "URDF 내 수치 해를 찾은 미리보기입니다. 선택한 +Z 접근 방향 외 전체 자세·충돌·실물 도달은 검증되지 않았습니다."
+    }
+  },
+  "executed_as_xyz": false,
+  "hardware_alignment_verified": false,
+  "experiment_result": {
+    "status": "uncertain_execution",
+    "detail": "집게 열기 완료. 홈 복귀 첫 구간 목표 도달 실패: 어깨 높이 목표34.3299°, 이후측정37.538°. runtime uncertain_execution 잠금; 재파지 미완료.",
+    "automatic_resume": false,
+    "physical_success_verified": false,
+    "action_attempts": 2,
+    "observations": 5
+  }
+}

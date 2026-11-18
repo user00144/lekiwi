@@ -22,6 +22,11 @@ from .tools import ARM_MAX_DURATION_MS, ARM_MIN_DURATION_MS, build_command
 MAX_ARM_RECONCILIATIONS = 2
 MAX_ARM_WARNING_ERROR_DEG = 10.
 RECOVERY_ARM_JOINTS = {'shoulder_pan', 'shoulder_lift', 'elbow_flex', 'wrist_flex', 'wrist_roll'}
+# Rejections about observation freshness, not the command: a fresh observation can admit the
+# same unsent command, so they are not remembered as rejected commands.
+TRANSIENT_REJECTIONS = {'observe_required', 'observation_expired', 'no_fresh_camera',
+                        'front_camera_unavailable_or_stale', 'wrist_camera_unavailable_or_stale',
+                        'arm_feedback_unavailable_or_stale'}
 
 
 class JointTargets(BaseModel):
@@ -596,7 +601,8 @@ class EpisodeRunner:
                             'command within the existing limits. Do not repeat it unchanged or relax '
                             'calibration/speed limits. Use blocked if no feasible alternative remains.',
             }
-            self.rejected_commands[signature] = self.rejection_feedback
+            if packet.get('error') not in TRANSIENT_REJECTIONS and packet.get('error_code') not in TRANSIENT_REJECTIONS:
+                self.rejected_commands[signature] = self.rejection_feedback
             joint = details.get('joint')
             if packet.get('error_code') == 'arm_current_out_of_calibration' and isinstance(joint, str):
                 self.calibration_rejections[joint] = self.rejection_feedback

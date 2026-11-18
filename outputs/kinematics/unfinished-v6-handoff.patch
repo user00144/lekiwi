@@ -1,0 +1,82 @@
+diff --git a/harness/src/harness/episode.py b/harness/src/harness/episode.py
+index e67a4e6..736ddc5 100644
+--- a/harness/src/harness/episode.py
++++ b/harness/src/harness/episode.py
+@@ -662,9 +662,10 @@ class EpisodeRunner:
+                 and type(constraints.get('remaining')) is int
+                 and 0 <= constraints['remaining'] < MAX_ARM_RECONCILIATIONS
+                 and self._finite_number(constraints.get('max_joint_delta_deg'))
+-                and 0 < constraints['max_joint_delta_deg'] <= 3.
++                and 0 < constraints['max_joint_delta_deg'] <= 40.
+                 and type(constraints.get('min_duration_ms')) is int
+-                and 3000 <= constraints['min_duration_ms'] <= ARM_MAX_DURATION_MS)
++                and (5000 if constraints['max_joint_delta_deg'] > 3. else 3000)
++                    <= constraints['min_duration_ms'] <= ARM_MAX_DURATION_MS)
+ 
+     def _verified_motion_warning(self, packet, action_id, command):
+         """Accept only a typed, bounded endpoint error with a verified measured hold."""
+@@ -880,9 +881,10 @@ class EpisodeRunner:
+                 or not 0 <= remaining < MAX_ARM_RECONCILIATIONS
+                 or type(constraints.get('remaining')) is not int or constraints['remaining'] != remaining
+                 or not self._finite_number(constraints.get('max_joint_delta_deg'))
+-                or not 0 < constraints['max_joint_delta_deg'] <= 3.
++                or not 0 < constraints['max_joint_delta_deg'] <= 40.
+                 or type(constraints.get('min_duration_ms')) is not int
+-                or not 3000 <= constraints['min_duration_ms'] <= ARM_MAX_DURATION_MS):
++                or not (5000 if constraints['max_joint_delta_deg'] > 3. else 3000)
++                    <= constraints['min_duration_ms'] <= ARM_MAX_DURATION_MS):
+             raise EpisodeStopped('reconciliation_failed', 'Reconciliation did not provide bounded arm constraints')
+         observation = response.get('observation') or {}
+         ego = observation.get('ego') or {}
+@@ -923,7 +925,7 @@ class EpisodeRunner:
+                 failure = 'Reconciled motion cannot command the gripper, base, or an empty arm target'
+             elif any(not self._finite_number(measured.get(name)) or abs(value - measured[name]) > maximum
+                      for name, value in joints.items()):
+-                failure = 'Reconciled joint targets must stay within 3 degrees of the fresh measured pose'
++                failure = f'Reconciled joint targets must stay within {maximum:g} degrees of the fresh measured pose'
+         if failure is None:
+             return True
+         self.rejection_feedback = {
+diff --git a/harness/src/harness/episode_runtime.py b/harness/src/harness/episode_runtime.py
+index 4a8fd8b..b753405 100644
+--- a/harness/src/harness/episode_runtime.py
++++ b/harness/src/harness/episode_runtime.py
+@@ -54,8 +54,8 @@ then supply a fresh observation and recovery_constraints. Do not replay the fail
+ that partial movement completed the task. Compare its requested and measured joints, errors, hold
+ diagnostics, current images and swept-path clearance, then propose ONE changed command with a new reason.
+ While recovery_constraints is present, command only the five arm joints (no gripper or base),
+-duration_ms at least min_duration_ms (normally 3000), and every target within max_joint_delta_deg
+-(at most 3 degrees) of CURRENT measured joints. Choose a smaller or slower revised request supported
++duration_ms at least min_duration_ms (5000 for the 40-degree recovery profile), and every target within max_joint_delta_deg
++(at most 40 degrees; older runtimes may advertise 3) of CURRENT measured joints. Choose a revised request supported
+ by the evidence; changing duration is permitted only if the target also satisfies this small measured delta.
+ Do not declare task_complete until a revised action has reached its target with fresh feedback.
+ An error, communication ambiguity, unverified hold, stale feedback, or exhausted reconciliation remains
+diff --git a/lekiwi_runtime/src/lekiwi_runtime/drivers/arm.py b/lekiwi_runtime/src/lekiwi_runtime/drivers/arm.py
+index b427e43..149c81f 100644
+--- a/lekiwi_runtime/src/lekiwi_runtime/drivers/arm.py
++++ b/lekiwi_runtime/src/lekiwi_runtime/drivers/arm.py
+@@ -18,7 +18,7 @@ ARM_JOINTS = (
+ )
+ PRESENT_POSITION = 56
+ ARM_FEEDBACK_TIMEOUT_S = 2.0
+-ARM_CONTROL_REVISION = 'arm-warning-v5'
++ARM_CONTROL_REVISION = 'arm-warning-v6'
+ ARM_WARNING_MAX_ERROR_DEG = 5.0
+ HOLD_STABILITY_INTERVAL_S = .2
+ HOLD_STABILITY_SAMPLES = 3
+diff --git a/lekiwi_runtime/src/lekiwi_runtime/guard.py b/lekiwi_runtime/src/lekiwi_runtime/guard.py
+index 4113d80..01653e0 100644
+--- a/lekiwi_runtime/src/lekiwi_runtime/guard.py
++++ b/lekiwi_runtime/src/lekiwi_runtime/guard.py
+@@ -16,8 +16,8 @@ from .robot import ARM_MAX_DURATION_MS, BASE_MAX_DURATION_MS, PreDispatchRejecte
+ GUARD_FIELDS = frozenset({"observation_id", "runtime_id", "action_id", "reason"})
+ CAPABILITIES = {"guarded_execution": 1, "arm_reconciliation": 1, "arm_motion_warning": 1}
+ MAX_ARM_RECONCILIATIONS = 2
+-RECOVERY_MAX_JOINT_DELTA_DEG = 3.0
+-RECOVERY_MIN_DURATION_MS = 3000
++RECOVERY_MAX_JOINT_DELTA_DEG = 40.0
++RECOVERY_MIN_DURATION_MS = 5000
+ MAX_OBSERVATION_BYTES = 2 * 1024 * 1024
+ JOINT_NAMES = frozenset({"shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper"})
+ 

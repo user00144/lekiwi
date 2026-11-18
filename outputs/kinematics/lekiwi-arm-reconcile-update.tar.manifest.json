@@ -1,0 +1,14 @@
+{
+  "revision": "verified-arm-reconcile-v3",
+  "base_commit": "bd804c1f14052eae3f9045c45237f2650db64268",
+  "files": {
+    "lekiwi_runtime/src/lekiwi_runtime/drivers/arm.py": "819f53abf7991679838bae282e36f50a0f3f5d54d096118d1d8a1ba41f8c409d",
+    "lekiwi_runtime/src/lekiwi_runtime/orin.py": "c1ce3ac3020d3eeec79823f314291c8edf11ce51e6ca3f81aa175b3c00444864",
+    "lekiwi_runtime/src/lekiwi_runtime/guard.py": "c9e38397e636118a141b6baab43a11be64061ec3cd4bb88f73c0d322cfd0270e",
+    "lekiwi_runtime/src/lekiwi_runtime/client.py": "059d750c2a91f9e3c745a3fb09d644f5f20730cff7574ddec4200dc48671ac4f"
+  },
+  "additional_mock_testing": "stopped at user request",
+  "physical_test": "not performed for v3",
+  "local_server_and_gui_restart_required": true,
+  "robot_runtime_restart_required": true
+}

@@ -1,0 +1,272 @@
+{
+  "request_id": "daeded3be65244e9b0837a1957813345",
+  "status": "ok",
+  "observation": {
+    "timestamp": 1794915060.103614,
+    "simulated": false,
+    "cameras": {
+      "front": {
+        "available": true,
+        "encoding": "jpeg_base64",
+        "width": 640,
+        "height": 480,
+        "timestamp": 1794915060.095438,
+        "age_s": 0.015,
+        "error": null
+      },
+      "wrist": {
+        "available": true,
+        "encoding": "jpeg_base64",
+        "width": 640,
+        "height": 480,
+        "timestamp": 1794915060.0561588,
+        "age_s": 0.0606,
+        "error": null
+      }
+    },
+    "radar": {
+      "available": true,
+      "frame": 540629,
+      "count": 3,
+      "points_xyzd": [
+        [
+          -0.5625,
+          0.496,
+          -0.007,
+          0.0
+        ],
+        [
+          0.9375,
+          2.8498,
+          -0.0012,
+          0.0
+        ],
+        [
+          -0.8438,
+          2.3657,
+          -1.6406,
+          0.0
+        ]
+      ],
+      "snr_db": [
+        23.7,
+        15.6,
+        15.6
+      ],
+      "dropped_packets": 0,
+      "timestamp": 1794915060.0696585,
+      "age_s": 0.0474,
+      "error": null
+    },
+    "ego": {
+      "available": true,
+      "port": "/dev/ttyACM0",
+      "joints": {
+        "shoulder_pan": -6.022,
+        "shoulder_lift": -94.593,
+        "elbow_flex": 90.769,
+        "wrist_flex": 68.0,
+        "wrist_roll": -83.429,
+        "gripper": 53.899
+      },
+      "angles": [
+        -6.022,
+        -94.593,
+        90.769,
+        68.0,
+        -83.429,
+        53.899
+      ],
+      "joint_names": [
+        "shoulder_pan",
+        "shoulder_lift",
+        "elbow_flex",
+        "wrist_flex",
+        "wrist_roll",
+        "gripper"
+      ],
+      "raw": {
+        "shoulder_pan": 2018,
+        "shoulder_lift": 893,
+        "elbow_flex": 3040,
+        "wrist_flex": 2784,
+        "wrist_roll": 1995,
+        "gripper": 2597
+      },
+      "timestamp": 1794915060.1201682,
+      "error": null,
+      "limits": {
+        "shoulder_pan": {
+          "min": -114.15384615384616,
+          "max": 114.15384615384616,
+          "max_speed": 30,
+          "unit": "deg"
+        },
+        "shoulder_lift": {
+          "min": -101.01098901098901,
+          "max": 101.01098901098901,
+          "max_speed": 30,
+          "unit": "deg"
+        },
+        "elbow_flex": {
+          "min": -94.02197802197803,
+          "max": 94.02197802197803,
+          "max_speed": 30,
+          "unit": "deg"
+        },
+        "wrist_flex": {
+          "min": -104.04395604395604,
+          "max": 104.04395604395604,
+          "max_speed": 30,
+          "unit": "deg"
+        },
+        "wrist_roll": {
+          "min": -94.94505494505495,
+          "max": 94.94505494505495,
+          "max_speed": 30,
+          "unit": "deg"
+        },
+        "gripper": {
+          "min": 0,
+          "max": 100,
+          "max_speed": 50,
+          "unit": "%"
+        }
+      },
+      "last_motion": {
+        "targets": {
+          "shoulder_pan": -6.371456019691037,
+          "shoulder_lift": -94.86383355310757,
+          "elbow_flex": 90.85352366286963,
+          "wrist_flex": 68.1672982754803,
+          "wrist_roll": -83.291
+        },
+        "measured": {
+          "shoulder_pan": -6.021978021978022,
+          "shoulder_lift": -93.8021978021978,
+          "elbow_flex": 90.5934065934066,
+          "wrist_flex": 67.91208791208791,
+          "wrist_roll": -83.42857142857143
+        },
+        "reached": true,
+        "tolerance_deg": 2,
+        "tolerance_percent": 5,
+        "timestamp": 1794915059.9609716,
+        "communication_recoveries": []
+      },
+      "calibration_id": "a625581e511a08697ab45cecd30f9e6d9ad0b651d595c17999e20ca5195a344f",
+      "control": {
+        "revision": "arm-gain-v7",
+        "max_duration_ms": 20000,
+        "feedback_timeout_s": 2.0,
+        "tolerance_deg": 2,
+        "tolerance_percent": 5,
+        "warning_max_error_deg": 10.0,
+        "hold_stability_timeout_s": 2.0,
+        "p_coefficient": {
+          "configured": 32,
+          "joints": {
+            "shoulder_pan": {
+              "before": 32,
+              "after": 32,
+              "eeprom_lock": 1
+            },
+            "shoulder_lift": {
+              "before": 32,
+              "after": 32,
+              "eeprom_lock": 1
+            },
+            "elbow_flex": {
+              "before": 32,
+              "after": 32,
+              "eeprom_lock": 1
+            },
+            "wrist_flex": {
+              "before": 32,
+              "after": 32,
+              "eeprom_lock": 1
+            },
+            "wrist_roll": {
+              "before": 32,
+              "after": 32,
+              "eeprom_lock": 1
+            }
+          },
+          "error": null,
+          "applied_at": 1794913851.9116504
+        }
+      },
+      "calibration_status": {
+        "valid": true,
+        "out_of_range": [],
+        "missing_joints": []
+      },
+      "communication_retries": []
+    },
+    "imu": {
+      "available": true,
+      "calibrated": true,
+      "error": null,
+      "estimate_valid": true,
+      "displacement_m": [
+        -157862.85177778543,
+        15666.21418877995,
+        -3275.741277594861
+      ],
+      "velocity_m_s": [
+        -313.9751600148185,
+        -65.75767620762923,
+        -7.136874273528032
+      ],
+      "frame": "startup_gravity_aligned_sensor",
+      "simulated": false,
+      "estimate_method": "inertial_double_integration",
+      "estimate_note": "Relative estimate only; drift accumulates. Initial rest assumed; no wheel/vision correction.",
+      "accel_m_s2": [
+        -0.09457096557617187,
+        -0.6643909606933593,
+        9.532513909912108
+      ],
+      "gyro_deg_s": [
+        0.19817073170731708,
+        -0.28963414634146345,
+        0.4420731707317074
+      ],
+      "temperature_c": 28.267578125,
+      "saturated": false,
+      "timestamp": 1794915060.1141317,
+      "origin_id": "2ca22a0284b244ab9c1456478a408253",
+      "origin_timestamp": 1794913858.0120442,
+      "orientation_deg": [
+        -1.999568936220313,
+        -1.7045917892308968,
+        -3.012940994133333
+      ],
+      "linear_accel_m_s2": [
+        -0.40931551338190036,
+        -0.3203744288039265,
+        0.016846108667440518
+      ],
+      "gyro_corrected_deg_s": [
+        -0.12007113821138232,
+        -0.07012195121951284,
+        0.057977642276424546
+      ],
+      "estimate_error": null,
+      "age_s": 0.0067
+    },
+    "observation_id": "c2088bf8-10b7-4cbd-8b07-69972c79caab",
+    "runtime_id": "56ff96cf-57fb-423c-b4bc-2ffb277c3a68"
+  },
+  "capabilities": {
+    "guarded_execution": 1,
+    "arm_reconciliation": 1,
+    "arm_motion_warning": 1
+  },
+  "action_context": {
+    "runtime_id": "56ff96cf-57fb-423c-b4bc-2ffb277c3a68",
+    "observation_id": "c2088bf8-10b7-4cbd-8b07-69972c79caab",
+    "movement_allowed": true,
+    "max_age_s": 60.0
+  }
+}

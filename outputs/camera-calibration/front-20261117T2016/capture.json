@@ -1,0 +1,480 @@
+{
+  "version": 1,
+  "created_at": "2026-11-17T11:35:45.424111+00:00",
+  "run_dir": "/home/jwshin/Lekiwi/runs/20261117T113545Z-front-camera-capture",
+  "robot_id": "kiwi-01",
+  "board": {
+    "images": {
+      "front": "board-front.jpg",
+      "wrist": "board-wrist.jpg"
+    },
+    "observation_id": "aaafcafe-a348-4bf4-9131-0797a37cd9c8",
+    "joints": {
+      "shoulder_pan": -6.374,
+      "shoulder_lift": -94.945,
+      "elbow_flex": 91.297,
+      "wrist_flex": 68.0,
+      "wrist_roll": -83.077,
+      "gripper": 54.022
+    },
+    "fk_xyz_m": [
+      0.15179284631386533,
+      0.006650359692233836,
+      0.0051183271148297765
+    ]
+  },
+  "placements": [
+    {
+      "index": 0,
+      "target_xyz_m": [
+        0.26,
+        -0.05,
+        -0.09
+      ],
+      "reference": {
+        "images": {
+          "front": "p00-ref-front.jpg",
+          "wrist": "p00-ref-wrist.jpg"
+        },
+        "observation_id": "16336fad-40a7-4166-9bc8-c787d672d32c",
+        "joints": {
+          "shoulder_pan": -6.11,
+          "shoulder_lift": -94.593,
+          "elbow_flex": 90.769,
+          "wrist_flex": 68.0,
+          "wrist_roll": -83.429,
+          "gripper": 27.723
+        },
+        "fk_xyz_m": [
+          0.15228130093520262,
+          0.006200750765290062,
+          0.006437922859815842
+        ]
+      },
+      "place": {
+        "target_xyz_m": [
+          0.26,
+          -0.05,
+          -0.09
+        ],
+        "release_fk_xyz_m": [
+          0.2548,
+          -0.0496,
+          -0.0899
+        ],
+        "release_joints": {
+          "shoulder_pan": 9.802,
+          "shoulder_lift": 64.615,
+          "elbow_flex": -23.253,
+          "wrist_flex": 58.154,
+          "wrist_roll": -83.429,
+          "gripper": 27.661
+        },
+        "gripper_after_open": 53.837
+      },
+      "cube": {
+        "images": {
+          "front": "p00-cube-front.jpg",
+          "wrist": "p00-cube-wrist.jpg"
+        },
+        "observation_id": "98a8f85b-d216-491d-b11a-b279e6cf32d2",
+        "joints": {
+          "shoulder_pan": -6.022,
+          "shoulder_lift": -94.681,
+          "elbow_flex": 90.769,
+          "wrist_flex": 68.0,
+          "wrist_roll": -83.429,
+          "gripper": 54.084
+        },
+        "fk_xyz_m": [
+          0.15245959788750776,
+          0.006034543920784345,
+          0.006565860568009285
+        ]
+      },
+      "pick": {
+        "target_xyz_m": [
+          0.26,
+          -0.05,
+          -0.09
+        ],
+        "grasp_fk_xyz_m": [
+          0.2544,
+          -0.0481,
+          -0.0902
+        ],
+        "gripper_after_close": 27.908,
+        "gripper_after_lift": 27.723,
+        "object_between_jaws_likely": true,
+        "note": "Gripper stopping above its close target suggests an object between the jaws; confirm with the wrist image."
+      }
+    },
+    {
+      "index": 1,
+      "target_xyz_m": [
+        0.26,
+        0.0,
+        -0.09
+      ],
+      "reference": {
+        "images": {
+          "front": "p01-ref-front.jpg",
+          "wrist": "p01-ref-wrist.jpg"
+        },
+        "observation_id": "b28dac4d-b694-4cb9-b070-f451c0ad2feb",
+        "joints": {
+          "shoulder_pan": -6.374,
+          "shoulder_lift": -94.593,
+          "elbow_flex": 90.769,
+          "wrist_flex": 68.0,
+          "wrist_roll": -83.429,
+          "gripper": 27.723
+        },
+        "fk_xyz_m": [
+          0.15225152640860884,
+          0.006723404741632755,
+          0.0064379242467253045
+        ]
+      },
+      "place": {
+        "target_xyz_m": [
+          0.26,
+          0.0,
+          -0.09
+        ],
+        "release_fk_xyz_m": [
+          0.253,
+          -0.0004,
+          -0.0899
+        ],
+        "release_joints": {
+          "shoulder_pan": -3.033,
+          "shoulder_lift": 61.802,
+          "elbow_flex": -17.363,
+          "wrist_flex": 55.604,
+          "wrist_roll": -83.429,
+          "gripper": 27.723
+        },
+        "gripper_after_open": 53.837
+      },
+      "cube": {
+        "images": {
+          "front": "p01-cube-front.jpg",
+          "wrist": "p01-cube-wrist.jpg"
+        },
+        "observation_id": "8c1402d6-f6d4-4ec8-9e15-6e42d344a89c",
+        "joints": {
+          "shoulder_pan": -6.374,
+          "shoulder_lift": -94.681,
+          "elbow_flex": 90.769,
+          "wrist_flex": 68.0,
+          "wrist_roll": -83.429,
+          "gripper": 53.837
+        },
+        "fk_xyz_m": [
+          0.1524203811271958,
+          0.006732483224916125,
+          0.006565862420054164
+        ]
+      },
+      "pick": {
+        "target_xyz_m": [
+          0.26,
+          0.0,
+          -0.09
+        ],
+        "grasp_fk_xyz_m": [
+          0.254,
+          -0.0004,
+          -0.0893
+        ],
+        "gripper_after_close": 27.908,
+        "gripper_after_lift": 27.785,
+        "object_between_jaws_likely": true,
+        "note": "Gripper stopping above its close target suggests an object between the jaws; confirm with the wrist image."
+      }
+    },
+    {
+      "index": 2,
+      "target_xyz_m": [
+        0.26,
+        0.05,
+        -0.09
+      ],
+      "reference": {
+        "images": {
+          "front": "p02-ref-front.jpg",
+          "wrist": "p02-ref-wrist.jpg"
+        },
+        "observation_id": "e9d957a0-7499-49f8-9356-d9d29c9cfe03",
+        "joints": {
+          "shoulder_pan": -6.022,
+          "shoulder_lift": -94.593,
+          "elbow_flex": 90.769,
+          "wrist_flex": 68.0,
+          "wrist_roll": -83.429,
+          "gripper": 27.785
+        },
+        "fk_xyz_m": [
+          0.15229069057954706,
+          0.006026502971227759,
+          0.006437922397433599
+        ]
+      },
+      "place": {
+        "target_xyz_m": [
+          0.26,
+          0.05,
+          -0.09
+        ],
+        "release_fk_xyz_m": [
+          0.2539,
+          0.0479,
+          -0.09
+        ],
+        "release_joints": {
+          "shoulder_pan": -15.692,
+          "shoulder_lift": 64.44,
+          "elbow_flex": -22.813,
+          "wrist_flex": 58.154,
+          "wrist_roll": -83.429,
+          "gripper": 27.723
+        },
+        "gripper_after_open": 53.837
+      },
+      "cube": {
+        "images": {
+          "front": "p02-cube-front.jpg",
+          "wrist": "p02-cube-wrist.jpg"
+        },
+        "observation_id": "0d34fa52-3be6-465b-b1f6-7c4293c63c8c",
+        "joints": {
+          "shoulder_pan": -6.549,
+          "shoulder_lift": -94.681,
+          "elbow_flex": 90.769,
+          "wrist_flex": 68.0,
+          "wrist_roll": -83.516,
+          "gripper": 53.837
+        },
+        "fk_xyz_m": [
+          0.15239970144953052,
+          0.007091357257253362,
+          0.006566422181906298
+        ]
+      },
+      "pick": {
+        "target_xyz_m": [
+          0.26,
+          0.05,
+          -0.09
+        ],
+        "grasp_fk_xyz_m": [
+          0.2547,
+          0.0481,
+          -0.0899
+        ],
+        "gripper_after_close": 27.908,
+        "gripper_after_lift": 27.785,
+        "object_between_jaws_likely": true,
+        "note": "Gripper stopping above its close target suggests an object between the jaws; confirm with the wrist image."
+      }
+    },
+    {
+      "index": 3,
+      "target_xyz_m": [
+        0.28,
+        0.0,
+        -0.09
+      ],
+      "reference": {
+        "images": {
+          "front": "p03-ref-front.jpg",
+          "wrist": "p03-ref-wrist.jpg"
+        },
+        "observation_id": "a5a21975-7879-440a-a309-81f97f08e5df",
+        "joints": {
+          "shoulder_pan": -6.462,
+          "shoulder_lift": -94.593,
+          "elbow_flex": 90.769,
+          "wrist_flex": 68.0,
+          "wrist_roll": -83.516,
+          "gripper": 27.785
+        },
+        "fk_xyz_m": [
+          0.1522414983698857,
+          0.006909571054718476,
+          0.006438481872505078
+        ]
+      },
+      "place": {
+        "target_xyz_m": [
+          0.28,
+          0.0,
+          -0.09
+        ],
+        "release_fk_xyz_m": [
+          0.2761,
+          0.0003,
+          -0.0901
+        ],
+        "release_joints": {
+          "shoulder_pan": -3.209,
+          "shoulder_lift": 74.198,
+          "elbow_flex": -42.33,
+          "wrist_flex": 67.297,
+          "wrist_roll": -83.516,
+          "gripper": 27.785
+        },
+        "gripper_after_open": 53.837
+      },
+      "cube": {
+        "images": {
+          "front": "p03-cube-front.jpg",
+          "wrist": "p03-cube-wrist.jpg"
+        },
+        "observation_id": "8a7d3f79-63e0-481b-b9b2-46a0eacae604",
+        "joints": {
+          "shoulder_pan": -6.374,
+          "shoulder_lift": -94.593,
+          "elbow_flex": 90.857,
+          "wrist_flex": 68.703,
+          "wrist_roll": -83.516,
+          "gripper": 53.837
+        },
+        "fk_xyz_m": [
+          0.15027486929067313,
+          0.006629083189567975,
+          0.005346152138451993
+        ]
+      },
+      "pick": {
+        "target_xyz_m": [
+          0.28,
+          0.0,
+          -0.09
+        ],
+        "grasp_fk_xyz_m": [
+          0.2742,
+          -0.0001,
+          -0.0901
+        ],
+        "gripper_after_close": 27.847,
+        "gripper_after_lift": 27.723,
+        "object_between_jaws_likely": true,
+        "note": "Gripper stopping above its close target suggests an object between the jaws; confirm with the wrist image."
+      }
+    },
+    {
+      "index": 4,
+      "target_xyz_m": [
+        0.3,
+        0.05,
+        -0.09
+      ],
+      "reference": {
+        "images": {
+          "front": "p04-ref-front.jpg",
+          "wrist": "p04-ref-wrist.jpg"
+        },
+        "observation_id": "d8188eb9-695c-44ad-817f-f331c6a5615e",
+        "joints": {
+          "shoulder_pan": -6.022,
+          "shoulder_lift": -94.593,
+          "elbow_flex": 90.857,
+          "wrist_flex": 68.703,
+          "wrist_roll": -83.516,
+          "gripper": 27.723
+        },
+        "fk_xyz_m": [
+          0.15031349128012167,
+          0.005944326832387193,
+          0.005346150321389187
+        ]
+      },
+      "place": {
+        "target_xyz_m": [
+          0.3,
+          0.05,
+          -0.09
+        ],
+        "release_fk_xyz_m": [
+          0.2954,
+          0.0472,
+          -0.0904
+        ],
+        "release_joints": {
+          "shoulder_pan": -13.582,
+          "shoulder_lift": 90.462,
+          "elbow_flex": -74.066,
+          "wrist_flex": 77.67,
+          "wrist_roll": -83.516,
+          "gripper": 27.537
+        },
+        "gripper_after_open": 53.837
+      },
+      "cube": {
+        "images": {
+          "front": "p04-cube-front.jpg",
+          "wrist": "p04-cube-wrist.jpg"
+        },
+        "observation_id": "c643be1d-1302-4d6a-a899-e1f11249c05a",
+        "joints": {
+          "shoulder_pan": -6.462,
+          "shoulder_lift": -94.681,
+          "elbow_flex": 90.857,
+          "wrist_flex": 68.703,
+          "wrist_roll": -83.516,
+          "gripper": 53.837
+        },
+        "fk_xyz_m": [
+          0.1504350737195627,
+          0.006809664746917428,
+          0.0054710527290860456
+        ]
+      },
+      "pick": {
+        "target_xyz_m": [
+          0.3,
+          0.05,
+          -0.09
+        ],
+        "grasp_fk_xyz_m": [
+          0.2937,
+          0.0469,
+          -0.0904
+        ],
+        "gripper_after_close": 27.723,
+        "gripper_after_lift": 27.661,
+        "object_between_jaws_likely": true,
+        "note": "Gripper stopping above its close target suggests an object between the jaws; confirm with the wrist image."
+      }
+    }
+  ],
+  "calibration_id": "a625581e511a08697ab45cecd30f9e6d9ad0b651d595c17999e20ca5195a344f",
+  "arm_revision": "arm-gain-v7",
+  "mapping_id": "e1f47611daa9b6bdb379f66101101d196d08454c8d63707a12c25db59ca6bc4e",
+  "model_hash": "3a65d2d35e68a8d2f0c2cc176d19b884506543c93ba72980145b80abe276022c",
+  "joint_mapping": {
+    "shoulder_pan": {
+      "sign": 1,
+      "offset_deg": 3.2967
+    },
+    "shoulder_lift": {
+      "sign": 1,
+      "offset_deg": -2.9011
+    },
+    "elbow_flex": {
+      "sign": 1,
+      "offset_deg": -0.5275
+    },
+    "wrist_flex": {
+      "sign": 1,
+      "offset_deg": 2.2418
+    },
+    "wrist_roll": {
+      "sign": 1,
+      "offset_deg": 78.8132
+    }
+  },
+  "status": "observation_invalid"
+}

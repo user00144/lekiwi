@@ -28,6 +28,7 @@ from .tools import RobotTools
 
 
 DEFAULT_LIMITS = {'max_actions': 20, 'max_steps': 40, 'max_seconds': 300}
+PLAN_ACT_LIMITS = {'max_actions': 120, 'max_steps': 60, 'max_seconds': 1200}
 RUN_ID = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$')
 IMAGE_NAME = re.compile(r'^image-[0-9]+\.(?:jpg|jpeg|png)$')
 MAX_BODY_BYTES = 16384
@@ -36,7 +37,7 @@ MAX_EVENTS_BYTES = 8 * 1024 * 1024
 
 class LimitsInput(BaseModel):
     model_config = ConfigDict(extra='forbid', strict=True, allow_inf_nan=False)
-    max_actions: int = Field(ge=1, le=100)
+    max_actions: int = Field(ge=1, le=300)
     max_steps: int = Field(ge=1, le=200)
     max_seconds: float = Field(ge=1, le=3600)
 
@@ -104,8 +105,9 @@ def read_events(path):
 
 class GuiController:
     def __init__(self, server='tcp://127.0.0.1:5556', robot_id='kiwi-01', runs_dir='runs',
-                 model=None, demo=False, episode_fn=None, kinematics_config=None):
+                 model=None, demo=False, episode_fn=None, kinematics_config=None, default_limits=None):
         self.server, self.robot_id, self.model = server, robot_id, model
+        self.default_limits = dict(default_limits or DEFAULT_LIMITS)
         self.kinematics_config = Path(kinematics_config).expanduser().resolve() if kinematics_config else None
         if demo and self.kinematics_config is not None:
             raise ValueError('Demo mode does not accept a hardware kinematics configuration')
@@ -389,7 +391,7 @@ class GuiController:
                            if event.get('event') == 'kinematics_state'), None)
         return {'id': run_id, 'active': active, 'mode': run_mode if run_mode in ('demo', 'reference') else 'live',
                 'request': {'robot_id': request.get('robot_id'), 'instruction': request.get('instruction'),
-                            'model': model, 'limits': request.get('limits', DEFAULT_LIMITS)},
+                            'model': model, 'limits': request.get('limits', self.default_limits)},
                 'result': result, 'status': status, 'phase': phase, 'events': events,
                 'current_observation': current, 'before_observation': before, 'kinematics': kinematics}
 
@@ -420,7 +422,7 @@ class GuiController:
             except (FileNotFoundError, OSError):
                 continue
         return {'mode': self.mode, 'config': {'server': self.server, 'robot_id': self.robot_id,
-                                            'model': self.model, 'limits': dict(DEFAULT_LIMITS),
+                                            'model': self.model, 'limits': dict(self.default_limits),
                                             'kinematics_configured': self.kinematics_config is not None},
                 'capabilities': {'xyz_preview': 1, 'manual_xyz': 1 if self.mode == 'live' else 0,
                                  'pose_capture': 1 if self.mode == 'live' else 0},
@@ -612,13 +614,27 @@ def main():
     parser.add_argument('--runs-dir', type=Path, default=Path('runs'))
     parser.add_argument('--demo', action='store_true', help='Synthetic episode, no model or robot calls')
     parser.add_argument('--kinematics-config', type=Path, help='Verified local joint mapping for guarded XYZ execution')
+    parser.add_argument('--loop', choices=('step', 'plan-act'), default='step',
+                        help='step: one small action per decision; plan-act: Planning → big-skill Action Loop → Verify/replan')
+    parser.add_argument('--skills-config', type=Path, help='plan-act: home/grasp/gripper skill settings')
+    parser.add_argument('--camera-config', type=Path, help='plan-act: calibrated front camera for locate (optional)')
+    parser.add_argument('--experience', type=Path, help='plan-act: experience JSONL (default: RUNS_DIR/experience.jsonl)')
     args = parser.parse_args()
     if not 1 <= args.port <= 65535:
         parser.error('--port must be 1..65535')
     if args.demo and args.kinematics_config:
         parser.error('--demo cannot use --kinematics-config')
+    episode_fn, limits = None, None
+    if args.loop == 'plan-act':
+        if args.demo or not args.kinematics_config or not args.skills_config:
+            parser.error('--loop plan-act needs --kinematics-config and --skills-config (not --demo)')
+        from functools import partial
+        from .plan_loop import run_plan_episode
+        episode_fn = partial(run_plan_episode, skills_config=args.skills_config, camera_config=args.camera_config,
+                             experience_path=args.experience or args.runs_dir / 'experience.jsonl')
+        limits = PLAN_ACT_LIMITS
     controller = GuiController(args.server, args.robot_id, args.runs_dir, args.model, args.demo,
-                               kinematics_config=args.kinematics_config)
+                               episode_fn=episode_fn, kinematics_config=args.kinematics_config, default_limits=limits)
     import uvicorn
     print(f'LeKiwi console: http://127.0.0.1:{args.port} ({controller.mode})', flush=True)
     uvicorn.run(create_app(controller, port=args.port), host='127.0.0.1', port=args.port)

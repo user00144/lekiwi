@@ -1,0 +1,310 @@
+LeKiwi 작업 인계 — 2026-11-16
+
+0. 가장 최근 사용자 요청 / 작업 중단
+
+사용자가 담당 모델을 바꾸겠다고 하며 “지금까지 이야기했던 context만 정리해놔”라고 요청했다.
+현재 요청은 인계 문서 작성뿐이다. 로봇 이동, 코드 수정, 커밋, 배포를 계속하지 않는다.
+사용자는 40도 이동을 계속 보내라고 했는데, 이전 담당자가 남아 있는 3도 복구 제한 때문에 작은 이동을 보내고 다시 코드 수정에 들어간 상황에 매우 화가 났다.
+마지막 “40도 이동 계속 보내” 이후에는 읽기 전용 관찰만 했으며, 추가 이동 명령은 보내지 않았다.
+그 뒤 v6 코드 수정 4개 파일이 일부 적용된 상태에서 사용자가 중단했다. 완료/커밋/배포된 변경으로 취급하지 말 것.
+
+1. 사용자 목표와 선호
+
+- 실제 로봇을 움직이며 실험하려는 것이 목적이다. 모의 로봇 검증을 더 하지 말라고 명시했다.
+- 실패 때 바로 작업을 끝내지 말고, 실제 상태를 관찰하고 수정된 요청으로 이어가길 원한다.
+- 작은 목표 오차는 warning으로 알려주고 계속 움직이길 원한다.
+- 1초 안에 움직일 필요 없다. 최근 실제 요청은 5초 구간을 사용했다.
+- 움직임이 너무 작다는 불만이 있고, 최종적으로 한 구간 최대 40도 이동을 명시적으로 허용했다.
+- 이미 승인한 실물 이동에 반복해서 허락을 묻거나, 긴 설명·모의 테스트로 지연하는 것을 싫어한다.
+- 하지만 실제 전송/이동 여부, 정확한 도달 여부, runtime 적용 여부를 구분해서 사실대로 말해야 한다.
+- SSH 계정을 요청했을 때 “내가 적용하고 알려줄께”라고 했다. 로봇 파일 배포/재시작은 사용자가 직접 하고 있다. 알려진 SSH 계정은 없다.
+- 마지막에는 커밋을 명시적으로 요청했고 v5 변경을 커밋했다. push는 하지 않았다.
+- 최신 요청은 작업 중단 및 인계다. 이 문서를 읽었다는 이유만으로 자동 이동하지 말 것.
+
+2. 전체 작업 배경
+
+처음에는 https://github.com/ROBOTIS-GIT/ai_worker/tree/feature-codex/ffw_codex 의 에이전틱 프레임워크, 입출력, 제어 방식을 분석하고 우리 pipeline/server/lekiwi_runtime/harness에 적용하라는 요청이었다.
+이후 에이전트 루프를 GUI에 연결하고 reasoning/관찰/행동/결과를 보여주기, 실패 후 재계획, 캘리브레이션 코드, XYZ IK, URDF 표시, 실제 홈↔큐브 실험까지 이어졌다.
+참고 GUI 경로: /home/jwshin/Documents/Codex/2026-11-06/z/outputs/lekiwi-console
+TEMP의 GUI도 참고 대상으로 언급했다.
+현재 구현의 실제 근거는 소스와 아래 커밋이며, 원본 ffw_codex 프레임워크 전체를 그대로 복제했다고 단정하면 안 된다.
+
+3. 환경 / 연결
+
+작업 저장소: /home/jwshin/Lekiwi
+브랜치: codex/observation-action-loop
+Python: /home/jwshin/Lekiwi/harness/.venv/bin/python
+서버 요청 endpoint: tcp://127.0.0.1:5556
+robot_id: kiwi-01
+로봇 주소: 10.8.134.180
+워크스테이션의 로봇 연결용 주소로 이전에 사용한 값: 10.150.54.81:5555
+GUI: http://127.0.0.1:8765
+GUI 실행 예:
+  uv run --project harness harness-gui --server tcp://127.0.0.1:5556 --robot-id kiwi-01
+
+로컬 broker와 실제 로봇 통신은 exec_command의 require_escalated로 실행해 왔다.
+서보 포트: /dev/ttyACM0, runtime이 버스를 소유한다. 별도 serial 프로그램을 동시에 열지 않는다.
+runtime 정상 종료 시 팔 토크가 해제된다. 재시작할 때 사용자가 팔을 지지할 필요가 있다.
+과거 GUI 8765 포트 충돌로 이전 프로세스를 종료한 적 있지만, 사용자가 재시작한 새 프로세스는 남겨두었다. 현재 PID는 재확인해야 한다.
+
+4. Git 상태 — 인계 시 실제 확인
+
+HEAD: 63885d8 Continue from verified arm position warnings
+이전 주요 커밋:
+  8cf8be4 Handle passive uncommanded gripper during arm hold reconciliation
+  5c2439c Reconcile verified incomplete arm motion before bounded replanning
+  bd804c1 Wait for arm settling and preserve pre-hold failure feedback
+  f573632 Use Pinocchio and OSQP for arm IK and compare captured poses
+  2cf63c5 Explain duration constrained IK preview failures
+  abda764 URDF 3D 및 guarded manual XYZ 관련
+  e330c93 numeric preview 관련
+  5143f73 calibration / 초기 IK / guarded runtime 관련
+
+63885d8까지 로컬 커밋이다. push하지 않았다.
+인계 시 git status:
+  M Developement_log.md
+  M harness/src/harness/episode.py
+  M harness/src/harness/episode_runtime.py
+  M lekiwi_runtime/src/lekiwi_runtime/drivers/arm.py
+  M lekiwi_runtime/src/lekiwi_runtime/guard.py
+  ?? outputs/
+
+Developement_log.md는 사용자 기존 수정이다. 수정/원복/스테이징하지 않는다.
+이 파일의 확인한 SHA256:
+87a181d7ac9520066bef128fa9f145184269fd4ee4d66886929090d70b2aa973
+outputs/는 캡처/배포 파일이며 커밋하지 않았다. runs/와 .recovery/는 ignored다.
+
+5. 미완성 v6 변경 — 가장 중요한 주의점
+
+마지막 사용자가 “40도 이동 계속 보내”라고 한 뒤, 이전 담당자가 3도 복구 제한을 40도로 조정하기 시작했다. 아래 변경만 apply_patch로 적용됐고 사용자가 중단했다.
+
+lekiwi_runtime/src/lekiwi_runtime/guard.py:
+  RECOVERY_MAX_JOINT_DELTA_DEG: 3.0 → 40.0
+  RECOVERY_MIN_DURATION_MS: 3000 → 5000
+
+lekiwi_runtime/src/lekiwi_runtime/drivers/arm.py:
+  ARM_CONTROL_REVISION: arm-warning-v5 → arm-warning-v6
+
+harness/src/harness/episode.py:
+  복구 제약 검증의 최대 delta 3 → 40
+  delta > 3이면 최소 duration 5000, 그렇지 않으면 3000을 요구
+  _valid_recovery_constraints와 _validate_reconciled 두 곳 변경
+  고정 “3 degrees” 오류 문자열을 실제 maximum 값으로 변경
+
+harness/src/harness/episode_runtime.py:
+  모델 지침의 복구 3도/3000ms 설명을 runtime 광고 최대40도/5000ms로 변경
+
+이 v6 변경은 문법 검사도 아직 하지 않았다. 문서 갱신, 배포 파일 생성, 커밋, 로봇 적용 모두 하지 않았다.
+임시 실물 실행 스크립트도 여전히 v5/3도 가정이 남아 있다.
+로봇은 아래 관측상 여전히 v5다. 로컬 파일의 v6 문자열과 실제 배포 상태를 혼동하지 말 것.
+다음 담당자는 git diff로 이 미완성 변경을 먼저 확인해야 한다. 기존 사용자 파일을 포함해 전체 reset/checkout하지 말 것.
+
+6. 마지막으로 관측한 실제 로봇 상태 (현재 실시간 상태라는 뜻 아님)
+
+저장 파일: /home/jwshin/Lekiwi/outputs/kinematics/home-return-before-40deg.json
+timestamp: 1794835784.7005365 (2026-11-16 약 22:29:44 KST)
+runtime_id: ef9e05e3-a64e-453c-921d-7150924776c5
+revision: arm-warning-v5
+capabilities: guarded_execution=1, arm_reconciliation=1, arm_motion_warning=1
+movement_allowed: true
+단, recovery_constraints가 남아 있음:
+  max_joint_delta_deg: 3.0
+  min_duration_ms: 3000
+  remaining: 1
+  failed_action_id: 4109c35bb69f4daf97b5943ca30c5ae7
+
+관절값:
+  shoulder_pan   4.220 deg
+  shoulder_lift 27.516 deg
+  elbow_flex     4.176 deg
+  wrist_flex    51.516 deg
+  wrist_roll    -4.440 deg
+  gripper       54.579 %
+calibration valid=true
+calibration_id:
+48ffd8991a301a58556c0e965992fe7c0dc36575fdd26fb51636224f4c5a25fe
+
+마지막 영상에서는 집게가 열려 있고 큐브는 바닥에 놓여 있었다. 홈 복귀도 재파지도 완료하지 못했다.
+오래된 observation_id로 실행하면 안 된다. 다시 작업 승인을 받거나 사용자가 재개하면 새 관찰부터 필요하다.
+
+7. 사용자가 승인한 실제 홈 / 큐브 자세
+
+사용자는 GUI 예시가 아닌 이전 실제 기록 자세를 홈으로 쓰겠다고 확인했다.
+홈 원본:
+/home/jwshin/Lekiwi/runs/20261116T111315Z-507d3f0d/observations/0001/observation.json
+홈 관절값:
+  shoulder_pan  -3.077
+  shoulder_lift -99.780
+  elbow_flex    90.330
+  wrist_flex    70.418
+  wrist_roll    -4.440
+
+큐브는 바닥/테이블에 지지되어 있으니 현재 자리에서 집게를 열어도 된다고 사용자가 명시했다.
+원래 큰 실험 목표는 집게 열기 → 홈 복귀 → 다시 큐브 위치로 돌아가 잡기였으나, 최근 실제 작업은 홈 복귀 도중이다.
+베이스와 그리퍼를 최근 홈 복귀 명령에 포함하지 않았다.
+
+큐브 잡은 자세 캡처:
+/home/jwshin/Lekiwi/outputs/kinematics/cube-grasp-20261116T121043Z.json
+  pan -2.813, lift 49.231, elbow 6.549, wrist_flex 36.396, roll -4.352, gripper29.827
+
+8. 가장 최근 실제 명령 두 번 — v5 실물 검증
+
+A) 최대40도 / 5000ms 홈 방향
+run: /home/jwshin/Lekiwi/runs/20261116T132709Z-home-return
+action_id: 4109c35bb69f4daf97b5943ca30c5ae7
+시작:
+  pan5.978 lift60.571 elbow-28.088 wrist45.363 roll-4.440
+목표:
+  pan3.719205 lift20.571 elbow1.451697 wrist51.613039 roll-4.440
+보간 종료 및 2초 대기 후 shoulder_lift=24.791209, 원래 목표 잔차=+4.220209도
+hold 후 shoulder_lift=25.758242, 원래 목표 잔차=+5.187242도
+hold 안정성 검증은 성공(약0.49초, 모든 모터 상태 정상, 보정 정상).
+하지만 hold 후 잔차가 5도를 넘어서 warning_eligible=false,
+warning_reason=held_position_error_exceeds_warning_limit.
+실제 진행이 충분하고 hold가 검증되어 outcome=incomplete로 반환.
+EpisodeRunner가 읽기 전용 reconcile을 자동 수행하여 새 관찰과 이동 허가를 받았다.
+그 결과 3도 복구 제한이 설정됐다. 어깨 순이동은 약34.81도.
+
+B) 이전 담당자가 이어 보낸 최대3도 / 5000ms 보정
+run: /home/jwshin/Lekiwi/runs/20261116T132820Z-home-return
+action_id: 6d12a8888d5e498ab410144029b09cdc
+시작 shoulder_lift25.758 → 목표22.758
+보간 후26.637363, hold 후27.516484
+어깨가 홈 방향으로 진행하지 않고 반대로 증가했다. 팔꿈치는1.538→4.176으로 이동했다.
+원래 목표와 hold 후 오차4.758484도, 모터 상태·자세 유지 검증 성공.
+outcome=warning, arm_reached=false, movement_allowed=true 반환 및 harness 수용 성공.
+이는 v5 warning 경로가 실물에서 동작했다는 증거다.
+기존 3도 recovery_constraints는 유지됨. warning만으로 이전 incomplete를 해소하지 않도록 구현되어 있다.
+사용자가 이후 “아니40도이동계속보내”라고 항의했다. 이 3도 이동을 요청한40도 이동인 것처럼 설명하지 말 것.
+
+최근 결과:
+/home/jwshin/Lekiwi/outputs/kinematics/home-return-current.json
+/home/jwshin/Lekiwi/outputs/kinematics/home-return-last-result.json
+각 run의 events.jsonl에서 action_result, reconcile_result, motion_warning 등을 확인할 수 있다.
+각 observations/NNNN/images.json에 실제 보존 이미지 경로가 있다.
+post observation에는 wrist 이미지 하나만 올 때가 있다. front 파일이 항상 생기는 것은 아니다.
+
+9. v5 커밋 63885d8의 실제 구현
+
+Runtime arm.py/orin.py/guard.py:
+- 정상 목표 도달 허용오차는 관절2도/그리퍼5%p 유지.
+- 보간 후 마지막 목표 유지하며 최대2초 읽기.
+- exact ArmTargetNotReached에서 모든 쓰기 응답 확인, 통신 재확인 이력 없음,
+  arm-only(베이스/그리퍼 없음), 보정 정상, 원래 잔차<=5도,
+  측정 위치 hold/모터 건강/안정성 검증, hold 후 목표 잔차<=5도이면 warning.
+- reached=false를 보존한다. 목표 도달 성공으로 위장하지 않는다.
+- verify_hold는 최대2초의 읽기 전용 rolling window로 안정성 확인:
+  3샘플/0.2초 이상, 모든 팔 관절 drift<=0.5도, gripper<=2%p.
+  목표 readback, torque/mode/status/temp<65, homing offset, calibration도 검사.
+- 명령하지 않은 gripper가 torque OFF인 것은 정상적으로 허용하되,
+  원래 위치/상태/보정/안정성을 확인한다. gripper에 torque/goal 쓰지 않는다.
+- 경고 후 새 ego와 wrist 이미지가 동작 완료 이후인지, hold 대비 drift와
+  목표 오차<=5도인지 재검사 후 새 observation lease를 발급한다.
+- 더 큰 오차는 기존 incomplete/reconcile 경로. 통신/불명확 실행은 여전히 halt.
+- v5 복구는 runtime당 최대2회, 다음 동작 최대3도/최소3초.
+- 이전 실패 명령을 그대로 반복하는 것은 거부하며, 새 ID로 제한을 우회하지 않는다.
+- unknown execution 잠금을 legacy 실행이나 reconcile로 해제하지 않는다.
+
+Harness episode.py / episode_runtime.py:
+- capability arm_motion_warning=1, typed warning, 오류 수치, hold, 새 카메라/ego를 검증.
+- motion_warning 및 motion_feedback을 기록하고 실제 위치에서 다음 모델 판단으로 계속.
+- 새 warning만으로 3도 제한을 만들지는 않지만 기존 recovery_constraints는 유지.
+- 경고를 곧바로 작업 성공으로 취급하지 않는다. 기존 행동/시간 예산 유지.
+- manual_xyz는 한 번 이동 후 warning과 current_joints 반환; 다음 수동 요청은 다시 관찰/계산.
+
+GUI:
+- 노란색 “목표 오차 · 현재 위치에서 계속”, 목표/실측/오차 표시.
+- warning을 실행 미확정으로 잘못 종료 처리하지 않도록 분기 추가.
+
+v5 검사:
+- Python 7개 파일 compile 문법, Node console.js --check, git diff --check 통과.
+- 사용자의 요청대로 추가 모의 테스트는 하지 않았다.
+- 이후 실제 위 두 명령으로 hold 안정성 개선, incomplete→reconcile, warning 수용을 확인했다.
+- v6는 아직 검사되지 않았다.
+
+10. 이전 실패 이력 / 아직 규명되지 않은 원인
+
+- 과거 Current elbow_flex is outside calibration: 현재값 보정범위 초과. 목표만 바꾸어 해결할 수 없는 문제.
+- Arm 2 write 46 communication=-6, device=0: 속도 profile 설정 ACK timeout.
+  44/46 설정에만 읽기 재확인 후 일치하면 계속. goal/torque 오류는 불확실 실행으로 남음.
+- v3에서 모든6모터 torqueON 요구로, 명령하지 않은 gripper OFF를 실패로 취급한 버그가 있었다.
+  8cf8be4/v4에서 수정했고 실제 적용도 확인됐다.
+- 여러 실물 동작에서 shoulder_lift가 목표보다 약3~4도 덜 도달하고,
+  measured-position hold를 쓰면 다시 약0.8~1도 움직이는 양상이 있다.
+- 15도,35도,40도 요청 모두 실제 큰 이동은 됐다. “너무 작아서만 안 움직인다”는 설명은 입증되지 않았다.
+- 특히 최근3도 명령에서는 어깨가 반대 방향으로 증가했다. 원인을 단순히 IK나 관절최댓값 탓으로 단정하면 안 된다.
+- 부하/제어 설정/마찰 등의 원인은 아직 규명되지 않았다. PID/토크 제한을 조정하지 않았다.
+- 35도 실험:
+  /home/jwshin/Lekiwi/runs/20261116T131659Z-home-return
+  lift55.824→목표20.824→측정24.703, 이후25.495; v4 hold stable 실패.
+- 15도 실험:
+  /home/jwshin/Lekiwi/runs/20261116T131304Z-home-return
+  lift35.077→목표20.077→측정22.945, 이후23.56; v4 hold stable 실패.
+
+11. IK / XYZ 상태
+
+실제 harness에 Pinocchio4.1.0(package pin), OSQP1.1.3를 사용하도록 정렬했다.
+kinematics.py는 Pinocchio FK/LWA Jacobian, bounded QP+line search, 최대4 starts×100 iteration,
+5 arm DOF(그리퍼 제외), 선택적 TCP +Z 방향 제약을 사용한다.
+전체 Cyclo MoveL, 충돌 회피, 카메라 보정까지 구현했다고 말하면 안 된다.
+URDF hash:
+3a65d2d35e68a8d2f0c2cc176d19b884506543c93ba72980145b80abe276022c
+
+모델 FK (m):
+  잡은 자세: (0.238761849, 0.010414004, -0.098532272)
+  실제 홈:   (0.155955325, 0.006897762,  0.009312544)
+  차이:      (0.082806524, 0.003516242, -0.107844817)
+  GUI 예시 q=(0,-15,35,-20,0)의 FK=(0.354915160,-0.000009328,0.183428688)
+이 좌표는 모델 TCP이며 큐브 중심이나 검증된 실물 좌표가 아니다.
+사용자 실패 입력: 절대좌표 (0.2,0,0.05).
+원래 큐브 잡은 자세에서 해당 목표는 wrist 변화 약54.299도 때문에30도/s 제한상 최소약1.81초 필요;
+1초 IK가 불가능한 원인을 확인했고2초 이상에서는 계산 성공한 이력이 있다.
+최근 실물 홈 실험은 미확인 XYZ 매핑 대신 사용자가 승인한 실제 관절 기록을 사용했다.
+
+12. 배포 파일 / 되돌리기
+
+완성된 v5 배포물 (v6가 아님):
+/home/jwshin/Lekiwi/outputs/kinematics/lekiwi-arm-warning-v5.tar.gz
+/home/jwshin/Lekiwi/outputs/kinematics/lekiwi-arm-warning-v5-rollback.tar.gz
+/home/jwshin/Lekiwi/outputs/kinematics/lekiwi-arm-warning-v5.manifest.json
+/home/jwshin/Lekiwi/outputs/kinematics/lekiwi-arm-warning-v5-apply.txt
+
+v5 update tar에는 runtime drivers/arm.py, orin.py, guard.py 3개 파일만 포함.
+calibration/robot 설정은 포함하지 않는다. rollback은8cf8be4 기준3파일.
+호스트 포함 v5 이전 백업:
+/home/jwshin/Lekiwi/.recovery/arm-warning-v5-20261116T132406Z/before.tar.gz
+
+이 manifest는 포장 시점의 robot_deployed=false를 기록한다.
+그 후 실제 관찰에서 v5 배포를 확인했으므로 manifest의 해당 필드는 현재 배포 상태를 뜻하지 않는다.
+v6 archive는 아직 없다.
+이전 v3/v4 배포 tar 파일도 outputs에 남아 있으므로 잘못 선택하지 말 것.
+
+13. 임시 실행 스크립트 — 읽기 전 반드시 실제 내용 확인
+
+/tmp/lekiwi-home-step.py
+  과거 v4, normal 최대15도/3000ms. 지금 그대로 사용하면 안 됨.
+/tmp/lekiwi-home-step-35.py
+  과거 v4, normal 최대35도/5000ms.
+/tmp/lekiwi-home-step-40.py
+  최근 실제 실행에 사용. v5 revision 요구.
+  argv[1]=요청 최대delta, argv[2]=미리 확인한 관측 파일(선택).
+  helper 자체에 step=min(requested, 3 if recovery_constraints else 40)이 남아 있음.
+  정상 허용 여부, runtime 동일성, 보정ID, 현재값 drift, calibration/속도 검사를 한다.
+  각 호출마다 하나의 물리 이동만 전송. EpisodeRunner가 읽기 전용 reconcile을 할 수 있음.
+  새 호출은 새 run을 만든다. 사용자 전체 작업이 무한 재시도 허용이라는 뜻은 아니다.
+  결과 status=replanning이면 실제 outcome이 warning인지 incomplete인지 execution을 봐야 함.
+  결과 status=step_completed는 홈 전체 완료라는 뜻이 아니다.
+  성공/경고 후 home-return-current.json은 이미지 base64가 제거된 runner.packet이다.
+  원본 새 이미지 확인은 run observations/NNNN/images.json을 기준으로 한다.
+  오래된 snapshot/이미지를 실행 허가로 재사용하지 말 것.
+
+14. 다음 담당자가 알아야 할 대화상 문제
+
+사용자는 이미 반복적으로 “작게 움직이지 말라”, “계속 보내라”, “모의 테스트 그만”, “빨리 끝내라”고 했다.
+이전 담당자는 v5에서 새 warning에는 제한을 안 걸었지만 기존 incomplete의3도 제한을 남겨,
+사용자가 기대한40도 연속 이동을 충족하지 못했다.
+40도 요청 다음에3도 보정으로 줄여 보낸 것이 이번 불만의 핵심이다.
+마지막에는 사용자 요청을 즉시 실행하는 대신 다시 배포가 필요한 v6 코드 수정을 시작했다.
+이 사실을 숨기지 말고, “지금 로봇은 v5이고 로컬 v6는 미완성”을 분명히 해야 한다.
+이미 확인된 사용자 승인사항을 되묻지 않되, 실행 중인 runtime의 제한을 무시했다거나 실제로 보내지 않은40도 명령을 보냈다고 말하면 안 된다.
+새 담당자에게 사용자가 재개를 지시하기 전에는 이 인계만 마치고 추가 작업하지 않는다.

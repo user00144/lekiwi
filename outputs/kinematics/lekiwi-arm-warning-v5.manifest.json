@@ -1,0 +1,35 @@
+{
+  "revision": "arm-warning-v5",
+  "created_at": "20261116T132406Z",
+  "rollback_base": "8cf8be4be78a3506c2a1de4b0962dbfe23d49ffb",
+  "robot_update": "/home/jwshin/Lekiwi/outputs/kinematics/lekiwi-arm-warning-v5.tar.gz",
+  "robot_rollback": "/home/jwshin/Lekiwi/outputs/kinematics/lekiwi-arm-warning-v5-rollback.tar.gz",
+  "workspace_backup": "/home/jwshin/Lekiwi/.recovery/arm-warning-v5-20261116T132406Z/before.tar.gz",
+  "runtime_files": [
+    "lekiwi_runtime/src/lekiwi_runtime/drivers/arm.py",
+    "lekiwi_runtime/src/lekiwi_runtime/orin.py",
+    "lekiwi_runtime/src/lekiwi_runtime/guard.py"
+  ],
+  "changed_files": {
+    "docs/agent-loop.md": "50381f4af2d8ba59c5d46c71db75f5faece1636c306f1f06c33b2395c4b05d33",
+    "lekiwi_runtime/README.md": "6c5f0deffb0b4e889e8d0036905fe4dc8f7c67560b9ee95bc02de1a3557dbfa2",
+    "lekiwi_runtime/src/lekiwi_runtime/drivers/arm.py": "32a584bf540447e34782779df23bf9f8deda3f3391eb0cf0622b1e45e4110139",
+    "lekiwi_runtime/src/lekiwi_runtime/orin.py": "2945907d87c4cd01532ca656e6c83a69701a429131bca27921c4ab3fc02bd7fb",
+    "lekiwi_runtime/src/lekiwi_runtime/guard.py": "22a549ea97aa4933f6f5cd64fcca00fd67790ed5d977bf03e9e3f1d7760c1b2c",
+    "harness/src/harness/episode.py": "ce9d140496ce4970722fe6b955e428f2d0b7f54137a4906f0b0db00bb38c10e7",
+    "harness/src/harness/episode_runtime.py": "393bb40e6ef6d92333aa4fdf86765fa5f77a89030d969ab2393f62efdb2aba0b",
+    "harness/src/harness/gui.py": "b5cf36f58f5d2a45c229098631f2e10ab613edc3bbf980af62597a065a52576e",
+    "harness/src/harness/manual_xyz.py": "1fd6aa7e2677f12754af470890bd29f81f737755586e2c41229787f58c1c0209",
+    "harness/src/harness/static/console.js": "822208d772f9df279fe170a18010809aa29544f2613b2b5553b596369a6cd056",
+    "harness/src/harness/static/console.css": "efdde95ef165e6b224dec2d809d61b00c708a248eaab062a7d5a2689fff4953d"
+  },
+  "checks": [
+    "Python compile syntax: 7 files passed",
+    "Node JavaScript syntax: passed",
+    "git diff --check: passed",
+    "Archive contents match source: passed"
+  ],
+  "physical_validation": "not_run",
+  "mock_tests": "not_run_user_requested",
+  "robot_deployed": false
+}
