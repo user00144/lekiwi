@@ -8,11 +8,12 @@ import sys
 from typing import Sequence
 
 from .runner import (
-     DEFAULT_MAX_LOOP_TICKS,
+    DEFAULT_MAX_LOOP_TICKS,
     CampaignPolicyRunner,
     LiveInnerActionExecutor,
     LiveLocalizationProvider,
     LiveNavigationExecutor,
+    LiveSkillExecutor,
     SimulatedCampaignWorld,
 )
 from .semantic_memory import SemanticMemoryStore
@@ -82,6 +83,27 @@ def build_default_sim_topology() -> TopologicalMap:
     return topo
 
 
+def resolve_act_loop(act_loop: str, skills_config) -> str:
+    """`auto` uses the plan-act loop (calibrated locate/pick skills) whenever skills are configured."""
+    if act_loop == 'auto':
+        return 'plan-act' if skills_config else 'step'
+    return act_loop
+
+
+def plan_act_episode_fn(skills_config, camera_config, experience_path=None):
+    """`act()` episodes through Planning -> big-skill Action Loop -> Verify (`plan_loop`).
+
+    Without `experience_path` each stage keeps its lessons next to the stage directories of the
+    same attempt, so no experience leaks across trials (Stage 2 isolation).
+    """
+    from functools import partial
+
+    from ..plan_loop import run_plan_episode
+
+    return partial(run_plan_episode, skills_config=skills_config, camera_config=camera_config,
+                   experience_path=experience_path)
+
+
 def _cmd_run(args: argparse.Namespace) -> int:
     store = SemanticMemoryStore(persist_dir=args.semantic_db)
     if args.topology:
@@ -113,9 +135,13 @@ def _cmd_run(args: argparse.Namespace) -> int:
             localization=world,
             navigation_executor=world,
             action_executor=world,
+            skill_executor=world,
             max_loop_ticks=args.max_loop_ticks,
         )
     else:
+        act_loop = resolve_act_loop(args.act_loop, args.skills_config)
+        if act_loop == 'plan-act' and not (args.kinematics_config and args.skills_config):
+            raise SystemExit('--act-loop plan-act needs --kinematics-config and --skills-config')
         localization = LiveLocalizationProvider(pose_file=args.pose_file)
         nav_exec = LiveNavigationExecutor(
             server=args.server,
@@ -127,7 +153,18 @@ def _cmd_run(args: argparse.Namespace) -> int:
             server=args.server,
             model=args.model,
             kinematics_config=args.kinematics_config,
+            act_episode_fn=(plan_act_episode_fn(args.skills_config, args.camera_config)
+                            if act_loop == 'plan-act' else None),
         )
+        skill_exec = None
+        if args.kinematics_config and args.skills_config:
+            skill_exec = LiveSkillExecutor(
+                server=args.server,
+                model=args.model,
+                kinematics_config=args.kinematics_config,
+                skills_config=args.skills_config,
+                camera_config=args.camera_config,
+            )
         runner = CampaignPolicyRunner(
             task_language=args.task,
             robot_id=args.robot_id,
@@ -137,6 +174,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
             localization=localization,
             navigation_executor=nav_exec,
             action_executor=act_exec,
+            skill_executor=skill_exec,
             max_loop_ticks=args.max_loop_ticks,
         )
 
@@ -194,8 +232,14 @@ def build_parser() -> argparse.ArgumentParser:
     run_p.add_argument('--robot-id', default='kiwi-01', help='Robot identifier')
     run_p.add_argument('--mode', choices=('live', 'sim'), default='live', help='Execution backend mode')
     run_p.add_argument('--server', default='tcp://127.0.0.1:5556', help='ZeroMQ router address for live mode')
-    run_p.add_argument('--model', default='gpt-5.4', help='Planner model for inner EpisodeRunner stages')
+    run_p.add_argument('--model', default=None, help='Planner model for inner stages (default: Codex default model)')
     run_p.add_argument('--kinematics-config', type=Path, default=None, help='Optional SO-101 kinematics JSON config')
+    run_p.add_argument('--skills-config', type=Path, default=None,
+                       help='Host skill settings (home/grasp/gripper); enables pick/place/home_arm/drive')
+    run_p.add_argument('--camera-config', type=Path, default=None,
+                       help='Calibrated front camera; enables locate() (bbox -> arm_base XYZ)')
+    run_p.add_argument('--act-loop', choices=('auto', 'step', 'plan-act'), default='auto',
+                       help='Inner loop for act(): auto = plan-act when --skills-config is given, else step')
     run_p.add_argument('--pose-file', type=Path, default=None, help='Optional live SLAM pose JSON file')
     run_p.add_argument('--semantic-db', type=Path, default=None, help='ChromaDB persistence directory')
     run_p.add_argument('--topology', type=Path, default=None, help='TopologicalMap JSON path')

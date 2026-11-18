@@ -31,6 +31,16 @@ MAX_CARTESIAN_DURATION_MS = 20000
 # tip below both endpoints, so its sampled joint-space path is checked too.
 SWEPT_PATH_SAMPLES = 21
 SWEPT_PATH_MAX_DIP_M = .01
+ROLL_HOLD_DEG = .05
+ROLL_FALLBACK_DEG = 20.
+# The URDF joint limits are model values; the runtime calibration range is the hardware bound.
+# A measured pose slightly past a URDF limit (the arm sags when torque is released) is not
+# blocking: the IK bound on that side is widened to the measured value. Larger violations
+# still block because they suggest a wrong joint mapping.
+URDF_SEED_TOLERANCE_DEG = 10.
+# Runtime angles are rounded to 1e-3 deg; a joint resting exactly on its calibrated raw limit
+# can read a hair outside the degree limit. The runtime's raw check stays authoritative.
+RUNTIME_ROUNDING_DEG = .05
 SEED_REGULARIZATION_M_PER_RAD = .0001
 DATA_DIR = Path(__file__).with_name('data')
 DEFAULT_URDF = DATA_DIR / 'so101_new_calib.urdf'
@@ -218,7 +228,8 @@ class RobotGeometry:
                        'xyz_m': (base_inverse * data.oMf[self._tip_id]).translation.tolist()})
         return points
 
-    def solve_position(self, target_xyz_m, seed_joints, hardware_limits=None, approach_axis=None):
+    def solve_position(self, target_xyz_m, seed_joints, hardware_limits=None, approach_axis=None,
+                       seed_tolerance_deg=0.):
         """Bounded differential IK, optionally constraining the tip's local +Z axis.
 
         Pinocchio supplies FK and analytic LOCAL_WORLD_ALIGNED frame Jacobians.
@@ -243,6 +254,11 @@ class RobotGeometry:
             axis = axis / magnitude
         seed_deg = _joints(seed_joints)
         bounds_deg = np.rad2deg(self._limits_rad)
+        if seed_tolerance_deg:
+            seed_check = _joints(seed_joints)
+            near = (seed_check >= bounds_deg[:, 0] - seed_tolerance_deg) & (seed_check <= bounds_deg[:, 1] + seed_tolerance_deg)
+            bounds_deg = np.where(near[:, None], np.column_stack((np.minimum(bounds_deg[:, 0], seed_check),
+                                                                  np.maximum(bounds_deg[:, 1], seed_check))), bounds_deg)
         if hardware_limits is not None:
             if not isinstance(hardware_limits, dict) or set(hardware_limits) != set(ARM_JOINTS):
                 raise ValueError('하드웨어 범위는 팔 5관절 전체를 지정해야 합니다.')
@@ -548,10 +564,15 @@ class CartesianController:
         calibration_status = ego.get('calibration_status')
         if not isinstance(calibration_status, dict) or calibration_status.get('valid') is not True:
             self._reason(result, 'calibration_invalid', '현재 인코더가 보정 범위 안에 있는지 확인되지 않았습니다.')
-        if np.any(runtime < bounds[:, 0]) or np.any(runtime > bounds[:, 1]):
+        if np.any(runtime < bounds[:, 0] - RUNTIME_ROUNDING_DEG) or np.any(runtime > bounds[:, 1] + RUNTIME_ROUNDING_DEG):
             self._reason(result, 'runtime_seed_out_of_range', '현재 관절값이 runtime 범위 밖입니다. 초기값을 잘라 맞추지 않습니다.')
-        if fk['urdf_limit_violations']:
-            self._reason(result, 'urdf_seed_out_of_range', '매핑된 현재 관절값이 URDF 범위 밖입니다. 초기값을 잘라 맞추지 않습니다.')
+        violations = fk['urdf_limit_violations']
+        excess = {name: max(item['lower_deg'] - item['value_deg'], item['value_deg'] - item['upper_deg'])
+                  for name, item in violations.items()}
+        if any(value > URDF_SEED_TOLERANCE_DEG for value in excess.values()):
+            self._reason(result, 'urdf_seed_out_of_range', '매핑된 현재 관절값이 URDF 범위를 크게 벗어났습니다. 초기값을 잘라 맞추지 않습니다.')
+        elif excess:
+            result['urdf_seed_soft_violation_deg'] = excess  # Tolerated; IK widens that bound to the measured value.
         source = packet.get('source')
         if isinstance(source, dict) and source.get('recorded'):
             self._reason(result, 'recorded_observation', '저장된 관측은 동작을 승인할 수 없습니다.')
@@ -597,16 +618,39 @@ class CartesianController:
         if blocked.intersection(state['reason_codes']):
             return result
         _, runtime, bounds, speeds = self._state(packet)
+        # Include a seed that is only a rounding step outside (checked in evaluate above).
+        bounds = np.column_stack((np.minimum(bounds[:, 0], runtime), np.maximum(bounds[:, 1], runtime)))
         step = speeds * duration_ms / 1000
         bounded_runtime = np.column_stack((np.maximum(bounds[:, 0], runtime - step),
                                           np.minimum(bounds[:, 1], runtime + step)))
-        mapped = bounded_runtime * self.signs[:, None] + self.offsets[:, None]
-        mapped.sort(axis=1)  # Negative signs reverse both endpoints.
         urdf = runtime * self.signs + self.offsets
-        try:
-            solved = self.geometry.solve_position(
+
+        def attempt(runtime_bounds):
+            mapped = runtime_bounds * self.signs[:, None] + self.offsets[:, None]
+            mapped.sort(axis=1)  # Negative signs reverse both endpoints.
+            return self.geometry.solve_position(
                 target.tolist(), dict(zip(ARM_JOINTS, urdf.tolist())),
-                {name: mapped[i].tolist() for i, name in enumerate(ARM_JOINTS)}, axis)
+                {name: mapped[i].tolist() for i, name in enumerate(ARM_JOINTS)}, axis,
+                seed_tolerance_deg=URDF_SEED_TOLERANCE_DEG)
+
+        # wrist_roll spins about the tool +Z (approach) axis, so it only nudges the tip
+        # position. Hold it at the measured value first; free it only if that fails,
+        # so XYZ moves do not drift roll toward its limit.
+        roll = ARM_JOINTS.index('wrist_roll')
+
+        def roll_window(width):
+            bounds = bounded_runtime.copy()
+            bounds[roll] = (max(bounds[roll, 0], runtime[roll] - width), min(bounds[roll, 1], runtime[roll] + width))
+            return bounds
+
+        try:
+            solved = attempt(roll_window(ROLL_HOLD_DEG))
+            result['wrist_roll_held'] = bool(solved['success'])
+            if not solved['success']:
+                # Never free roll over its whole range: a large wrist spin can wrap and
+                # pull the wrist camera cable. Allow only a bounded roll change.
+                solved = attempt(roll_window(ROLL_FALLBACK_DEG))
+                result['wrist_roll_window_deg'] = ROLL_FALLBACK_DEG
         except ValueError as exc:
             self._reason(result, 'ik_invalid_seed_or_bounds', str(exc))
             return result

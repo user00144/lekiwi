@@ -22,6 +22,45 @@
     'result = report',
   ].join('\n');
 
+  const SKILL_POLICY_TEMPLATE = [
+    '# Host skills: locate() = calibrated front-camera XYZ, pick()/place() = one IK move per phase',
+    'report = {"stage": "start", "cfg": {"target": "silver cube", "reach_x_m": 0.27, "max_drives": 4}}',
+    'cfg = report["cfg"]',
+    '',
+    '# Code block 1: arm home (front view clear), locate the target, short turn scan if not seen',
+    'home = home_arm()',
+    'loc = locate(cfg["target"])',
+    'for scan_idx in range(3):',
+    '    if loc["ok"]:',
+    '        break',
+    '    drive(turn_deg=30.0)',
+    '    loc = locate(cfg["target"])',
+    'print("locate:", loc["summary"])',
+    '',
+    '# Code block 2: drive closer until the arm can reach it; every drive makes the old XYZ stale',
+    'for drive_idx in range(cfg["max_drives"]):',
+    '    if not loc["ok"] or loc["reachable"]:',
+    '        break',
+    '    forward = max(-0.3, min(0.3, loc["xyz_m"][0] - cfg["reach_x_m"]))',
+    '    left = max(-0.3, min(0.3, loc["xyz_m"][1]))',
+    '    drive(forward_m=forward, left_m=left)',
+    '    loc = locate(cfg["target"])',
+    '    print("re-locate:", loc["summary"])',
+    'report["located"] = loc["ok"]',
+    'report["reachable"] = loc.get("reachable")',
+    '',
+    '# Code block 3: pick at the located XYZ; the skill re-checks the gripper after lifting',
+    'if loc["ok"] and loc["reachable"]:',
+    '    grasp = pick(loc["xyz_m"])',
+    '    report["grasp_ok"] = grasp["ok"]',
+    '    print("pick:", grasp["summary"])',
+    '    if grasp["ok"] and grasp.get("object_between_jaws_likely"):',
+    '        result = report',
+    '        finish("Picked the target at the calibrated XYZ", xyz_m=loc["xyz_m"])',
+    '',
+    'result = report',
+  ].join('\n');
+
   const MEMORY_POLICY_TEMPLATE = [
     'import math',
     '',
@@ -60,6 +99,12 @@
     selectedStepIdx: null,    // null = follow latest decision step
     traceFilter: 'all',       // 'all' | 'reasoning' | 'tools' | 'alerts'
     openTraceKeys: new Set(), // preserve expanded <details> across polls
+    openTimelineKeys: new Set(),
+    showAllPlans: false,
+    timelineSig: '',          // skip re-rendering when nothing changed (keeps scroll and text selection)
+    memorySig: '',
+    timelineScope: '',
+    traceSig: '',
     lastRunKey: '',
     serverState: null,
     selectedRun: null,
@@ -178,7 +223,10 @@
     }
 
     const ikChip = $('ik-chip');
-    if (cfg.kinematics_configured) {
+    if (cfg.skills_configured) {
+      ikChip.textContent = `IK + Skills${cfg.camera_configured ? ' + Locate' : ''} · act ${cfg.act_loop}`;
+      ikChip.className = 'chip ok';
+    } else if (cfg.kinematics_configured) {
       ikChip.textContent = '5-DoF IK Ready';
       ikChip.className = 'chip ok';
     } else {
@@ -191,6 +239,13 @@
       $('policy-robot-id').value = cfg.robot_id;
       if (cfg.model) $('direct-model').value = cfg.model;
       if (isDemo) $('policy-backend').value = 'sim';
+      if (cfg.limits) {
+        $('max-actions').value = cfg.limits.max_actions;
+        $('max-steps').value = cfg.limits.max_steps;
+        $('max-seconds').value = cfg.limits.max_seconds;
+        updateBudgetSummary();
+      }
+      if (state.capabilities?.host_skills) $('policy-source').value = SKILL_POLICY_TEMPLATE;
       ui.robotSeeded = true;
     }
 
@@ -200,6 +255,60 @@
     $('policy-start-btn').disabled = busy;
     $('direct-stop-btn').disabled = !state.active_run_id;
     $('policy-stop-btn').disabled = !state.active_run_id;
+  }
+
+  const LESSON_STATUS_KO = { verified: '검증됨', hypothesis: '가설', retired: '폐기' };
+
+  function renderMemory(memory) {
+    const body = $('memory-body');
+    const sig = JSON.stringify(memory || {});
+    if (sig === ui.memorySig) return;
+    ui.memorySig = sig;
+    body.innerHTML = '';
+    if (!memory || memory.error) {
+      body.appendChild(el('p', 'empty-msg', memory?.error ? `기억을 읽지 못함: ${memory.error}` : '아직 기억이 없습니다.'));
+      return;
+    }
+    const drive = memory.body?.drive || {};
+    const offset = memory.body?.locate_offset || {};
+    const rows = el('div', 'memory-rows');
+    const addRow = (label, value, ready, title) => {
+      const row = el('div', 'memory-row');
+      row.title = title || '';
+      row.appendChild(el('span', 'memory-label', label));
+      row.appendChild(el('span', `memory-value${ready ? ' ready' : ''}`, value));
+      rows.appendChild(row);
+    };
+    addRow('주행 보정',
+      drive.gain != null ? `×${fmtNum(drive.gain, 3)} (${drive.samples}회 측정${drive.ready ? '' : ', 3회부터 사용'})` : '측정 없음',
+      drive.ready, '다시 찾은 물체 위치로 잰 실제 이동 / 명령한 속도×시간');
+    addRow('위치 보정',
+      offset.offset_m ? `[${offset.offset_m.map((v) => fmtNum(v * 1000, 1)).join(', ')}] mm (${offset.samples}회${offset.ready ? ', 적용 중' : ''})`
+        : '측정 없음 (놓은 뒤 다시 찾을 때 측정)',
+      offset.ready, '놓은 위치(팔 FK) - 이후 locate로 본 위치');
+    const counts = memory.counts || {};
+    addRow('교훈', `검증 ${counts.verified || 0} · 가설 ${counts.hypothesis || 0} · 폐기 ${counts.retired || 0}`,
+      (counts.verified || 0) > 0, '가설은 이후 에피소드에서 적용해 성공하면 검증됨이 됩니다');
+    body.appendChild(rows);
+
+    const lessons = memory.lessons || [];
+    if (lessons.length) {
+      const list = el('ul', 'memory-lessons');
+      for (const lesson of lessons.slice(0, 8)) {
+        const li = el('li', `lesson-${lesson.status}`);
+        const head = el('div', 'lesson-head');
+        head.appendChild(el('span', `lesson-chip ${lesson.status}`, LESSON_STATUS_KO[lesson.status] || lesson.status));
+        head.appendChild(el('span', 'lesson-id', lesson.id));
+        head.appendChild(el('span', 'lesson-when', `${TOOL_KO[lesson.skill] || lesson.skill} · ${lesson.when}`));
+        if (lesson.support || lesson.contradict) {
+          head.appendChild(el('span', 'lesson-score', `+${lesson.support} / −${lesson.contradict}`));
+        }
+        li.appendChild(head);
+        li.appendChild(el('p', 'lesson-text', lesson.text));
+        list.appendChild(li);
+      }
+      body.appendChild(list);
+    }
   }
 
   function renderHistory(state, currentId) {
@@ -325,7 +434,9 @@
       evName === 'action_result' ||
       evName === 'ik_result' ||
       evName === 'observe_finished' ||
-      evName === 'motion_feedback'
+      evName === 'motion_feedback' ||
+      evName === 'skill_result' ||
+      evName === 'locate_answer'
     ) {
       return 'tools';
     }
@@ -358,6 +469,21 @@
     if (kind === 'observation') {
       return `observation_id=${d.observation_id} (${d.path || ''})`;
     }
+    if (kind === 'kinematics_state') {
+      const codes = Array.isArray(d.reason_codes) && d.reason_codes.length ? ` · ${d.reason_codes.join(', ')}` : '';
+      return `팔 끝 FK ${fmtXyz(d.current_xyz_m)} m · XYZ 제어 ${d.executable ? '가능' : '불가'}${codes}`;
+    }
+    if (kind === 'motion_feedback') {
+      const ex = d.execution || {};
+      const moved = Object.entries(d.joint_delta || {}).filter(([, v]) => Math.abs(v) >= 0.5)
+        .map(([k, v]) => `${JOINT_SHORT[k] || k} ${v > 0 ? '+' : ''}${fmtNum(v, 1)}°`);
+      return `실행 ${ex.outcome || '?'}${ex.arm_reached === true ? ' · 목표 도달' : ex.arm_reached === false ? ' · 목표 미도달' : ''}`
+        + `${moved.length ? ` · 관절 변화 ${moved.join(', ')}` : ''}${d.no_joint_progress ? ' · 관절 변화 없음' : ''}`;
+    }
+    if (['motion_warning', 'skill_result', 'locate_answer', 'decision_rejected', 'rejection_feedback'].includes(kind)) {
+      const outcome = describeOutcome(ev, new Map());
+      if (outcome) return outcome.text;
+    }
     return d.reason || d.detail || d.status || JSON.stringify(d);
   }
 
@@ -387,9 +513,16 @@
       const isSelected = ui.selectedStage
         ? ui.selectedStage === s.name
         : policy.selected_stage === s.name && stages.length === 1;
-      btn.className = 'pill-btn' + (ui.selectedStage === s.name ? ' active' : '');
-      btn.textContent = `${s.name} (${s.status})`;
-      btn.title = s.summary || s.name;
+      const match = /^(\d{4})_L(\d{3})_(.+)$/.exec(s.name);
+      const tool = match ? match[3] : s.name;
+      const ok = s.status === 'completed' || s.status === 'completion_claim';
+      const running = s.status === 'running';
+      const mark = ok ? '✓' : running ? '…' : '✗';
+      btn.className = 'pill-btn' + (ui.selectedStage === s.name ? ' active' : '') + (ok ? ' pill-ok' : running ? '' : ' pill-bad');
+      btn.textContent = match
+        ? `${Number(match[1])}. L${Number(match[2])} ${TOOL_KO[tool] || tool} ${mark}`
+        : `${s.name} ${mark}`;
+      btn.title = `${s.name} · ${s.status}${s.summary ? `\n${s.summary}` : ''}`;
       btn.addEventListener('click', () => {
         ui.selectedStage = s.name;
         ui.selectedStepIdx = null;
@@ -399,80 +532,386 @@
     }
   }
 
-  function renderStepReasoning(events, run) {
-    const decisions = events.filter((e) => e.event === 'decision');
-    const navBar = $('step-nav-bar');
-    const pillsEl = $('step-pills');
+  // ---- Decision timeline -------------------------------------------------------------
+  const TOOL_KO = {
+    observe: '재관찰', execute: '명령 실행', task_complete: '완료 주장', blocked: '중단',
+    plan: '계획 수립', locate: '위치 찾기', pick: '집기', place: '놓기', move_to: 'XYZ 이동',
+    home: '홈 복귀', home_arm: '홈 복귀', gripper: '그리퍼', drive: '주행', done: '루프 완료 선언',
+    failed: '루프 실패 선언', confirm: '완료 확인', replan: '재계획 요청',
+    navigate_to: '경로 이동', inspect_scene: '장면 확인', act: '행동(act)',
+  };
+  const PHASE_KO = { planning: '계획', action: '행동', verify: '검증', skill: '호스트 스킬' };
+  const FEEDBACK_KO = { initial: '첫 판단', progress: '진전 있음', stalled: '진전 없음', uncertain: '판단 유보' };
+  const JOINT_SHORT = {
+    shoulder_pan: 'pan', shoulder_lift: 'lift', elbow_flex: 'elbow', wrist_flex: 'w_flex', wrist_roll: 'w_roll',
+    gripper: 'gripper',
+  };
 
-    if (!decisions.length) {
-      navBar.hidden = true;
+  function el(tag, cls, text) {
+    const node = document.createElement(tag);
+    if (cls) node.className = cls;
+    if (text !== undefined && text !== null) node.textContent = text;
+    return node;
+  }
+
+  function fmtNum(value, digits = 3) {
+    return typeof value === 'number' && Number.isFinite(value) ? String(Number(value.toFixed(digits))) : String(value);
+  }
+
+  function fmtXyz(xyz) {
+    return Array.isArray(xyz) ? `[${xyz.map((v) => fmtNum(v, 3)).join(', ')}]` : '—';
+  }
+
+  function describeCommand(cmd) {
+    if (!cmd || typeof cmd !== 'object') return '';
+    if ('duration_ms' in cmd && ('action' in cmd || 'joints' in cmd || 'cartesian' in cmd)) {
+      const parts = [];
+      if (cmd.cartesian) {
+        parts.push(`XYZ ${cmd.cartesian.mode === 'relative' ? '상대' : '절대'} ${fmtXyz(cmd.cartesian.xyz_m)} m`);
+      }
+      const joints = cmd.joints ? Object.entries(cmd.joints).filter(([, v]) => v !== null && v !== undefined) : [];
+      if (joints.length && !cmd.cartesian) {
+        parts.push(joints.map(([k, v]) => `${JOINT_SHORT[k] || k} ${fmtNum(v, 1)}`).join(' · '));
+      }
+      if (cmd.x || cmd.y || cmd.theta) {
+        parts.push(`베이스 x=${fmtNum(cmd.x, 2)} y=${fmtNum(cmd.y, 2)} m/s θ=${fmtNum(cmd.theta, 1)}°/s`);
+      }
+      if (!parts.length) parts.push('대기');
+      parts.push(`${cmd.duration_ms} ms`);
+      return parts.join(' · ');
+    }
+    const parts = [];
+    if (cmd.label) parts.push(`"${cmd.label}"`);
+    if (Array.isArray(cmd.bbox_px)) parts.push(`상자 [${cmd.bbox_px.map((v) => Math.round(v)).join(', ')}] px`);
+    if (cmd.xyz_m) parts.push(`xyz ${fmtXyz(cmd.xyz_m)} m`);
+    if (cmd.approach) parts.push(`접근 ${cmd.approach}`);
+    if (typeof cmd.gripper_percent === 'number') parts.push(`그리퍼 ${fmtNum(cmd.gripper_percent, 1)}%`);
+    if (cmd.drive) {
+      parts.push(`x=${fmtNum(cmd.drive.x, 2)} y=${fmtNum(cmd.drive.y, 2)} m/s θ=${fmtNum(cmd.drive.theta, 1)}°/s · ${cmd.drive.duration_ms} ms`);
+    }
+    if ('forward_m' in cmd || 'turn_deg' in cmd) {
+      parts.push(`앞 ${fmtNum(cmd.forward_m || 0, 2)} m · 왼쪽 ${fmtNum(cmd.left_m || 0, 2)} m · 회전 ${fmtNum(cmd.turn_deg || 0, 0)}°`);
+    }
+    return parts.length ? parts.join(' · ') : JSON.stringify(cmd);
+  }
+
+  function describeSkillResult(d) {
+    const r = d.result || {};
+    const bits = [];
+    if (r.xyz_m) bits.push(`xyz ${fmtXyz(r.xyz_m)}`);
+    if (r.reachable !== undefined) bits.push(r.reachable ? '팔이 닿음' : '팔이 닿지 않음');
+    if (r.in_calibrated_region === false) bits.push('보정 영역 밖(오차 큼)');
+    if (r.gripper_after_close !== undefined) bits.push(`닫은 뒤 그리퍼 ${fmtNum(r.gripper_after_close, 1)}%`);
+    if (r.object_between_jaws_likely !== undefined) bits.push(r.object_between_jaws_likely ? '물체 잡힘 추정' : '빈 집게 추정');
+    if (r.grasp_fk_xyz_m) bits.push(`집은 위치 ${fmtXyz(r.grasp_fk_xyz_m)}`);
+    if (r.arm_xyz_m) bits.push(`팔 끝 ${fmtXyz(r.arm_xyz_m)}`);
+    if (r.locate_offset_applied) bits.push(`위치 보정 적용 (원래 ${fmtXyz(r.xyz_m_raw)})`);
+    const dm = r.drive_measurement;
+    if (dm && dm.accepted) {
+      const cmd = Math.hypot(...dm.commanded_m);
+      bits.push(`주행 측정: 명령 ${fmtNum(cmd, 3)} m → 실제 ${fmtNum(cmd * dm.gain, 3)} m (×${fmtNum(dm.gain, 2)})`);
+    } else if (dm) {
+      bits.push(`주행 측정 제외: ${dm.reason}`);
+    }
+    const lm = r.locate_measurement;
+    if (lm && lm.accepted) bits.push(`위치 오차 측정 [${lm.offset_m.map((v) => fmtNum(v * 1000, 1)).join(', ')}] mm`);
+    const ok = d.status === 'ok';
+    return {
+      level: ok ? 'ok' : 'bad',
+      text: `${TOOL_KO[d.tool] || d.tool} ${ok ? '성공' : '실패'}${d.error ? ` — ${d.error}` : ''}${bits.length ? ` · ${bits.join(' · ')}` : ''}`,
+    };
+  }
+
+  function describeOutcome(ev, prepared) {
+    const d = ev.data || {};
+    switch (ev.event) {
+      case 'action_result': {
+        const p = d.packet || {};
+        const ex = p.execution || {};
+        const what = describeCommand(prepared.get(d.action_id)) || '명령';
+        if (p.status === 'rejected') {
+          return { level: 'bad', text: `${what} → 실행 전 거부: ${p.error_code || ''} ${p.error || ''}`.trim() };
+        }
+        if (p.status === 'completed' || p.status === 'completed_without_observation') {
+          return { level: 'ok', text: `${what} → 실행 완료${ex.arm_reached === true ? ' · 목표 도달' : ''}` };
+        }
+        if (String(p.status).startsWith('warning')) {
+          return { level: 'warn', text: `${what} → 완료, 목표와 실측이 조금 다름` };
+        }
+        return { level: 'bad', text: `${what} → ${p.status}${p.error ? `: ${p.error}` : ''}` };
+      }
+      case 'decision_rejected':
+        return { level: 'warn', text: `판단이 실행되지 않음: ${d.reason || ''}${d.detail ? ` — ${d.detail}` : ''}${d.error ? ` — ${d.error}` : ''}` };
+      case 'rejection_feedback':
+        return { level: 'bad', text: `실행 전 거부: ${d.error_code || ''} ${d.error || ''}`.trim() };
+      case 'ik_result':
+        return d.executable === false
+          ? { level: 'bad', text: `IK 해 없음: ${(d.reason_codes || []).join(', ') || '이유 미기록'}` }
+          : null;
+      case 'motion_warning': {
+        const w = d.warning || {};
+        const amount = typeof w.measured_max_error_deg === 'number'
+          ? ` 최대 ${w.measured_max_error_deg.toFixed(1)}° (허용 ${fmtNum(w.max_error_deg, 0)}°)` : '';
+        return { level: 'warn', text: `동작 경고: 목표와 실측 관절 차이${amount} → 실측 자세에서 계속` };
+      }
+      case 'motion_incomplete':
+      case 'motion_failure_feedback':
+        return { level: 'bad', text: '부분 동작: 일부 관절이 목표에 못 미침 → 재확인·수정 필요' };
+      case 'motion_recovery_completed':
+        return { level: 'ok', text: '복구 동작 완료' };
+      case 'reconcile_result':
+        return { level: 'info', text: `상태 재확인: ${d.status || ''}` };
+      case 'completion_candidate':
+        return { level: 'info', text: '완료 후보로 기록 — 새 관찰에서 한 번 더 확인해야 끝남' };
+      case 'locate_answer':
+        return d.found
+          ? { level: 'ok', text: `상자 [${(d.bbox_px || []).map((v) => Math.round(v)).join(', ')}] px · 확신 ${d.confidence}${d.note ? ` · ${d.note}` : ''}` }
+          : { level: 'warn', text: `찾지 못함${d.note ? `: ${d.note}` : ''}` };
+      case 'skill_result':
+        return describeSkillResult(d);
+      case 'skill_finished':
+        return { level: d.status === 'completed' ? 'ok' : 'bad', text: `스킬 종료: ${d.status}${d.detail ? ` — ${d.detail}` : ''}` };
+      case 'memory_update': {
+        if (d.error) return { level: 'warn', text: `기억 갱신 실패: ${d.error}` };
+        const credited = Object.entries(d.credited || {}).map(([id, outcome]) => `${id} ${outcome === 'support' ? '+1 성공' : '−1 실패'}`);
+        const proposed = (d.proposed || []).filter(Boolean);
+        const parts = [];
+        if (credited.length) parts.push(`적용한 교훈 채점: ${credited.join(', ')}`);
+        if (proposed.length) parts.push(`새 가설·재제안: ${proposed.join(', ')}`);
+        const gain = d.body?.drive?.gain;
+        if (gain != null) parts.push(`주행 보정 ×${fmtNum(gain, 3)} (${d.body.drive.samples}회)`);
+        return { level: 'info', text: `기억 갱신 — ${parts.join(' · ') || '변경 없음'}` };
+      }
+      case 'episode_finished':
+        return {
+          level: d.status === 'completion_claim' ? 'ok' : 'bad',
+          text: `에피소드 종료: ${d.status}${d.detail ? ` — ${d.detail}` : ''}`,
+          final: true,
+        };
+      default:
+        return null;
+    }
+  }
+
+  function buildTimeline(events) {
+    const prepared = new Map();
+    const groups = [];
+    let current = null;
+    let thinkS = null;
+    for (const ev of events) {
+      const d = ev.data || {};
+      if (ev.event === 'planning_finished') {
+        thinkS = d.duration_s;
+        continue;
+      }
+      if (ev.event === 'action_prepared') {
+        prepared.set(d.action_id, d);
+        continue;
+      }
+      if (ev.event === 'decision') {
+        current = { ev, outcomes: [], thinkS };
+        thinkS = null;
+        groups.push(current);
+        continue;
+      }
+      if (ev.event === 'skill_started' && !groups.length) {
+        current = { ev, skill: true, outcomes: [] };
+        groups.push(current);
+        continue;
+      }
+      if (!current) continue;
+      const outcome = describeOutcome(ev, prepared);
+      if (outcome) current.outcomes.push(outcome);
+    }
+    return groups;
+  }
+
+  function phaseOf(group) {
+    const d = group.ev.data || {};
+    if (group.skill) return 'skill';
+    if (d.phase) return d.phase;
+    if (d.tool === 'execute') return 'action';
+    if (d.tool === 'task_complete') return 'verify';
+    return 'observe';
+  }
+
+  function keepOpen(details, key) {
+    details.open = ui.openTimelineKeys.has(key) || details.open;
+    details.addEventListener('toggle', () => {
+      if (details.open) ui.openTimelineKeys.add(key);
+      else ui.openTimelineKeys.delete(key);
+    });
+  }
+
+  function renderDecisionTimeline(events, run) {
+    const list = $('decision-timeline');
+    const scope = `${run.id}|${run.policy?.selected_stage || ''}`;
+    const last = events.length ? events[events.length - 1].seq : 0;
+    const sig = `${scope}|${events.length}|${last}|${ui.showAllPlans}|${run.active}`;
+    if (sig === ui.timelineSig) return;
+    ui.timelineSig = sig;
+    const newScope = ui.timelineScope !== scope;
+    if (newScope) ui.openTimelineKeys.clear();
+    ui.timelineScope = scope;
+    const nearBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 80;
+
+    const groups = buildTimeline(events);
+    const decisions = groups.filter((g) => !g.skill);
+    const actions = events.filter((e) => e.event === 'action_prepared').length;
+    $('decision-count').textContent = groups.length
+      ? `판단 ${decisions.length}개 · 로봇 명령 ${actions}개`
+      : '판단 기록 없음';
+
+    list.innerHTML = '';
+    if (!groups.length) {
+      const stage = run.mode === 'policy'
+        ? (run.policy?.stages || []).find((item) => item.name === run.policy?.selected_stage)
+        : null;
+      if (stage) {
+        // Host skills and sim stages run without planner turns; show the stage result instead.
+        const match = /^(\d{4})_L(\d{3})_(.+)$/.exec(stage.name);
+        const tool = match ? match[3] : stage.name;
+        const ok = stage.status === 'completed' || stage.status === 'completion_claim';
+        const card = el('li', 'tl-card phase-skill');
+        const head = el('div', 'tl-head');
+        head.appendChild(el('span', 'tl-index', match ? `${Number(match[1])}.` : ''));
+        head.appendChild(el('span', 'tl-phase phase-skill', '정책 단계'));
+        head.appendChild(el('span', 'tl-tool', TOOL_KO[tool] || tool));
+        if (match) head.appendChild(el('span', 'tl-attempt', `policy.py ${Number(match[2])}번째 줄`));
+        card.appendChild(head);
+        const body = el('div', 'tl-body');
+        body.appendChild(el('p', 'tl-reason', '모델 판단 없이 실행된 단계입니다 (호스트 스킬 또는 sim).'));
+        const row = el('div', 'tl-row');
+        row.appendChild(el('span', 'tl-label', '결과'));
+        const ul = el('ul', 'tl-outcomes');
+        ul.appendChild(el('li', ok ? 'out-ok' : 'out-bad', `${stage.status}${stage.summary ? ` — ${stage.summary}` : ''}`));
+        row.appendChild(ul);
+        body.appendChild(row);
+        card.appendChild(body);
+        list.appendChild(card);
+        $('decision-count').textContent = '모델 판단 없음';
+        $('decision-tool-badge').textContent = TOOL_KO[tool] || tool;
+        return;
+      }
+      const msg = run.mode === 'reference'
+        ? '카메라·관절 스냅샷만 저장된 기록입니다 (모델 판단 없음).'
+        : '아직 기록된 판단이 없습니다.';
+      list.appendChild(el('li', 'empty-msg', msg));
       $('decision-tool-badge').textContent = run.status;
-      $('decision-feedback-tag').textContent = '';
-      $('decision-reason').textContent = run.mode === 'reference'
-        ? 'Read-only camera & joint snapshot captured (no planner invoked).'
-        : 'No inner planner decision recorded for this stage/run yet.';
-      $('decision-reason').classList.add('muted');
-      $('decision-evidence').textContent = '—';
-      $('decision-plan').innerHTML = '<li class="muted">—</li>';
-      $('raw-cmd-details').hidden = true;
       return;
     }
 
-    navBar.hidden = false;
-    pillsEl.innerHTML = '';
+    let prevPlan = '';
+    groups.forEach((group, idx) => {
+      const d = group.ev.data || {};
+      const phase = phaseOf(group);
+      const isLast = idx === groups.length - 1;
+      const card = el('li', `tl-card phase-${phase}${isLast && run.active ? ' live' : ''}`);
 
-    const latestBtn = document.createElement('button');
-    latestBtn.type = 'button';
-    latestBtn.className = 'pill-btn' + (ui.selectedStepIdx === null ? ' active' : '');
-    latestBtn.textContent = `Latest (#${decisions.length})`;
-    latestBtn.addEventListener('click', () => {
-      ui.selectedStepIdx = null;
-      renderStepReasoning(events, run);
+      const head = el('div', 'tl-head');
+      head.appendChild(el('span', 'tl-index', `#${idx + 1}`));
+      head.appendChild(el('span', `tl-phase phase-${phase}`, PHASE_KO[phase] || '관찰'));
+      const toolName = group.skill ? d.skill : d.tool;
+      const tool = el('span', 'tl-tool', TOOL_KO[toolName] || toolName || '판단');
+      tool.title = toolName || '';
+      head.appendChild(tool);
+      if (d.feedback && FEEDBACK_KO[d.feedback] && !d.phase) {
+        head.appendChild(el('span', `tl-feedback fb-${d.feedback}`, FEEDBACK_KO[d.feedback]));
+      }
+      if (d.attempt) head.appendChild(el('span', 'tl-attempt', `시도 ${d.attempt}`));
+      const timing = [`+${Number(group.ev.elapsed_s || 0).toFixed(1)}s`];
+      if (typeof group.thinkS === 'number') timing.push(`생각 ${group.thinkS.toFixed(1)}s`);
+      head.appendChild(el('span', 'tl-time', timing.join(' · ')));
+      card.appendChild(head);
+
+      const body = el('div', 'tl-body');
+      if (group.skill) {
+        body.appendChild(el('p', 'tl-reason', `policy.py가 호출한 결정적 스킬입니다 (모델 판단 없음).`));
+      } else if (d.reason) {
+        body.appendChild(el('p', 'tl-reason', d.reason));
+      }
+      const command = group.skill ? describeCommand(d.args) : describeCommand(d.command);
+      if (command) {
+        const row = el('div', 'tl-row');
+        row.appendChild(el('span', 'tl-label', '명령'));
+        row.appendChild(el('code', 'tl-cmd', command));
+        body.appendChild(row);
+      }
+      if (d.expected) {
+        const row = el('div', 'tl-row');
+        row.appendChild(el('span', 'tl-label', '예상'));
+        row.appendChild(el('span', 'tl-meta', d.expected));
+        body.appendChild(row);
+      }
+      if (Array.isArray(d.lessons_applied) && d.lessons_applied.length) {
+        const row = el('div', 'tl-row');
+        row.appendChild(el('span', 'tl-label', '적용 교훈'));
+        const wrap = el('div', 'tl-lessons');
+        for (const lesson of d.lessons_applied) {
+          const chip = el('span', `lesson-chip ${lesson.status}`, `${lesson.id} ${LESSON_STATUS_KO[lesson.status] || ''}`);
+          chip.title = lesson.text || '';
+          wrap.appendChild(chip);
+          wrap.appendChild(el('span', 'tl-lesson-text', lesson.text || ''));
+        }
+        row.appendChild(wrap);
+        body.appendChild(row);
+      }
+      if (d.evidence) {
+        const row = el('div', 'tl-row');
+        row.appendChild(el('span', 'tl-label', d.phase === 'action' ? '교훈' : d.phase === 'planning' ? '참고 교훈' : '근거'));
+        row.appendChild(el('span', 'tl-meta', d.evidence));
+        body.appendChild(row);
+      }
+      if (group.outcomes.length) {
+        const row = el('div', 'tl-row');
+        row.appendChild(el('span', 'tl-label', '결과'));
+        const ul = el('ul', 'tl-outcomes');
+        for (const outcome of group.outcomes) ul.appendChild(el('li', `out-${outcome.level}`, outcome.text));
+        row.appendChild(ul);
+        body.appendChild(row);
+      } else if (!group.skill && (d.tool === 'execute' || phase === 'action') && isLast && run.active) {
+        body.appendChild(el('p', 'tl-pending', '실행 결과 기다리는 중…'));
+      }
+
+      // plan-act action/verify turns repeat the attempt's plan; it is shown once on the planning card.
+      const plan = Array.isArray(d.plan) && d.phase !== 'action' && d.phase !== 'verify' ? d.plan.filter(Boolean) : [];
+      if (plan.length) {
+        const planText = plan.join('\n');
+        const changed = planText !== prevPlan;
+        prevPlan = planText;
+        const details = el('details', 'tl-plan');
+        const note = d.phase ? '' : changed ? (idx === 0 ? '' : ' · 바뀜') : ' · 이전과 같음';
+        const summary = el('summary', null, `계획 ${plan.length}단계${note}`);
+        details.appendChild(summary);
+        const ol = el('ol', 'tl-plan-list');
+        for (const step of plan) ol.appendChild(el('li', null, step));
+        details.appendChild(ol);
+        details.open = ui.showAllPlans || phase === 'planning' || (!d.phase && changed);
+        keepOpen(details, `${idx}|plan`);
+        body.appendChild(details);
+      }
+
+      const raw = el('details', 'tl-raw');
+      raw.appendChild(el('summary', null, '원본 JSON'));
+      raw.appendChild(el('pre', 'code-block', JSON.stringify(d, null, 2)));
+      keepOpen(raw, `${idx}|raw`);
+      body.appendChild(raw);
+      card.appendChild(body);
+      list.appendChild(card);
     });
-    pillsEl.appendChild(latestBtn);
 
-    decisions.forEach((decEv, idx) => {
-      const b = document.createElement('button');
-      b.type = 'button';
-      b.className = 'pill-btn' + (ui.selectedStepIdx === idx ? ' active' : '');
-      b.textContent = `#${idx + 1} ${decEv.data?.tool || 'step'}`;
-      b.addEventListener('click', () => {
-        ui.selectedStepIdx = idx;
-        renderStepReasoning(events, run);
-      });
-      pillsEl.appendChild(b);
-    });
-
-    const chosenIdx = ui.selectedStepIdx !== null && ui.selectedStepIdx < decisions.length
-      ? ui.selectedStepIdx
-      : decisions.length - 1;
-    const dec = decisions[chosenIdx].data || {};
-
-    $('decision-tool-badge').textContent = `Step #${chosenIdx + 1} · ${dec.tool || 'decided'}`;
-    $('decision-feedback-tag').textContent = dec.feedback ? `feedback: ${dec.feedback} · obs: ${dec.observation_id || '—'}` : '';
-    $('decision-reason').textContent = dec.reason || '—';
-    $('decision-reason').classList.remove('muted');
-
-    const evParts = [];
-    if (dec.expected) evParts.push(`Expected: ${dec.expected}`);
-    if (dec.evidence) evParts.push(`Evidence: ${dec.evidence}`);
-    $('decision-evidence').textContent = evParts.length ? evParts.join('\n') : '—';
-    $('decision-evidence').classList.remove('muted');
-
-    const planItems = Array.isArray(dec.plan) && dec.plan.length ? dec.plan : ['—'];
-    $('decision-plan').innerHTML = '';
-    for (const stepText of planItems) {
-      const li = document.createElement('li');
-      li.textContent = stepText;
-      $('decision-plan').appendChild(li);
-    }
-
-    $('raw-cmd-details').hidden = false;
-    $('raw-cmd-pre').textContent = JSON.stringify(dec, null, 2);
+    const lastGroup = groups[groups.length - 1];
+    const lastTool = lastGroup.skill ? lastGroup.ev.data?.skill : lastGroup.ev.data?.tool;
+    $('decision-tool-badge').textContent = `#${groups.length} ${TOOL_KO[lastTool] || lastTool || ''}`;
+    if (newScope || nearBottom) list.scrollTop = list.scrollHeight;
   }
 
   function renderExpandableTrace(run) {
     const events = run.events || [];
+    const traceLen = (run.policy?.trace || []).length;
+    const sig = `${run.id}|${run.policy?.selected_stage || ''}|${events.length}|${events.length ? events[events.length - 1].seq : 0}|${traceLen}|${ui.traceFilter}`;
+    if (sig === ui.traceSig) return;
+    ui.traceSig = sig;
     const items = [];
 
     if (run.mode === 'policy' && Array.isArray(run.policy?.trace)) {
@@ -498,6 +937,9 @@
       : '';
 
     for (const ev of events) {
+      if (/_(started|finished)$/.test(ev.event) && ev.event !== 'episode_finished' && ev.event !== 'skill_finished') {
+        continue; // phase bookkeeping; durations are shown in the decision timeline
+      }
       const cat = classifyTraceEvent(ev.event);
       items.push({
         key: `ev-${stagePrefix}-${ev.seq}`,
@@ -579,15 +1021,13 @@
       $('metric-obs').textContent = '—';
       renderCamerasAndJoints(null);
       $('policy-inspector').hidden = true;
-      $('step-nav-bar').hidden = true;
       $('decision-tool-badge').textContent = 'idle';
-      $('decision-feedback-tag').textContent = '';
-      $('decision-reason').textContent = 'No planner decision recorded yet.';
-      $('decision-evidence').textContent = '—';
-      $('decision-plan').innerHTML = '<li class="muted">—</li>';
-      $('raw-cmd-details').hidden = true;
+      $('decision-count').textContent = '판단 기록 없음';
+      $('decision-timeline').innerHTML = '<li class="empty-msg">실행을 시작하거나 History에서 기록을 고르면 판단이 여기에 시간순으로 나옵니다.</li>';
+      ui.timelineSig = '';
+      ui.traceSig = '';
       $('event-count').textContent = '0 items';
-      $('event-log').innerHTML = '<p class="empty-msg">Reasoning turns, policy tool calls, IK checks, and motor results stream here.</p>';
+      $('event-log').innerHTML = '<p class="empty-msg">판단, 정책 호출, IK 검사, 모터 결과가 여기에 쌓입니다.</p>';
       return;
     }
 
@@ -654,7 +1094,7 @@
       $('policy-inspector').hidden = true;
     }
 
-    renderStepReasoning(events, run);
+    renderDecisionTimeline(events, run);
     renderExpandableTrace(run);
   }
 
@@ -663,6 +1103,7 @@
       const state = await apiGet('/api/state');
       ui.serverState = state;
       renderHeader(state);
+      renderMemory(state.memory);
 
       const targetId = ui.pinnedRunId || state.active_run_id || (state.runs?.[0]?.id ?? null);
       let runView = null;
@@ -717,6 +1158,17 @@
     });
     $('preset-memory-btn').addEventListener('click', () => {
       $('policy-source').value = MEMORY_POLICY_TEMPLATE;
+    });
+    $('preset-skill-btn').addEventListener('click', () => {
+      $('policy-source').value = SKILL_POLICY_TEMPLATE;
+    });
+    $('show-all-plans').addEventListener('change', (ev) => {
+      ui.showAllPlans = ev.target.checked;
+      if (ui.selectedRun) renderDecisionTimeline(ui.selectedRun.events || [], ui.selectedRun);
+    });
+    $('timeline-bottom-btn').addEventListener('click', () => {
+      const list = $('decision-timeline');
+      list.scrollTop = list.scrollHeight;
     });
 
     for (const id of ['max-actions', 'max-steps', 'max-seconds']) {

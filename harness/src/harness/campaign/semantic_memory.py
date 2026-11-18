@@ -94,6 +94,8 @@ class SemanticHit:
     status: str = 'present'
     robot_id: str = 'kiwi-01'
     observed_at: float = 0.0
+    # False when saved without a global pose (SLAM-free): x_m/y_m are then not a map position.
+    localized: bool = True
 
     def to_dict(self) -> dict[str, object]:
         payload = asdict(self)
@@ -120,9 +122,14 @@ class SemanticMemoryStore:
         *,
         client=None,
         embedding_function: EmbeddingFunction[Documents] | None = None,
-        collection_name: str = COLLECTION_NAME,
+        collection_name: str | None = None,
     ):
         self._client = client if client is not None else create_chroma_client(persist_dir)
+        if collection_name is None:
+            # chromadb.EphemeralClient() shares one in-process store, so a fixed name would
+            # leak records between "fresh" in-memory stores (tests, repeated GUI sim runs).
+            ephemeral = client is None and persist_dir is None
+            collection_name = f'{self.COLLECTION_NAME}_{uuid4().hex[:12]}' if ephemeral else self.COLLECTION_NAME
         self._embedding_fn = embedding_function or LocalMultilingualEmbeddingFunction()
         self._collection = self._client.get_or_create_collection(
             name=collection_name,
@@ -152,6 +159,7 @@ class SemanticMemoryStore:
         robot_id: str = 'kiwi-01',
         record_id: str | None = None,
         observed_at: float | None = None,
+        localized: bool = True,
     ) -> SemanticHit:
         if not isinstance(text, str) or not text.strip():
             raise ValueError('text must be a non-empty string')
@@ -181,6 +189,7 @@ class SemanticMemoryStore:
             'status': status,
             'robot_id': str(robot_id),
             'observed_at': ts,
+            'localized': bool(localized),
         }
         doc = self._build_document(clean_text, clean_floor, clean_room, clean_tags)
         self._collection.upsert(ids=[rid], documents=[doc], metadatas=[metadata])
@@ -197,6 +206,7 @@ class SemanticMemoryStore:
             status=status,
             robot_id=str(robot_id),
             observed_at=ts,
+            localized=bool(localized),
         )
 
     @staticmethod
@@ -229,6 +239,7 @@ class SemanticMemoryStore:
             status=str(meta.get('status', 'present')),
             robot_id=str(meta.get('robot_id', 'kiwi-01')),
             observed_at=float(meta.get('observed_at', 0.0)),
+            localized=bool(meta.get('localized', True)),
         )
 
     def search(

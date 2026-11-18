@@ -50,6 +50,13 @@ agent human-readable, provenance-tagged code patterns it can inspect and refine 
    approach, and 5-DoF `arm_base` Cartesian/joint grasping directly through `inspect_scene()` and
    `act()`, preserving full compatibility with direct camera-driven operation.
 
+With `--skills-config` (and `--camera-config` for `locate`), live and sim runs also expose
+deterministic **host skills** to `policy.py`: `locate(label)` (calibrated front-camera floor XYZ +
+pick reachability), `pick(xyz_m)`, `place(xyz_m)`, `home_arm()` and `drive(forward_m, left_m,
+turn_deg)`. They let a block state *where* to grasp in code (tunable via `report["cfg"]`) instead of
+asking an inner model loop to guess metric depth from RGB; `act()` then defaults to the plan-act
+inner loop built on the same skills.
+
 ## Campaign Directory Layout
 
 ```text

@@ -11,6 +11,10 @@ with line-cursor tracing (`>>> Line N`), and logged into structured attempt dire
     trace/events.jsonl
     stages/<NNNN>_L<YY>_<tool>/
     outcome.json
+
+Robot stages are either inner EpisodeRunner episodes (`inspect_scene`, `act`, `navigate_to` legs)
+or deterministic host skills (`locate`, `pick`, `place`, `home_arm`, `drive`) run by a
+`SkillExecutor`; both write the same per-stage `events.jsonl` / `result.json` artifacts.
 """
 from __future__ import annotations
 
@@ -26,12 +30,18 @@ import time
 from typing import Any, Protocol
 
 from ..episode import EpisodeLimits, atomic_json
+from ..skill_session import HOST_SKILLS, MAX_DRIVE_M, MAX_TURN_DEG
 from .semantic_memory import SemanticMemoryStore
 from .topology import LocalizationProvider, PoseEstimate, RouteLeg, RoutePlan, TopologicalMap
 
 
 POLICY_FILENAME = '<policy>'
 DEFAULT_MAX_LOOP_TICKS = 500
+# EpisodeRunner (step and plan-act loops) accepts completion only as `completion_claim`: two
+# completion claims on independent fresh observations. It never returns the status `completed`.
+STAGE_SUCCESS_STATUSES = frozenset({'completed', 'completion_claim'})
+STAGE_HISTORY_LIMIT = 6
+STAGE_SUMMARY_CHARS = 300
 ARM_JOINT_NAMES = frozenset({'shoulder_pan', 'shoulder_lift', 'elbow_flex', 'wrist_flex', 'wrist_roll'})
 
 # Keys whose presence in `result` could leak privileged or ambiguous success labels;
@@ -277,7 +287,14 @@ class InnerActionExecutor(Protocol):
         highlighted_policy: str,
         limits: EpisodeLimits,
         stage_dir: Path,
+        history: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]: ...
+
+
+class SkillExecutor(Protocol):
+    """Runs one deterministic host skill (see `HOST_SKILLS`) as a guarded robot stage."""
+
+    def run_skill(self, *, robot_id: str, skill: str, args: dict[str, Any], stage_dir: Path) -> dict[str, Any]: ...
 
 
 class LiveLocalizationProvider:
@@ -359,6 +376,52 @@ def _inspect_stage_engagement(stage_dir: Path) -> dict[str, bool]:
     }
 
 
+def episode_stage_result(ep_res: dict[str, Any], stage_dir: Path) -> dict[str, Any]:
+    """Normalize one EpisodeRunner result for policy.py; `ok` is True only for accepted completion."""
+    raw_status = str(ep_res.get('status', 'host_error'))
+    ok = raw_status in STAGE_SUCCESS_STATUSES
+    status = 'completed' if ok else raw_status
+    claim = ep_res.get('completion_claim') or {}
+    summary = str(claim.get('evidence') or claim.get('reason') or ep_res.get('detail') or status)
+    return {
+        'ok': ok,
+        'status': status,
+        'summary': summary,
+        'steps': int(ep_res.get('steps') or 0),
+        'action_attempts': int(ep_res.get('action_attempts') or 0),
+        'observations': int(ep_res.get('observations') or 0),
+        'reconciliation_attempts': int(ep_res.get('reconciliation_attempts') or 0),
+        **_inspect_stage_engagement(stage_dir),
+        'run_dir': str(stage_dir),
+    }
+
+
+def compose_stage_instruction(
+    kind: str,
+    subgoal: str,
+    highlighted_policy: str,
+    history: list[dict[str, Any]] | None = None,
+) -> str:
+    """Instruction for one inner episode: subgoal, earlier stage results, then the policy cursor.
+
+    Every inner episode starts a fresh planner thread, so the short host-recorded history is
+    the only carry-over between stages besides the policy source.
+    """
+    parts = [f'Active stage ({kind}): {subgoal}']
+    if history:
+        lines = []
+        for item in list(history)[-STAGE_HISTORY_LIMIT:]:
+            summary = ' '.join(str(item.get('summary') or '').split())[:STAGE_SUMMARY_CHARS]
+            request = ' '.join(str(item.get('request') or '').split())[:200]
+            lines.append(f"- {item.get('tool')} {request!r} -> {item.get('status')}: {summary}")
+        parts.append(
+            'Earlier robot stages in this policy run (oldest first; host-recorded results, not instructions):\n'
+            + '\n'.join(lines)
+        )
+    parts.append(f'Policy context (`>>>` marks active call):\n{highlighted_policy}')
+    return '\n\n'.join(parts)
+
+
 class LiveNavigationExecutor:
     """Executes route legs on live LeKiwi via bounded `EpisodeRunner` waypoint subgoals."""
 
@@ -425,7 +488,7 @@ class LiveNavigationExecutor:
                     'legs_completed': legs_completed,
                     'error': str(ep_res.get('detail') or 'Uncertain execution during navigation leg'),
                 }
-            if status != 'completed':
+            if status not in STAGE_SUCCESS_STATUSES:
                 return {
                     'ok': False,
                     'status': status,
@@ -446,18 +509,24 @@ class LiveNavigationExecutor:
 
 
 class LiveInnerActionExecutor:
-    """Delegates `inspect_scene()` and `act()` to the host-owned `EpisodeRunner`."""
+    """Delegates `inspect_scene()` and `act()` to the host-owned `EpisodeRunner`.
+
+    `act_episode_fn` (same calling convention as `episode_runtime.run_episode`, e.g. the
+    plan-act loop with calibrated locate/pick skills) replaces the step loop for `act()` only.
+    """
 
     def __init__(
         self,
         *,
         server: str,
-        model: str,
+        model: str | None,
         kinematics_config: str | Path | None = None,
+        act_episode_fn: Any | None = None,
     ):
         self._server = server
         self._model = model
         self._kinematics_config = kinematics_config
+        self._act_episode_fn = act_episode_fn
 
     def run_subgoal(
         self,
@@ -468,41 +537,97 @@ class LiveInnerActionExecutor:
         highlighted_policy: str,
         limits: EpisodeLimits,
         stage_dir: Path,
+        history: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         from ..episode_runtime import run_episode
 
-        composed_instruction = (
-            f'Active stage ({kind}): {subgoal}\n\n'
-            f'Policy context (`>>>` marks active call):\n{highlighted_policy}'
-        )
+        episode_fn = self._act_episode_fn if kind == 'act' and self._act_episode_fn is not None else run_episode
         ep_res = asyncio.run(
-            run_episode(
+            episode_fn(
                 self._server,
                 self._model,
                 robot_id,
-                composed_instruction,
+                compose_stage_instruction(kind, subgoal, highlighted_policy, history),
                 run_dir=stage_dir,
                 limits=limits,
                 kinematics_config=self._kinematics_config,
             )
         )
-        status = str(ep_res.get('status', 'host_error'))
-        engagement = _inspect_stage_engagement(stage_dir)
-        claim = ep_res.get('completion_claim') or {}
-        summary = str(claim.get('evidence') or claim.get('reason') or ep_res.get('detail') or status)
-        return {
-            'ok': status == 'completed',
-            'status': status,
-            'summary': summary,
-            'steps': int(ep_res.get('steps', 0)),
-            'action_attempts': int(ep_res.get('action_attempts', 0)),
-            'observations': int(ep_res.get('observations', 0)),
-            'reconciliation_attempts': int(ep_res.get('reconciliation_attempts', 0)),
-            'arm_moved': engagement['arm_moved'],
-            'gripper_moved': engagement['gripper_moved'],
-            'arm_engaged': engagement['arm_engaged'],
-            'run_dir': str(stage_dir),
-        }
+        return episode_stage_result(ep_res, stage_dir)
+
+
+def skill_stage_result(raw: dict[str, Any], stage_dir: Path) -> dict[str, Any]:
+    """Flatten one `skill_session` result for policy.py; `ok` means the skill finished as intended."""
+    status = str(raw.get('status', 'host_error'))
+    payload = dict(raw.get('skill_result') or {})
+    skill = str(raw.get('skill', ''))
+    error = payload.pop('error', None) or (None if status == 'completed' else raw.get('detail'))
+    if skill == 'locate' and payload.get('found'):
+        summary = (f"{payload.get('label')} at xyz_m={payload.get('xyz_m')} "
+                   f"(distance {payload.get('horizontal_distance_m')} m, reachable={payload.get('reachable')})")
+    elif skill == 'pick' and status == 'completed':
+        summary = (f"picked: gripper {payload.get('gripper_after_close')} after close, "
+                   f"object_between_jaws_likely={payload.get('object_between_jaws_likely')}")
+    else:
+        summary = str(error or payload.get('note') or status)
+    return {
+        **payload,
+        'ok': status == 'completed',
+        'status': status,
+        'skill': skill,
+        'summary': summary,
+        'error': error,
+        'arm_xyz_m': raw.get('arm_xyz_m'),
+        'gripper_percent': raw.get('gripper_percent'),
+        'primitives': list(raw.get('primitives') or [])[-8:],
+        'action_attempts': int(raw.get('action_attempts') or 0),
+        **_inspect_stage_engagement(stage_dir),
+        'run_dir': str(stage_dir),
+    }
+
+
+class LiveSkillExecutor:
+    """Runs host skills (`HOST_SKILLS`) on live LeKiwi through `skill_session.run_skill_session`.
+
+    `run_sync(make_coroutine, stage_dir)` lets the GUI run the session on its cancellable bridge;
+    by default each skill runs in its own `asyncio.run`.
+    """
+
+    def __init__(
+        self,
+        *,
+        server: str,
+        model: str | None,
+        kinematics_config: str | Path,
+        skills_config: str | Path,
+        camera_config: str | Path | None = None,
+        run_sync: Any | None = None,
+    ):
+        self._server = server
+        self._model = model
+        self._kinematics_config = kinematics_config
+        self._skills_config = skills_config
+        self._camera_config = camera_config
+        self._run_sync = run_sync
+
+    def run_skill(self, *, robot_id: str, skill: str, args: dict[str, Any], stage_dir: Path) -> dict[str, Any]:
+        from ..skill_session import run_skill_session
+
+        def make_coroutine():
+            return run_skill_session(
+                self._server,
+                self._model,
+                robot_id,
+                skill,
+                args,
+                run_dir=stage_dir,
+                kinematics_config=self._kinematics_config,
+                skills_config=self._skills_config,
+                camera_config=self._camera_config,
+            )
+
+        raw = self._run_sync(make_coroutine, stage_dir) if self._run_sync is not None else asyncio.run(make_coroutine())
+        return skill_stage_result(raw if isinstance(raw, dict) else {}, stage_dir)
 
 
 @dataclass
@@ -528,6 +653,12 @@ class SimulatedCampaignWorld:
     reach_radius_m: float = 0.65
     view_radius_m: float = 1.8
     force_uncertain_on_tool: str | None = None
+    # Host-skill dry run: calibrated floor reach of the real SO-101 pick skill (arm_base metres).
+    skill_reach_x_m: tuple[float, float] = (0.17, 0.30)
+    skill_reach_y_m: float = 0.08
+    camera_half_fov_deg: float = 35.0
+    floor_grasp_z_m: float = -0.09
+    grasp_tolerance_m: float = 0.04
 
     @classmethod
     def default_two_floor_world(cls) -> 'SimulatedCampaignWorld':
@@ -642,8 +773,9 @@ class SimulatedCampaignWorld:
         highlighted_policy: str,
         limits: EpisodeLimits,
         stage_dir: Path,
+        history: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        del robot_id, limits
+        del robot_id, limits, history
         stage_dir.mkdir(parents=True, exist_ok=True)
         (stage_dir / 'observations').mkdir(exist_ok=True)
         if self.force_uncertain_on_tool == kind:
@@ -835,6 +967,97 @@ class SimulatedCampaignWorld:
         atomic_json(stage_dir / 'result.json', payload)
         return payload
 
+    # -- host skills (dry run of locate / pick / place / home_arm / drive) -------------------
+    def _to_robot(self, x_m: float, y_m: float) -> tuple[float, float]:
+        yaw = math.radians(self.pose.yaw_deg)
+        dx, dy = x_m - self.pose.x_m, y_m - self.pose.y_m
+        return math.cos(yaw) * dx + math.sin(yaw) * dy, -math.sin(yaw) * dx + math.cos(yaw) * dy
+
+    def _to_world(self, forward_m: float, left_m: float) -> tuple[float, float]:
+        yaw = math.radians(self.pose.yaw_deg)
+        return (self.pose.x_m + math.cos(yaw) * forward_m - math.sin(yaw) * left_m,
+                self.pose.y_m + math.sin(yaw) * forward_m + math.cos(yaw) * left_m)
+
+    def _in_skill_reach(self, xyz: list[float]) -> bool:
+        low, high = self.skill_reach_x_m
+        return low <= xyz[0] <= high and abs(xyz[1]) <= self.skill_reach_y_m
+
+    def run_skill(self, *, robot_id: str, skill: str, args: dict[str, Any], stage_dir: Path) -> dict[str, Any]:
+        del robot_id
+        stage_dir.mkdir(parents=True, exist_ok=True)
+        payload: dict[str, Any] = {'skill': skill, 'arm_moved': False, 'gripper_moved': False, 'arm_engaged': False}
+        held = [obj for obj in self.objects.values() if obj.held]
+        if self.force_uncertain_on_tool == skill:
+            payload.update(ok=False, status='uncertain_execution', error=f'Simulated uncertain_execution in {skill}')
+        elif skill == 'locate':
+            target = self._match_target(str(args.get('label', '')))
+            found = None
+            if target is not None and not target.held and target.floor == self.pose.floor:
+                forward, left = self._to_robot(target.x_m, target.y_m)
+                distance = math.hypot(forward, left)
+                bearing = math.degrees(math.atan2(left, forward))
+                if forward > 0 and distance <= self.view_radius_m and abs(bearing) <= self.camera_half_fov_deg:
+                    xyz = [round(forward, 4), round(left, 4), self.floor_grasp_z_m]
+                    found = {'label': target.label, 'xyz_m': xyz, 'horizontal_distance_m': round(distance, 4),
+                             'reachable': self._in_skill_reach(xyz), 'in_calibrated_region': distance <= 0.6}
+            if found is None:
+                payload.update(ok=False, status='not_found', found=False,
+                               summary=f"{args.get('label')!r} is not visible in the front camera")
+            else:
+                payload.update(ok=True, status='completed', found=True, **found,
+                               summary=f"{found['label']} at {found['xyz_m']} (reachable={found['reachable']})")
+        elif skill == 'drive':
+            forward, left = float(args.get('forward_m', 0.0)), float(args.get('left_m', 0.0))
+            x_m, y_m = self._to_world(forward, left)
+            self.pose = PoseEstimate(floor=self.pose.floor, x_m=round(x_m, 4), y_m=round(y_m, 4),
+                                     yaw_deg=round(self.pose.yaw_deg + float(args.get('turn_deg', 0.0)), 3),
+                                     confidence=self.pose.confidence, relocalized=self.pose.relocalized)
+            for obj in held:
+                obj.floor, obj.x_m, obj.y_m = self.pose.floor, self.pose.x_m, self.pose.y_m
+            payload.update(ok=True, status='completed', summary=f'Drove {forward:+.2f} m forward, {left:+.2f} m left')
+        elif skill == 'home_arm':
+            payload.update(ok=True, status='completed', arm_moved=True, summary='Arm at home pose')
+        elif skill == 'pick':
+            xyz = [float(value) for value in args['xyz_m']]
+            if held:
+                payload.update(ok=False, status='skill_failed', error='Already holding an object; place it first')
+            elif not self._in_skill_reach(xyz):
+                payload.update(ok=False, status='skill_failed', error=f'pick hover: IK not executable at {xyz}')
+            else:
+                target = None
+                for obj in self.objects.values():
+                    if obj.floor == self.pose.floor and obj.graspable:
+                        forward, left = self._to_robot(obj.x_m, obj.y_m)
+                        if math.hypot(forward - xyz[0], left - xyz[1]) <= self.grasp_tolerance_m:
+                            target = obj
+                            break
+                payload.update(arm_moved=True, gripper_moved=True, arm_engaged=True)
+                if target is None:
+                    payload.update(ok=False, status='skill_failed', object_between_jaws_likely=False,
+                                   error='after lift: the object is no longer between the jaws')
+                else:
+                    target.held = True
+                    payload.update(ok=True, status='completed', object_between_jaws_likely=True,
+                                   target_xyz_m=xyz, summary=f'Picked and lifted {target.label}')
+        elif skill == 'place':
+            xyz = [float(value) for value in args['xyz_m']]
+            if not held:
+                payload.update(ok=False, status='skill_failed', error='before place: nothing between the jaws')
+            elif not self._in_skill_reach(xyz):
+                payload.update(ok=False, status='skill_failed', error=f'place hover: IK not executable at {xyz}')
+            else:
+                obj = held[0]
+                obj.held = False
+                x_m, y_m = self._to_world(xyz[0], xyz[1])
+                obj.floor, obj.x_m, obj.y_m = self.pose.floor, round(x_m, 4), round(y_m, 4)
+                payload.update(ok=True, status='completed', arm_moved=True, gripper_moved=True, arm_engaged=True,
+                               target_xyz_m=xyz, summary=f'Placed {obj.label}')
+        else:
+            payload.update(ok=False, status='invalid_arguments', error=f'Unknown host skill {skill!r}')
+        payload.update(pose=self.pose.to_dict(), run_dir=str(stage_dir))
+        atomic_json(stage_dir / 'result.json', payload)
+        return payload
+
 
 @dataclass(frozen=True)
 class PolicyRunOutcome:
@@ -851,6 +1074,22 @@ class PolicyRunOutcome:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+def _finite_number(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
+        return None
+    return float(value)
+
+
+def _xyz_argument(value: Any) -> list[float] | None:
+    """An arm_base target: three finite metres within 1 m of the arm base."""
+    if not isinstance(value, (list, tuple)) or len(value) != 3:
+        return None
+    xyz = [_finite_number(item) for item in value]
+    if any(item is None for item in xyz) or math.hypot(*xyz) >= 1.0:
+        return None
+    return xyz
 
 
 class CampaignPolicyRunner:
@@ -870,6 +1109,7 @@ class CampaignPolicyRunner:
         max_loop_ticks: int = DEFAULT_MAX_LOOP_TICKS,
         goal_checker: Any | None = None,
         cancel_check: Any | None = None,
+        skill_executor: SkillExecutor | None = None,
     ):
         self.task_language = task_language
         self.robot_id = robot_id
@@ -882,6 +1122,7 @@ class CampaignPolicyRunner:
         self.max_loop_ticks = max_loop_ticks
         self.goal_checker = goal_checker
         self.cancel_check = cancel_check
+        self.skill_executor = skill_executor
 
     @staticmethod
     def _active_policy_lineno(source_lines: list[str]) -> tuple[int, str]:
@@ -924,6 +1165,15 @@ class CampaignPolicyRunner:
         completed_stages = 0
         loop_ticks = 0
         navigation_reached = False
+        stage_history: list[dict[str, Any]] = []
+
+        def remember_stage(tool: str, request: str, res: dict[str, Any]) -> None:
+            stage_history.append({
+                'tool': tool,
+                'request': request,
+                'status': res.get('status'),
+                'summary': res.get('summary') or res.get('error') or '',
+            })
 
         def append_event(tool: str, args: dict[str, Any], output: dict[str, Any], lineno: int, line_text: str) -> None:
             nonlocal call_seq
@@ -1008,6 +1258,8 @@ class CampaignPolicyRunner:
             use_x = float(x_m) if x_m is not None else pose.x_m
             use_y = float(y_m) if y_m is not None else pose.y_m
             use_yaw = float(yaw_deg) if yaw_deg is not None else pose.yaw_deg
+            # Without SLAM (confidence 0) the default pose is a placeholder, not a map position.
+            localized = (x_m is not None and y_m is not None) or pose.confidence > 0.0
             hit = self.semantic_memory.upsert(
                 text,
                 floor=use_floor,
@@ -1017,11 +1269,13 @@ class CampaignPolicyRunner:
                 room=room,
                 tags=tags,
                 robot_id=self.robot_id,
+                localized=localized,
             )
             res = {'ok': True, 'record': hit.to_dict()}
             append_event(
                 'save_memory',
-                {'text': text, 'floor': use_floor, 'x_m': use_x, 'y_m': use_y, 'yaw_deg': use_yaw, 'room': room},
+                {'text': text, 'floor': use_floor, 'x_m': use_x, 'y_m': use_y, 'yaw_deg': use_yaw, 'room': room,
+                 'localized': localized},
                 res,
                 lineno,
                 line_text,
@@ -1078,6 +1332,7 @@ class CampaignPolicyRunner:
             res = {**exec_res, 'route': route.to_dict(), 'stage_dir': str(stage_dir)}
             if res.get('ok') is True:
                 completed_stages += 1
+            remember_stage('navigate_to', f'{floor} ({x_m}, {y_m})', {**res, 'summary': res.get('error') or ''})
             append_event(
                 'navigate_to',
                 {'floor': floor, 'x_m': x_m, 'y_m': y_m, 'yaw_deg': yaw_deg},
@@ -1125,9 +1380,11 @@ class CampaignPolicyRunner:
                 highlighted_policy=highlighted,
                 limits=limits,
                 stage_dir=stage_dir,
+                history=list(stage_history),
             )
             if res.get('ok') is True:
                 completed_stages += 1
+            remember_stage('inspect_scene', question, res)
             append_event(
                 'inspect_scene',
                 {'question': question, 'max_actions': max_actions, 'max_steps': max_steps, 'max_seconds': max_seconds},
@@ -1161,9 +1418,11 @@ class CampaignPolicyRunner:
                 highlighted_policy=highlighted,
                 limits=limits,
                 stage_dir=stage_dir,
+                history=list(stage_history),
             )
             if res.get('ok') is True:
                 completed_stages += 1
+            remember_stage('act', subgoal, res)
             if bool(res.get('arm_engaged')):
                 navigation_reached = True
             append_event(
@@ -1178,6 +1437,75 @@ class CampaignPolicyRunner:
             if res.get('status') == 'interrupted':
                 raise _PolicyCancelledHalt(str(res.get('summary') or 'Manipulation interrupted'))
             return res
+
+        def reject_arguments(tool: str, args: dict[str, Any], error: str) -> dict[str, Any]:
+            lineno, line_text = self._active_policy_lineno(source_lines)
+            res = {'ok': False, 'status': 'invalid_arguments', 'error': error}
+            append_event(tool, args, res, lineno, line_text)
+            return res
+
+        def run_skill_stage(tool: str, args: dict[str, Any], request: str) -> dict[str, Any]:
+            nonlocal stage_seq, completed_stages, navigation_reached
+            check_cancelled()
+            lineno, line_text = self._active_policy_lineno(source_lines)
+            if self.skill_executor is None:
+                res = {
+                    'ok': False,
+                    'status': 'skills_unavailable',
+                    'error': 'Host skills are not configured (live: --kinematics-config and --skills-config; '
+                             'locate also needs --camera-config). Use act() instead.',
+                }
+                append_event(tool, args, res, lineno, line_text)
+                return res
+            stage_seq += 1
+            stage_dir = stages_dir / f'{stage_seq:04d}_L{lineno:03d}_{tool}'
+            res = self.skill_executor.run_skill(robot_id=self.robot_id, skill=tool, args=dict(args), stage_dir=stage_dir)
+            if res.get('ok') is True:
+                completed_stages += 1
+            if bool(res.get('arm_engaged')):
+                navigation_reached = True
+            remember_stage(tool, request, res)
+            append_event(tool, args, res, lineno, line_text)
+            if res.get('status') == 'uncertain_execution':
+                raise _UncertainExecutionHalt(tool, str(res.get('error') or f'Uncertain {tool} execution'))
+            if res.get('status') == 'interrupted':
+                raise _PolicyCancelledHalt(str(res.get('error') or f'{tool} interrupted'))
+            return res
+
+        def api_locate(label: str) -> dict[str, Any]:
+            if not isinstance(label, str) or not label.strip() or len(label.strip()) > 80:
+                return reject_arguments('locate', {'label': label}, 'locate(label) needs a non-empty label (<= 80 chars)')
+            return run_skill_stage('locate', {'label': label.strip()}, label.strip())
+
+        def api_pick(xyz_m: Any) -> dict[str, Any]:
+            xyz = _xyz_argument(xyz_m)
+            if xyz is None:
+                return reject_arguments('pick', {'xyz_m': xyz_m}, 'pick(xyz_m) needs [x, y, z] metres in arm_base within 1 m')
+            return run_skill_stage('pick', {'xyz_m': xyz}, str(xyz))
+
+        def api_place(xyz_m: Any) -> dict[str, Any]:
+            xyz = _xyz_argument(xyz_m)
+            if xyz is None:
+                return reject_arguments('place', {'xyz_m': xyz_m}, 'place(xyz_m) needs [x, y, z] metres in arm_base within 1 m')
+            return run_skill_stage('place', {'xyz_m': xyz}, str(xyz))
+
+        def api_home_arm() -> dict[str, Any]:
+            return run_skill_stage('home_arm', {}, 'home')
+
+        def api_drive(forward_m: float = 0.0, left_m: float = 0.0, turn_deg: float = 0.0) -> dict[str, Any]:
+            args = {'forward_m': forward_m, 'left_m': left_m, 'turn_deg': turn_deg}
+            values = [_finite_number(value) for value in (forward_m, left_m, turn_deg)]
+            if any(value is None for value in values):
+                return reject_arguments('drive', args, 'drive() arguments must be finite numbers')
+            forward, left, turn = values
+            if abs(forward) > MAX_DRIVE_M or abs(left) > MAX_DRIVE_M or abs(turn) > MAX_TURN_DEG:
+                return reject_arguments(
+                    'drive', args, f'drive() is limited to |forward_m|,|left_m| <= {MAX_DRIVE_M} and |turn_deg| <= {MAX_TURN_DEG:g}'
+                )
+            if max(abs(forward), abs(left)) < 0.005 and abs(turn) < 0.5:
+                return reject_arguments('drive', args, 'drive() needs a displacement of at least 5 mm or 0.5 deg')
+            args = {'forward_m': forward, 'left_m': left, 'turn_deg': turn}
+            return run_skill_stage('drive', args, f'forward {forward:+.2f} m, left {left:+.2f} m, turn {turn:+.0f} deg')
 
         def api_finish(summary: str, **details: Any) -> dict[str, Any]:
             lineno, line_text = self._active_policy_lineno(source_lines)
@@ -1228,6 +1556,11 @@ class CampaignPolicyRunner:
             'navigate_to_place': api_navigate_to_place,
             'inspect_scene': api_inspect_scene,
             'act': api_act,
+            'locate': api_locate,
+            'pick': api_pick,
+            'place': api_place,
+            'home_arm': api_home_arm,
+            'drive': api_drive,
             'finish': api_finish,
             'block': api_block,
         }

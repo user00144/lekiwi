@@ -69,7 +69,7 @@
               <div class="row-3">
                 <div class="field">
                   <label for="max-actions">Actions</label>
-                  <input id="max-actions" type="number" min="1" max="100" value="20" required>
+                  <input id="max-actions" type="number" min="1" max="300" value="20" required>
                 </div>
                 <div class="field">
                   <label for="max-steps">Steps</label>
@@ -99,6 +99,7 @@
                 <div class="preset-btns">
                   <button type="button" class="link-btn" id="preset-visual-btn" title="Insert SLAM-free camera inspection + grasp policy">Visual Template</button>
                   <button type="button" class="link-btn" id="preset-memory-btn" title="Insert SLAM/ChromaDB fallback policy">Memory Template</button>
+                  <button type="button" class="link-btn" id="preset-skill-btn" title="Insert locate/drive/pick host-skill policy (needs --skills-config and --camera-config)">Skill Template</button>
                 </div>
               </div>
               <textarea id="policy-source" class="code-editor" rows="12" maxlength="12000" spellcheck="false" required></textarea>
@@ -123,6 +124,15 @@
           </form>
 
           <p class="safety-footnote" id="mode-footnote">Stop prevents subsequent commands; an already-dispatched slice finishes its bounded duration.</p>
+        </section>
+
+        <section class="card memory-card">
+          <div class="card-head">
+            <h2>로봇 기억 <span class="hint">plan-act 실행이 쌓은 교훈·보정</span></h2>
+          </div>
+          <div id="memory-body" class="memory-body">
+            <p class="empty-msg">아직 기억이 없습니다.</p>
+          </div>
         </section>
 
         <section class="card history-card">
@@ -238,7 +248,7 @@
         <!-- 3. Policy Cursor & Step-by-Step Reasoning Inspector -->
         <section class="card inspector-card">
           <div class="card-head">
-            <h2 id="inspector-title">Reasoning &amp; Tool Call Inspector</h2>
+            <h2 id="inspector-title">판단 흐름 <span class="hint">단계마다 무엇을 보고 왜 그렇게 했는지, 그 결과</span></h2>
             <span class="chip neutral" id="decision-tool-badge">idle</span>
           </div>
 
@@ -260,30 +270,18 @@
             </div>
           </div>
 
-          <!-- Step-by-Step Planner Reasoning (Direct Task OR Selected Stage inside Policy.py) -->
+          <!-- Decision timeline: every planner turn of the run (or selected policy stage), oldest first -->
           <div id="decision-inspector" class="decision-inspector">
-            <div class="step-nav-bar" id="step-nav-bar" hidden>
-              <span class="subhead-inline">Planner Steps:</span>
-              <div class="step-pills" id="step-pills"></div>
-            </div>
-            <div class="decision-grid">
-              <div>
-                <p class="subhead">Reasoning <span class="hint" id="decision-feedback-tag"></span></p>
-                <p id="decision-reason" class="body-copy muted">No planner decision recorded yet.</p>
-                <p class="subhead mt-sm">Expected Outcome &amp; Observed Evidence</p>
-                <p id="decision-evidence" class="body-copy muted">—</p>
-              </div>
-              <div>
-                <p class="subhead">Plan</p>
-                <ol id="decision-plan" class="plan-ol">
-                  <li class="muted">—</li>
-                </ol>
+            <div class="timeline-toolbar">
+              <span class="muted-sm" id="decision-count">판단 기록 없음</span>
+              <div class="timeline-tools">
+                <label class="check-inline"><input type="checkbox" id="show-all-plans"> 모든 계획 펼치기</label>
+                <button type="button" class="btn ghost sm" id="timeline-bottom-btn">최신 판단으로 ↓</button>
               </div>
             </div>
-            <details id="raw-cmd-details" class="compact-details mt-sm" hidden>
-              <summary>Selected Step Tool Call / Command JSON</summary>
-              <pre id="raw-cmd-pre" class="code-block"></pre>
-            </details>
+            <ol id="decision-timeline" class="decision-timeline">
+              <li class="empty-msg">아직 기록된 판단이 없습니다.</li>
+            </ol>
           </div>
         </section>
 
@@ -291,14 +289,14 @@
         <section class="card timeline-card">
           <div class="card-head">
             <div>
-              <h2>Full Trace <span class="hint">Click any row to inspect full args / output / JSON</span></h2>
+              <h2>전체 기록 <span class="hint">줄을 누르면 인자·결과·원본 JSON을 펼칩니다 (최신이 위)</span></h2>
             </div>
             <div class="trace-controls">
               <div class="segmented" role="group" aria-label="Trace filter">
-                <button type="button" class="seg-btn active" data-filter="all">All</button>
-                <button type="button" class="seg-btn" data-filter="reasoning">Reasoning</button>
-                <button type="button" class="seg-btn" data-filter="tools">Tool Calls</button>
-                <button type="button" class="seg-btn" data-filter="alerts">Warnings</button>
+                <button type="button" class="seg-btn active" data-filter="all">전체</button>
+                <button type="button" class="seg-btn" data-filter="reasoning">판단</button>
+                <button type="button" class="seg-btn" data-filter="tools">명령·도구</button>
+                <button type="button" class="seg-btn" data-filter="alerts">경고</button>
               </div>
               <span class="mono muted-sm" id="event-count">0 items</span>
             </div>

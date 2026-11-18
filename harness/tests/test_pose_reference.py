@@ -118,7 +118,7 @@ class PoseReferenceTest(unittest.TestCase):
     def test_invalid_measured_states_never_enter_ik_or_clip_seed(self):
         cases = []
         packet = observation()
-        packet['observation']['ego']['joints']['shoulder_lift'] = -100.484
+        packet['observation']['ego']['joints']['shoulder_lift'] = -110.5  # >10 deg past URDF -100
         cases.append((packet, 'urdf_seed_out_of_range'))
         packet = observation()
         packet['observation']['ego']['joints']['elbow_flex'] = 100.

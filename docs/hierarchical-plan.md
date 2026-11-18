@@ -26,7 +26,21 @@ skill curation** from **deterministic policy execution and safety enforcement**:
    - Executes bounded `inspect_scene(...)` and `act(...)` subgoals with single-use `observation_id`
      leases, Pinocchio+OSQP 5-DoF `arm_base` IK (`kinematics.py`), `<= 10 deg` `motion_warning`
      continuation, bounded `<= 2` read-only reconciliations, and mandatory two-observation
-     completion verification.
+     completion verification. A successful episode ends as `completion_claim`; the campaign
+     executors map it to `ok: true` (`episode_stage_result`).
+   - With a skills config, `act(...)` runs the plan-act loop (`plan_loop.py`: Planning -> big
+     locate/pick/place/drive skills -> independent Verify) instead of the one-step loop.
+   - Every inner episode starts a fresh planner thread; its instruction carries the last few stage
+     results of the same policy run (`compose_stage_instruction`).
+4. **Deterministic Host Skills (`harness/src/harness/skill_session.py`, `skills.py`, `perception.py`)**:
+   - `locate(label)`: an isolated vision turn (`locator.py`) returns only a pixel box; the calibrated
+     front camera intersects it with the floor plane to give an `arm_base` grasp point and the IK
+     reachability of the pick hover/grasp points.
+   - `pick` / `place` / `home_arm`: one IK command per phase (<= 20 s) from the measured pose, wrist
+     roll held, swept-path dip check, gripper-hold checks after lift and before/after transport.
+   - `drive(forward_m, left_m, turn_deg)`: <= 1 s guarded base commands at 0.1 m/s and 30 deg/s.
+   - Each call is one stage (`stages/NNNN_LYYY_<skill>/`) through `EpisodeRunner.execute`, so the
+     runtime guard, freshness, calibration and reconciliation rules are unchanged.
 
 ```mermaid
 flowchart TD
@@ -36,6 +50,8 @@ flowchart TD
     Runner <-->|"search_memory / save_memory / mark_absent"| Chroma["ChromaDB\nSemanticMemoryStore"]
     Runner <-->|"plan_route / relocalize"| Topo["TopologicalMap +\nLocalizationProvider"]
     Runner -->|"inspect_scene / act / navigate_to"| Inner["Host-Owned EpisodeRunner\n(IK + Guarded ZMQ Lease)"]
+    Runner -->|"locate / pick / place / home_arm / drive"| Skills["Host Skill Session\n(calibrated camera XYZ + IK skills)"]
+    Skills -->|"EpisodeRunner.execute"| Inner
     Inner -->|"Artifacts: outcome.json, trace/events.jsonl, stages/"| Agent
 ```
 
@@ -133,6 +149,11 @@ SLAM is added later, control and high-rate sensor streaming are separated onto t
    Downstream blocks never execute.
 2. **Unverified Finish Rejection**: Calling `finish(...)` with zero completed robot stages records
    `task_success: false` (`termination_reason: "unverified_finish"`).
-3. **Privileged Key Sanitization**: Keys containing `success`, `reward`, `object_pose`, `raw_state`,
+3. **Skill argument bounds**: host skills reject malformed or out-of-range arguments before any
+   motion (`xyz_m` within 1 m of `arm_base`; `|forward_m|, |left_m| <= 0.5`, `|turn_deg| <= 90`) and
+   return `status: "invalid_arguments"`; without skill configs they return `skills_unavailable`.
+4. **SLAM-free memory**: `save_memory` without a global pose and without explicit `x_m`/`y_m`
+   stores `localized: false`; such coordinates are placeholders, not a place to navigate to.
+5. **Privileged Key Sanitization**: Keys containing `success`, `reward`, `object_pose`, `raw_state`,
    `ground_truth`, `privileged`, or simulator state names are stripped automatically when writing
    `source/policy-result.json`.

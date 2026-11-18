@@ -18,13 +18,16 @@ from starlette.applications import Starlette
 from starlette.responses import FileResponse, JSONResponse
 from starlette.routing import Route
 
-from .campaign.cli import build_default_sim_topology
+from .campaign.cli import build_default_sim_topology, plan_act_episode_fn, resolve_act_loop
 from .campaign.runner import (
+    STAGE_SUCCESS_STATUSES,
     CampaignPolicyRunner,
     LiveLocalizationProvider,
+    LiveSkillExecutor,
     PolicyValidationError,
     SimulatedCampaignWorld,
-    _inspect_stage_engagement,
+    compose_stage_instruction,
+    episode_stage_result,
     validate_and_compile_policy,
 )
 from .campaign.semantic_memory import SemanticMemoryStore
@@ -34,12 +37,15 @@ from .episode import EpisodeLimits, RunRecord, atomic_json, decode_content
 from .episode_runtime import run_episode
 from .gui_preview import PreviewInput, calculate_preview
 from .manual_xyz import ExecuteInput, ManualBusy, ManualXYZ, PrepareInput
+from .memory import EmbodimentMemory, LessonMemory, camera_key
 from .pose_reference import build_pose_reference
 from .tools import RobotTools
 
 
 DEFAULT_LIMITS = {'max_actions': 20, 'max_steps': 40, 'max_seconds': 300}
+PLAN_ACT_LIMITS = {'max_actions': 120, 'max_steps': 60, 'max_seconds': 1200}
 RUN_ID = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$')
+RESERVED_RUN_DIRS = frozenset({'memory'})  # RUNS_DIR/memory holds robot memory, not a run
 STAGE_DIR_NAME = re.compile(r'^[0-9]{4}_L[0-9]{3}_[A-Za-z0-9_]+$')
 LEG_DIR_NAME = re.compile(r'^leg_[0-9]{2}_[A-Za-z0-9_]+$')
 IMAGE_NAME = re.compile(r'^image-[0-9]+\.(?:jpg|jpeg|png)$')
@@ -49,7 +55,7 @@ MAX_EVENTS_BYTES = 8 * 1024 * 1024
 
 class LimitsInput(BaseModel):
     model_config = ConfigDict(extra='forbid', strict=True, allow_inf_nan=False)
-    max_actions: int = Field(ge=1, le=100)
+    max_actions: int = Field(ge=1, le=300)
     max_steps: int = Field(ge=1, le=200)
     max_seconds: float = Field(ge=1, le=3600)
 
@@ -184,23 +190,14 @@ class _CancellableStageBridge:
         if loop is not None and task is not None and not loop.is_closed():
             loop.call_soon_threadsafe(task.cancel)
 
-    def run_episode_sync(self, robot_id: str, instruction: str, *, run_dir: Path, limits: EpisodeLimits) -> dict[str, Any]:
+    def run_sync(self, make_coroutine, run_dir: Path) -> dict[str, Any]:
+        """Run one stage coroutine on a private loop that `request_cancel` can interrupt."""
         if self._cancel_event.is_set():
             return {'status': 'interrupted', 'detail': 'Stopped before stage dispatch'}
         loop = asyncio.new_event_loop()
-        options = {'kinematics_config': self._kinematics_config} if self._kinematics_config else {}
         try:
             asyncio.set_event_loop(loop)
-            coro = self._episode_fn(
-                self._server,
-                self._model,
-                robot_id,
-                instruction,
-                run_dir=run_dir,
-                limits=limits,
-                **options,
-            )
-            task = loop.create_task(coro)
+            task = loop.create_task(make_coroutine())
             with self._lock:
                 self._stage_loop = loop
                 self._stage_task = task
@@ -221,6 +218,15 @@ class _CancellableStageBridge:
                 self._stage_task = None
             asyncio.set_event_loop(None)
             loop.close()
+
+    def run_episode_sync(self, robot_id: str, instruction: str, *, run_dir: Path, limits: EpisodeLimits,
+                         episode_fn=None) -> dict[str, Any]:
+        options = {'kinematics_config': self._kinematics_config} if self._kinematics_config else {}
+        fn = episode_fn or self._episode_fn
+        return self.run_sync(
+            lambda: fn(self._server, self._model, robot_id, instruction, run_dir=run_dir, limits=limits, **options),
+            run_dir,
+        )
 
 
 class _GuiLiveNavExecutor:
@@ -249,7 +255,7 @@ class _GuiLiveNavExecutor:
             )
             ep_res = self._bridge.run_episode_sync(robot_id, instruction, run_dir=leg_dir, limits=self._limits)
             status = str(ep_res.get('status', 'host_error'))
-            if status not in ('completed', 'completion_claim'):
+            if status not in STAGE_SUCCESS_STATUSES:
                 return {
                     'ok': False,
                     'status': status,
@@ -268,8 +274,9 @@ class _GuiLiveNavExecutor:
 
 
 class _GuiLiveActionExecutor:
-    def __init__(self, bridge: _CancellableStageBridge):
+    def __init__(self, bridge: _CancellableStageBridge, act_episode_fn=None):
         self._bridge = bridge
+        self._act_episode_fn = act_episode_fn
 
     def run_subgoal(
         self,
@@ -280,31 +287,13 @@ class _GuiLiveActionExecutor:
         highlighted_policy: str,
         limits: EpisodeLimits,
         stage_dir: Path,
+        history: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        instruction = (
-            f'Active stage ({kind}): {subgoal}\n\n'
-            f'Policy context (`>>>` marks active call):\n{highlighted_policy}'
-        )
-        ep_res = self._bridge.run_episode_sync(robot_id, instruction, run_dir=stage_dir, limits=limits)
-        raw_status = str(ep_res.get('status', 'host_error'))
-        ok = raw_status in ('completed', 'completion_claim')
-        norm_status = 'completed' if ok else raw_status
-        engagement = _inspect_stage_engagement(stage_dir)
-        claim = ep_res.get('completion_claim') or {}
-        summary = str(claim.get('evidence') or claim.get('reason') or ep_res.get('detail') or norm_status)
-        return {
-            'ok': ok,
-            'status': norm_status,
-            'summary': summary,
-            'steps': int(ep_res.get('steps', 0)),
-            'action_attempts': int(ep_res.get('action_attempts', 0)),
-            'observations': int(ep_res.get('observations', 0)),
-            'reconciliation_attempts': int(ep_res.get('reconciliation_attempts', 0)),
-            'arm_moved': engagement['arm_moved'],
-            'gripper_moved': engagement['gripper_moved'],
-            'arm_engaged': engagement['arm_engaged'],
-            'run_dir': str(stage_dir),
-        }
+        instruction = compose_stage_instruction(kind, subgoal, highlighted_policy, history)
+        episode_fn = self._act_episode_fn if kind == 'act' else None
+        ep_res = self._bridge.run_episode_sync(robot_id, instruction, run_dir=stage_dir, limits=limits,
+                                               episode_fn=episode_fn)
+        return episode_stage_result(ep_res, stage_dir)
 
 
 class GuiController:
@@ -321,14 +310,27 @@ class GuiController:
         pose_file=None,
         topology=None,
         semantic_db=None,
+        skills_config=None,
+        camera_config=None,
+        act_loop='auto',
+        default_limits=None,
+        policy_episode_fn=None,
     ):
         self.server, self.robot_id, self.model = server, robot_id, model
+        self.default_limits = dict(default_limits or DEFAULT_LIMITS)
+        self.skills_config = Path(skills_config).expanduser().resolve() if skills_config else None
+        self.camera_config = Path(camera_config).expanduser().resolve() if camera_config else None
+        self.act_loop = resolve_act_loop(act_loop, self.skills_config)
+        if self.act_loop == 'plan-act' and not self.skills_config:
+            raise ValueError('act() through the plan-act loop needs a skills configuration')
         self.kinematics_config = Path(kinematics_config).expanduser().resolve() if kinematics_config else None
         self.pose_file = Path(pose_file).expanduser().resolve() if pose_file else None
         self.topology_path = Path(topology).expanduser().resolve() if topology else None
         self.semantic_db_path = Path(semantic_db).expanduser().resolve() if semantic_db else None
         if demo and self.kinematics_config is not None:
             raise ValueError('Demo mode does not accept a hardware kinematics configuration')
+        if self.skills_config is not None and self.kinematics_config is None:
+            raise ValueError('Host skills need a kinematics configuration')
         self.mode = 'demo' if demo else 'live'
         self.runs_dir = Path(runs_dir).resolve()
         self.runs_dir.mkdir(parents=True, exist_ok=True)
@@ -336,6 +338,8 @@ class GuiController:
             from .gui_demo import run_demo
             episode_fn = run_demo
         self.episode_fn = episode_fn or run_episode
+        # policy.py inspect_scene / navigation legs keep the step loop even when direct runs use plan-act.
+        self.policy_episode_fn = policy_episode_fn
         self.active_run_id = None
         self.task = None
         self.stopping = False
@@ -400,7 +404,7 @@ class GuiController:
             self.reference_busy = False
 
     def _run_path(self, run_id, *, exists=True):
-        if not RUN_ID.fullmatch(run_id) or run_id in ('.', '..'):
+        if not RUN_ID.fullmatch(run_id) or run_id in ('.', '..') or run_id in RESERVED_RUN_DIRS:
             raise FileNotFoundError('Invalid run ID')
         requested = self.runs_dir / run_id
         path = requested.resolve()
@@ -489,10 +493,11 @@ class GuiController:
 
     async def _run_policy(self, run_id: str, request: PolicyStartInput) -> None:
         path = self._run_path(run_id, exists=False)
+        model = request.model or self.model  # None = Codex default model, as in direct runs
         bridge = _CancellableStageBridge(
-            self.episode_fn,
+            self.policy_episode_fn or self.episode_fn,
             server=self.server,
-            model=request.model or 'gpt-5.4',
+            model=model,
             kinematics_config=self.kinematics_config,
         )
         self._policy_bridge = bridge
@@ -526,12 +531,26 @@ class GuiController:
                     localization=world,
                     navigation_executor=world,
                     action_executor=world,
+                    skill_executor=world,
                     cancel_check=bridge.cancelled,
                 )
             else:
                 localization = LiveLocalizationProvider(pose_file=self.pose_file)
                 nav_exec = _GuiLiveNavExecutor(bridge, localization)
-                act_exec = _GuiLiveActionExecutor(bridge)
+                act_exec = _GuiLiveActionExecutor(
+                    bridge,
+                    plan_act_episode_fn(self.skills_config, self.camera_config) if self.act_loop == 'plan-act' else None,
+                )
+                skill_exec = None
+                if self.skills_config is not None:
+                    skill_exec = LiveSkillExecutor(
+                        server=self.server,
+                        model=model,
+                        kinematics_config=self.kinematics_config,
+                        skills_config=self.skills_config,
+                        camera_config=self.camera_config,
+                        run_sync=bridge.run_sync,
+                    )
                 runner = CampaignPolicyRunner(
                     task_language=request.instruction,
                     robot_id=request.robot_id,
@@ -541,6 +560,7 @@ class GuiController:
                     localization=localization,
                     navigation_executor=nav_exec,
                     action_executor=act_exec,
+                    skill_executor=skill_exec,
                     cancel_check=bridge.cancelled,
                 )
             outcome = runner.run_policy_source(request.policy_source, path)
@@ -754,7 +774,8 @@ class GuiController:
                 if stage_name is not None:
                     if sdir.name == stage_name:
                         chosen_stage = (sdir.name, f'stages/{sdir.name}', sevents)
-                elif sevents or chosen_stage is None:
+                elif sevents or chosen_stage is None or not chosen_stage[2]:
+                    # Follow the latest stage, preferring one that has episode events.
                     chosen_stage = (sdir.name, f'stages/{sdir.name}', sevents)
 
         current_obs = None
@@ -836,7 +857,7 @@ class GuiController:
                     'robot_id': request.get('robot_id'),
                     'instruction': request.get('instruction'),
                     'model': request.get('model'),
-                    'limits': request.get('limits', DEFAULT_LIMITS),
+                    'limits': request.get('limits', self.default_limits),
                 },
                 'result': result,
                 'status': status,
@@ -877,7 +898,7 @@ class GuiController:
                 'robot_id': request.get('robot_id'),
                 'instruction': request.get('instruction'),
                 'model': model,
-                'limits': request.get('limits', DEFAULT_LIMITS),
+                'limits': request.get('limits', self.default_limits),
             },
             'result': result,
             'status': status,
@@ -889,11 +910,25 @@ class GuiController:
             'policy': None,
         }
 
+    def memory_view(self):
+        """Robot memory written by direct plan-act runs (RUNS_DIR/memory); read-only."""
+        try:
+            memory_dir = self.runs_dir / 'memory'
+            lessons = LessonMemory(memory_dir, self.robot_id)
+            camera = None
+            if self.camera_config is not None:
+                camera = camera_key(json.loads(self.camera_config.read_text(encoding='utf-8')))
+            return {'counts': lessons.counts(), 'lessons': lessons.recall(),
+                    'body': EmbodimentMemory(memory_dir, self.robot_id).summary(camera)}
+        except Exception as exc:
+            return {'error': f'{type(exc).__name__}: {exc}'}
+
     def snapshot(self):
         active_id = self.active_run_id
         candidates = []
         for path in self.runs_dir.iterdir():
-            if path.is_dir() and not path.is_symlink() and RUN_ID.fullmatch(path.name):
+            if (path.is_dir() and not path.is_symlink() and RUN_ID.fullmatch(path.name)
+                    and path.name not in RESERVED_RUN_DIRS):
                 candidates.append(path.name)
         if active_id is not None and active_id not in candidates:
             candidates.append(active_id)
@@ -934,8 +969,11 @@ class GuiController:
                 'server': self.server,
                 'robot_id': self.robot_id,
                 'model': self.model,
-                'limits': dict(DEFAULT_LIMITS),
+                'limits': dict(self.default_limits),
                 'kinematics_configured': self.kinematics_config is not None,
+                'skills_configured': self.skills_config is not None,
+                'camera_configured': self.camera_config is not None,
+                'act_loop': self.act_loop,
                 'slam_configured': self.pose_file is not None,
                 'topology_configured': self.topology_path is not None,
                 'navigation_mode': 'slam_enabled' if self.pose_file is not None else 'visual_only',
@@ -945,8 +983,10 @@ class GuiController:
                 'manual_xyz': 1 if self.mode == 'live' else 0,
                 'pose_capture': 1 if self.mode == 'live' else 0,
                 'policy_run': 1,
+                'host_skills': 1 if self.skills_config is not None and self.mode == 'live' else 0,
             },
             'pose_capture_busy': self.reference_busy,
+            'memory': self.memory_view(),
             'active_run_id': active_id,
             'runs': runs,
             'active': self.run_view(active_id) if active_id is not None else None,
@@ -1150,25 +1190,62 @@ def main():
     parser.add_argument('--pose-file', type=Path, default=None, help='Optional live SLAM pose JSON (omit for SLAM-free visual mode)')
     parser.add_argument('--topology', type=Path, default=None, help='Optional multi-floor TopologicalMap JSON')
     parser.add_argument('--semantic-db', type=Path, default=None, help='Optional ChromaDB spatial memory directory')
+    parser.add_argument('--skills-config', type=Path, default=None,
+                        help='Host skill settings (home/grasp/gripper): policy pick/place/home_arm/drive and plan-act')
+    parser.add_argument('--camera-config', type=Path, default=None,
+                        help='Calibrated front camera: policy locate() and plan-act locate (bbox -> XYZ)')
+    parser.add_argument('--loop', choices=('auto', 'step', 'plan-act'), default='auto',
+                        help='Direct runs: auto (default) = plan-act when --skills-config is given, else step; '
+                             'step = one small action per decision; plan-act = Planning -> big-skill Action Loop -> '
+                             'Verify/replan with robot memory')
+    parser.add_argument('--act-loop', choices=('auto', 'step', 'plan-act'), default='auto',
+                        help='policy.py act(): auto = plan-act when --skills-config is given, else step')
+    parser.add_argument('--experience', type=Path, default=None,
+                        help='Direct plan-act runs: experience JSONL (default: RUNS_DIR/experience.jsonl)')
     args = parser.parse_args()
     if not 1 <= args.port <= 65535:
         parser.error('--port must be 1..65535')
-    if args.demo and args.kinematics_config:
-        parser.error('--demo cannot use --kinematics-config')
+    if args.demo and (args.kinematics_config or args.skills_config):
+        parser.error('--demo cannot use --kinematics-config or --skills-config')
+    if args.skills_config and not args.kinematics_config:
+        parser.error('--skills-config needs --kinematics-config')
+    if args.loop == 'auto':
+        args.loop = 'plan-act' if args.skills_config else 'step'
+    episode_fn, limits = None, None
+    if args.loop == 'plan-act':
+        if not args.skills_config:
+            parser.error('--loop plan-act needs --kinematics-config and --skills-config')
+        from functools import partial
+        from .plan_loop import run_plan_episode
+        episode_fn = partial(run_plan_episode, skills_config=args.skills_config, camera_config=args.camera_config,
+                             experience_path=args.experience or args.runs_dir / 'experience.jsonl')
+        limits = PLAN_ACT_LIMITS
+    if args.act_loop == 'plan-act' and not args.skills_config:
+        parser.error('--act-loop plan-act needs --kinematics-config and --skills-config')
     controller = GuiController(
         args.server,
         args.robot_id,
         args.runs_dir,
         args.model,
         args.demo,
+        episode_fn=episode_fn,
         kinematics_config=args.kinematics_config,
         pose_file=args.pose_file,
         topology=args.topology,
         semantic_db=args.semantic_db,
+        skills_config=args.skills_config,
+        camera_config=args.camera_config,
+        act_loop=args.act_loop,
+        default_limits=limits,
+        policy_episode_fn=run_episode if args.loop == 'plan-act' else None,
     )
     import uvicorn
     nav_label = 'SLAM pose file' if controller.pose_file else 'SLAM-free visual mode'
-    print(f'LeKiwi console: http://127.0.0.1:{args.port} ({controller.mode}, {nav_label})', flush=True)
+    skills_label = (f'host skills on, act() loop {controller.act_loop}'
+                    + (', locate on' if controller.camera_config else ', locate off (no --camera-config)')
+                    if controller.skills_config else 'host skills off')
+    print(f'LeKiwi console: http://127.0.0.1:{args.port} ({controller.mode}, {nav_label}, direct loop {args.loop}, '
+          f'{skills_label})', flush=True)
     uvicorn.run(create_app(controller, port=args.port), host='127.0.0.1', port=args.port)
 
 

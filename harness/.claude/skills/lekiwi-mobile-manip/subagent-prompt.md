@@ -21,6 +21,8 @@ MODE:              <live | sim>
 ROBOT_ID:          <robot id, default kiwi-01>
 SERVER:            <ZeroMQ router, default tcp://127.0.0.1:5556>
 KINEMATICS_CONFIG: <optional path to SO-101 kinematics JSON, or empty>
+SKILLS_CONFIG:     <optional path to host skill JSON (home/grasp/gripper), e.g. outputs/kinematics/skills-kiwi-01.json>
+CAMERA_CONFIG:     <optional path to calibrated front camera JSON, e.g. outputs/kinematics/camera-front-kiwi-01.json>
 POSE_FILE:         <optional path to live SLAM pose JSON, or empty for SLAM-free visual mode>
 SEMANTIC_DB:       <path to ChromaDB directory, e.g. $RUN_ROOT/lekiwi/semantic-db>
 TOPOLOGY_JSON:     <optional path to TopologicalMap JSON, e.g. $RUN_ROOT/lekiwi/topology.json>
@@ -125,7 +127,9 @@ mem  = search_memory(query, floor=None, top_k=3)
                             # -> {"ok": True, "count": int, "hits": [{"record_id", "score",
                             #     "text", "floor", "x_m", "y_m", "yaw_deg", "room", ...}]}
 saved = save_memory(text, floor=None, x_m=None, y_m=None, yaw_deg=None, room="", tags=())
-                            # -> defaults floor/x_m/y_m/yaw_deg to current get_pose() if omitted
+                            # -> defaults floor/x_m/y_m/yaw_deg to current get_pose() if omitted;
+                            #    record["localized"] is False when saved without SLAM and without
+                            #    explicit x_m/y_m (the coordinates are then a placeholder, not a place)
 marked = mark_absent(record_id_or_query, floor=None, note="not_found")
                             # -> {"ok": bool, "updated": int}; prevents revisiting stale hits
 
@@ -141,11 +145,38 @@ nav  = navigate_to_place(place, floor=None)
 obs  = inspect_scene(question, max_actions=2, max_steps=6, max_seconds=45.0)
                             # -> short visual check / camera sweep; returns {"ok": bool,
                             #    "status": str, "summary": str, "observations": int, ...}
+                            #    NOT read-only: the inner loop may spend up to max_actions moves
 manip = act(subgoal, max_actions=12, max_steps=24, max_seconds=120.0)
                             # -> closed-loop holonomic base + 5-DoF SO-101 arm/Cartesian IK +
                             #    gripper + mandatory two-observation completion verification;
                             #    returns {"ok": bool, "status": str, "summary": str,
                             #    "arm_moved": bool, "gripper_moved": bool, "arm_engaged": bool, ...}
+                            #    With SKILLS_CONFIG the default inner loop is plan-act (Planning ->
+                            #    big locate/pick/drive skills -> Verify); give it max_seconds >= 240.
+                            #    Each stage sees a short list of earlier stage results of this run.
+
+# Deterministic Host Skills (need KINEMATICS_CONFIG + SKILLS_CONFIG; locate also CAMERA_CONFIG)
+# No planner model decides these motions. Each call is one guarded stage (stages/NNNN_LYYY_<skill>/);
+# without the configs they return {"ok": False, "status": "skills_unavailable"}.
+loc  = locate(label)        # -> read-only. A vision model boxes `label` in the CURRENT front image and
+                            #    the calibrated camera turns the box into the floor grasp point:
+                            #    {"ok": found, "found": bool, "xyz_m": [x, y, z] (arm_base m),
+                            #     "reachable": bool (pick IK hover+grasp), "horizontal_distance_m",
+                            #     "xy_change_per_3px_m", "in_calibrated_region", "confidence", "note"}
+                            #    Only for objects resting on the floor; arm at home so it does not
+                            #    hide the view. The floor is visible only beyond ~x=0.25 m.
+grasp = pick(xyz_m)         # -> open, hover, descend, close, lift: one IK command per phase (<= 20 s).
+                            #    {"ok", "grasp_fk_xyz_m", "gripper_after_close",
+                            #     "object_between_jaws_likely", ...}; fails if the jaws are empty after lift
+put  = place(xyz_m)         # -> hover, descend, open, retreat (requires an object between the jaws)
+home = home_arm()           # -> arm to the recorded home pose (raised, front view clear)
+drv  = drive(forward_m=0.0, left_m=0.0, turn_deg=0.0)
+                            # -> base displacement at 0.1 m/s and 30 deg/s, split into <= 1 s guarded
+                            #    commands; |forward_m|, |left_m| <= 0.5, |turn_deg| <= 90. Commanded,
+                            #    not measured: every earlier locate() xyz is stale afterwards.
+                            #    The host does not check clearance; look at the front image first.
+# Floor reach of pick is roughly x 0.17..0.30 m, |y| <= 0.06 m in arm_base. A target at xyz_m can be
+# brought to about (0.27, 0) with drive(forward_m=x - 0.27, left_m=y), then locate() again.
 
 # Terminal Outcomes (halt policy immediately and record outcome.json)
 finish(summary, **details)  # -> marks task_success=True (requires >=1 completed robot stage)
@@ -194,6 +225,8 @@ uv run harness-campaign run \
   ${TOPOLOGY_JSON:+--topology "$TOPOLOGY_JSON"} \
   ${POSE_FILE:+--pose-file "$POSE_FILE"} \
   ${KINEMATICS_CONFIG:+--kinematics-config "$KINEMATICS_CONFIG"} \
+  ${SKILLS_CONFIG:+--skills-config "$SKILLS_CONFIG"} \
+  ${CAMERA_CONFIG:+--camera-config "$CAMERA_CONFIG"} \
   > "$TRIAL_DIR/attempts/$A.log" 2>&1
 ```
 
@@ -205,9 +238,10 @@ uv run harness-campaign run \
 3. `$TRIAL_DIR/attempts/$A/logs/policy.stdout`: ordered `print()` diagnostics up to the last call.
 4. `$TRIAL_DIR/attempts/$A/trace/events.jsonl`: every primitive call with its active `lineno`,
    `highlighted_policy` (`>>>` cursor), inputs, and outputs.
-5. `$TRIAL_DIR/attempts/$A/stages/<NNNN>_L<YY>_<tool>/`: for any `act` or `inspect_scene` stage,
-   inspect `result.json`, `events.jsonl` (`ik_result`, `rejection_feedback`, `motion_warning`,
-   `motion_failure_feedback`), and `observations/*.jpg` (front + wrist camera JPEGs).
+5. `$TRIAL_DIR/attempts/$A/stages/<NNNN>_L<YY>_<tool>/`: for any `act`, `inspect_scene` or host
+   skill stage, inspect `result.json` (host skills: `skill_result`, `primitives`), `events.jsonl`
+   (`ik_result`, `rejection_feedback`, `motion_warning`, `motion_failure_feedback`, `locate_answer`),
+   and `observations/*.jpg` (front + wrist camera JPEGs).
 
 When `task_success` first turns `true`, run **at most two** unchanged repeats to observe stability,
 then stop and return your remaining attempt budget unspent.
@@ -222,6 +256,9 @@ then stop and return your remaining attempt budget unspent.
 | **SLAM-Free Visual Mode** | `get_pose()` returns `confidence: 0.0`; `navigate_to` returns `localization_unavailable` | Skip `navigate_to` completely; scan with `inspect_scene(...)` and drive/approach visually inside `act(...)` |
 | **Stale ChromaDB Hit** | `search_memory` returns a hit, `navigate_to` arrives `ok: true`, but `inspect_scene` finds an empty counter | Call `mark_absent(hit["record_id"], note="empty_on_arrival")`, search next candidate room/waypoint, and `save_memory(...)` once found |
 | **Target Too Far for Local `act()`** | `act()` ends `blocked` because target is visible across the room (`> 1.2 m`) or occluded | Navigate closer via `navigate_to(...)` (if SLAM active) or run a dedicated short visual approach `act("drive closer until <target> fills wrist/front view")` before grasping |
+| **Located but `reachable: false`** | `locate()` returns `found: true`, `reachable: false`, `xyz_m[0]` beyond ~0.30 m | `drive(forward_m=min(0.3, x - 0.27), left_m=y)` then `locate()` again; never `pick()` a stale xyz after any drive |
+| **`locate()` not found / `in_calibrated_region: false`** | `found: false` (see `note`) or xyz outside the calibrated floor patch | `home_arm()` so the arm does not hide the view; turn-scan with `drive(turn_deg=30)`; treat out-of-region xyz as approximate and re-locate after moving closer |
+| **`skills_unavailable`** | host skill returns `status: "skills_unavailable"` | The run was started without `--skills-config`/`--camera-config`; fall back to `act()` or ask the operator |
 | **5-DoF IK / Swept-Path Rejection** | Stage `events.jsonl` shows `ik_no_solution` or `swept_path` z-dip rejection on SO-101 `arm_base` target | Do **not** invent rigid standoff numbers in `policy.py`; phrase the `act()` subgoal so the inner planner steps the holonomic base/yaw slightly closer and retries Cartesian/joint grasp |
 | **Small Arm Residual (`motion_warning`)** | Stage `events.jsonl` records `motion_warning` (`<= 10 deg` error) with verified held pose | Normal under gravity/contact; inner `EpisodeRunner` continues from measured joints automatically — ensure `max_steps` is not set too tight (give `act()` at least 16–24 steps) |
 | **Partial Stall (`motion_failure_feedback`)** | Stage triggers `reconciliation_attempts` (`<= 2`) and `recovery_constraints` (`<= 40 deg`, `>= 5000 ms`, arm-only) | Clear contact first in a separate `act("retract arm safely upward within recovery constraints")` before re-attempting base or gripper motion |
