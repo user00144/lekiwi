@@ -1245,3 +1245,13 @@ select:focus {
   font-size: 12.5px;
   color: #334155;
 }
+
+.tl-card.phase-reflect { border-left-color: #9f1239; }
+.tl-phase.phase-reflect { background: #9f1239; }
+.reflection-text { white-space: pre-wrap; font-size: 12px; line-height: 1.45; max-height: 320px; overflow: auto;
+  background: rgba(127, 127, 127, .08); padding: 8px; border-radius: 6px; margin: 4px 0 0; }
+.tl-meta.aspect-error { color: #b91c1c; font-weight: 600; }
+.tl-card.phase-draft { border-left-color: #93c5fd; }
+.tl-phase.phase-draft { background: #60a5fa; }
+.tl-card.phase-recall { border-left-color: #0f766e; }
+.tl-phase.phase-recall { background: #0f766e; }

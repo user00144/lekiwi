@@ -14,6 +14,7 @@ from harness.memory import (
     EmbodimentMemory,
     FailureLedger,
     MemoryTracker,
+    ReflectionMemory,
     SkillLibrary,
     failure_signature,
     import_experience,
@@ -285,7 +286,7 @@ class PlanActMemoryIntegrationTest(unittest.IsolatedAsyncioTestCase):
                     return {'robot_id': context['robot_id'], 'observation_id': context['observation_id'],
                             'tool': tool, 'reason': f'scripted {tool}', 'expected': '', **values}
 
-                reviews = []
+                reviews, planning_reflections = [], []
 
                 class Planner:
                     def __init__(self, applied, fail=False, test=None):
@@ -294,6 +295,7 @@ class PlanActMemoryIntegrationTest(unittest.IsolatedAsyncioTestCase):
                     async def plan(self, context, images):
                         seen.append(context['memory']['skill_library'])
                         planning_ledgers.append(context['memory']['failure_ledger'])
+                        planning_reflections.append(context['memory']['reflections'])
                         return {'robot_id': context['robot_id'], 'observation_id': context['observation_id'],
                                 'tool': 'plan', 'reason': 'scripted plan', 'expected_outcome': 'cube located close',
                                 'library_used': 'follow the verified workflow', 'skills_applied': self.applied,
@@ -301,12 +303,24 @@ class PlanActMemoryIntegrationTest(unittest.IsolatedAsyncioTestCase):
                                 'hypothesis_change': 'drive 0.1 m closer before judging reach' if self.test else '',
                                 'plan': [{'step': 'locate, drive, locate', 'skill': 'locate', 'success_check': 'x<0.35'}]}
 
+                    async def reflect(self, context, images):
+                        return {'robot_id': context['robot_id'], 'title': 'Gave up at 0.40 m without driving closer',
+                                'what_happened': 'Located the cube at x=0.40 m and declared it out of reach.',
+                                'why_failed': 'Reach ends near x=0.30 m; the base never moved.',
+                                'regret': 'I should have driven 0.1 m forward before judging reach.',
+                                'lessons': ['When a located object is beyond reach, drive closer and locate again.'],
+                                'next_hypothesis': 'One 0.1 m drive brings the cube within reach.',
+                                'evidence': 'locate x=0.40', 'confidence': 'high'}
+
                     async def review(self, context, images):
                         reviews.append((context, [label for label, _, _ in images]))
-                        return {'robot_id': context['robot_id'], 'failed_step_index': 0, 'failure_level': 'planning',
+                        return {'robot_id': context['robot_id'], 'failed_step_index': 0,
                                 'failure_type': 'wrong_plan', 'confidence': 'medium',
-                                'step_checks': [{'index': 0, 'expected': 'cube within reach', 'observed': 'x=0.40 m',
-                                                 'met': 'no'}],
+                                'inspection': {'verdict': 'error', 'finding': 'judged reach from 0.40 m',
+                                               'fix': 'drive closer, then judge reach'},
+                                'execution': {'verdict': 'ok', 'finding': 'locate worked', 'fix': ''},
+                                'planning': {'verdict': 'error', 'finding': 'gave up without moving the base',
+                                             'fix': 'drive before declaring out of reach'},
                                 'hypothesis': 'gave up from 0.40 m without driving closer; reach is x<0.30',
                                 'evidence': 'locate x=0.40 at step 0', 'next_try': 'drive 0.1 m forward, then locate',
                                 'prediction': 'second locate reads x about 0.30', 'approach': 'locate far, give up',
@@ -319,7 +333,7 @@ class PlanActMemoryIntegrationTest(unittest.IsolatedAsyncioTestCase):
                         if step == 1 and self.fail:
                             seen_ledger.append(context['failure_ledger'])
                             return base(context, 'failed', reason='scripted: cube judged out of reach',
-                                        failed_approach='locate from far away, then give up')
+                                        failed_approach='locate from far away, then give up', diagnosis='inspection')
                         if step == 1:
                             return base(context, 'drive', drive={'x': 0.1, 'y': 0.0, 'theta': 0.0, 'duration_ms': 1000})
                         if step == 2:
@@ -356,7 +370,8 @@ class PlanActMemoryIntegrationTest(unittest.IsolatedAsyncioTestCase):
                             ledger = FailureLedger(memory_dir, 'memory-mock')
                             results.append(await PlanActRunner(runner, Planner(applied, fail, test), skills, camera, None,
                                                                max_replans=0, library=library, embodiment=body,
-                                                               ledger=ledger).run())
+                                                               ledger=ledger,
+                                                               reflections=ReflectionMemory(memory_dir, 'memory-mock')).run())
 
                 failed, first, second = results
                 self.assertEqual(failed['status'], 'replan_budget', failed)
@@ -374,8 +389,18 @@ class PlanActMemoryIntegrationTest(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(review_context['steps'][0]['tool'], 'locate')
                 self.assertIn('expected', review_context['steps'][0])
                 self.assertEqual(review_context['host_facts']['calls'], 1)
+                self.assertEqual(review_context['steps'][0]['diagnosis'], 'inspection',
+                                 'the in-loop diagnosis is attached to the step it judged')
                 self.assertIn('ATTEMPT START: front', review_images)
                 self.assertEqual(failed['memory']['hypotheses'][0]['id'], 'H1')
+                # Episode reflection: Markdown memory written after the failed episode, read by the next PLANNING
+                self.assertEqual(failed['memory']['reflection']['title'], 'Gave up at 0.40 m without driving closer')
+                reflections_md = (memory_dir / 'reflections-memory-mock.md').read_text()
+                self.assertIn('**Regret.** I should have driven 0.1 m forward', reflections_md)
+                self.assertEqual(planning_reflections[0], [], 'nothing to read before the first episode')
+                self.assertIn('Gave up at 0.40 m', planning_reflections[1][0])
+                self.assertIn('drive closer and locate again', planning_reflections[1][0])
+                self.assertNotIn('reflection', first['memory'], 'a verified success writes no reflection')
                 ledgered = planning_ledgers[1][0]
                 self.assertEqual(ledgered['approach'], 'locate far, give up', 'the review names the approach')
                 self.assertEqual(ledgered['failure_type'], 'wrong_plan')

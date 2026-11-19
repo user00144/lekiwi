@@ -221,3 +221,57 @@ class GuardMonitorTest(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class LoadSagHoldTest(unittest.TestCase):
+    """A held cube makes the elbow settle ~2.2 deg short of every goal, including the hold goal itself."""
+    SAG_DEG = 2.2
+
+    def make_sagging_arm(self):
+        bus = SimpleNamespace(port='memory', port_handler=object(), close=Mock())
+        arm = ArmController({**load_config()['arm'], 'p_coefficient': None}, bus=bus)
+        packets = MemoryPackets(arm)
+        packets.follow_goals = False
+        packets.read2ByteTxRx = lambda port, mid, address: (packets.raw[packets.names[mid]], 0, 0)
+        bus.packet_handler = packets
+        for name, mid in ARM_JOINTS:
+            packets.registers[mid, 40] = 1
+            packets.registers[mid, 42] = packets.raw[name]
+        sag = round(self.SAG_DEG * 4095 / 360)
+        write = packets.write
+
+        def sagging_write(port, mid, address, value, size):
+            result = write(port, mid, address, value, size)
+            if address == 42 and packets.names[mid] == 'wrist_roll':
+                packets.raw['wrist_roll'] = value - sag  # gravity: the joint settles short of its goal
+            return result
+        packets.write = sagging_write
+        return arm, packets, FakeClock()
+
+    def test_post_miss_hold_accepts_a_stable_sag_and_reports_a_warning(self):
+        robot = OrinRobot(mock=True)
+        arm, packets, clock = self.make_sagging_arm()
+        robot.arm, robot.wheels = arm, Mock()
+        with patch('time.monotonic', side_effect=clock.monotonic), patch('time.sleep', side_effect=clock.sleep):
+            result = robot.execute_guarded({'action': 'move', 'joints': {'wrist_roll': 10.}, 'duration_ms': 1000})
+        self.assertEqual(result['outcome'], 'warning', result)
+        hold = result['arm_motion']['hold']
+        self.assertTrue(hold['verified'])
+        self.assertEqual(hold['goal_tolerance_deg'], 10.)
+        self.assertAlmostEqual(result['arm_motion']['hold_target_errors']['wrist_roll'], -2 * self.SAG_DEG, delta=.2)
+        # A later read-only re-check uses the tolerance recorded in the certificate.
+        with patch('time.monotonic', side_effect=clock.monotonic), patch('time.sleep', side_effect=clock.sleep):
+            self.assertTrue(arm.reconcile_hold(hold)['verified'])
+
+    def test_normal_hold_check_keeps_two_degrees(self):
+        arm, packets, clock = self.make_sagging_arm()
+        held = {'wrist_roll': packets.raw['wrist_roll']}
+        arm._pending.add(5)
+        arm._write(5, 42, held['wrist_roll'])  # goal written; the joint settles 2.2 deg short of it
+        with patch('time.monotonic', side_effect=clock.monotonic), patch('time.sleep', side_effect=clock.sleep):
+            with self.assertRaisesRegex(OSError, 'did not reach measured goal'):
+                arm.verify_hold(held, passive_reference={'gripper': 50.})
+            with self.assertRaisesRegex(OSError, 'goal tolerance'):
+                arm.verify_hold(held, goal_tolerance_deg=12.)
+            certificate = arm.verify_hold(held, goal_tolerance_deg=10.)
+        self.assertEqual(certificate['goal_tolerance_deg'], 10.)

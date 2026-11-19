@@ -37,7 +37,7 @@ from .episode import EpisodeLimits, RunRecord, atomic_json, decode_content
 from .episode_runtime import run_episode
 from .gui_preview import PreviewInput, calculate_preview
 from .manual_xyz import ExecuteInput, ManualBusy, ManualXYZ, PrepareInput
-from .memory import EmbodimentMemory, FailureLedger, SkillLibrary, camera_key
+from .memory import EmbodimentMemory, FailureLedger, ReflectionMemory, SkillLibrary, camera_key
 from .pose_reference import build_pose_reference
 from .tools import RobotTools
 
@@ -924,7 +924,10 @@ class GuiController:
             ledger = FailureLedger(memory_dir, self.robot_id)
             records = sorted(ledger.records, key=lambda r: (FailureLedger.STATUS_ORDER.get(r['status'], 9),
                                                             r['failures'][-1]['at']))
+            reflections = ReflectionMemory(memory_dir, self.robot_id)
+            recent = sorted(reflections.entries(), key=lambda entry: entry['at'], reverse=True)[:8]
             return {'library_dir': str(library.dir), 'frozen': self.freeze_library, 'counts': library.counts(),
+                    'reflections_file': str(reflections.path), 'reflections': recent,
                     'entries': [library.view(entry) for entry in entries[:20]],
                     'ledger_counts': ledger.counts(), 'ledger': [ledger.view(record) for record in records[:20]],
                     'body': EmbodimentMemory(memory_dir, self.robot_id).summary(camera)}

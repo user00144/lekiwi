@@ -22,7 +22,7 @@ EEPROM_LOCK = 55
 # Position P gain is set on the five arm joints only; the gripper keeps its own gain.
 GAIN_JOINTS = ("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll")
 ARM_FEEDBACK_TIMEOUT_S = 2.0
-ARM_CONTROL_REVISION = 'arm-gain-v7'
+ARM_CONTROL_REVISION = 'arm-gain-v8'  # v8: post-miss hold accepts a stable load sag up to the warning limit
 ARM_WARNING_MAX_ERROR_DEG = 10.0
 HOLD_STABILITY_INTERVAL_S = .2
 HOLD_STABILITY_SAMPLES = 3
@@ -353,15 +353,27 @@ class ArmController:
         self._pending.clear()
         return held_goals
 
-    def verify_hold(self, held_goals: dict, *, certificate=None, passive_reference=None):
+    def verify_hold(self, held_goals: dict, *, certificate=None, passive_reference=None, goal_tolerance_deg=2.):
         """Read-only certificate for a calibrated, healthy and stable measured hold.
 
         The initial hold writes only the interrupted command's pending joints.
-        This verification reads all six joints without enabling any idle motor,
-        changing a goal, or relaxing arm tolerances. An uncommanded, unpowered
-        gripper is checked as passive feedback, not as a powered position hold.
+        This verification reads all six joints without enabling any idle motor
+        or changing a goal. An uncommanded, unpowered gripper is checked as
+        passive feedback, not as a powered position hold.
+
+        ``goal_tolerance_deg``: allowed arm-joint distance from the written hold goal. A hold written
+        after a missed target under load (e.g. a held cube) settles again below its new goal by about
+        the same gravity sag, so that path passes up to ARM_WARNING_MAX_ERROR_DEG; stability (drift
+        <= 0.5 deg over >= 0.2 s), health, calibration and the 2 deg reference check are unchanged.
+        A re-check of a certificate uses the tolerance recorded in it.
         """
         names = {name for name, _ in ARM_JOINTS}
+        if certificate is not None and isinstance(certificate, dict):
+            goal_tolerance_deg = certificate.get('goal_tolerance_deg', 2.)
+        if (type(goal_tolerance_deg) not in (int, float) or not math.isfinite(goal_tolerance_deg)
+                or not 2. <= goal_tolerance_deg <= ARM_WARNING_MAX_ERROR_DEG):
+            raise OSError('Invalid arm hold goal tolerance')
+        goal_tolerance_deg = float(goal_tolerance_deg)
         if self.mock or not self.enabled or self.bus.port_handler is None:
             raise OSError('Arm hold requires acknowledged servo feedback')
         if (not isinstance(held_goals, dict) or not held_goals or not set(held_goals) <= names
@@ -450,8 +462,10 @@ class ArmController:
             goals = {name: raw_to_unit(raw, name, self.calibration[name]) for name, raw in expected.items()}
             for name in names:
                 tolerance = 5. if name == 'gripper' else 2.
-                if name not in passive and abs(measured[name] - goals[name]) > tolerance:
-                    raise OSError(f'{name}: arm hold did not reach measured goal')
+                goal_tolerance = 5. if name == 'gripper' else goal_tolerance_deg
+                if name not in passive and abs(measured[name] - goals[name]) > goal_tolerance:
+                    raise OSError(f'{name}: arm hold did not reach measured goal '
+                                  f'(error {measured[name] - goals[name]:+.2f}, tolerance {goal_tolerance:g})')
                 if name in passive and abs(measured[name] - passive_anchor[name]) > 2.:
                     raise OSError('Passive gripper moved from its pre-motion measured position')
                 if reference is not None and abs(measured[name] - reference[name]) > tolerance:
@@ -476,7 +490,8 @@ class ArmController:
                               'max_drift': drift, 'limits': drift_limits,
                               'settling_elapsed_s': stamps[-1] - verification_started,
                               'settling_timeout_s': HOLD_STABILITY_TIMEOUT_S},
-                'tolerances': {name: 5. if name == 'gripper' else 2. for name in names}}
+                'tolerances': {name: 5. if name == 'gripper' else 2. for name in names},
+                'goal_tolerance_deg': goal_tolerance_deg}
 
     def reconcile_hold(self, certificate):
         """Recheck an existing hold using reads only; never replay a movement."""
@@ -722,7 +737,8 @@ class ArmController:
                         'timestamp': time.time(), 'hold': None,
                     }
                     try:
-                        certificate = self.verify_hold(held_goals, passive_reference=before['joints'])
+                        certificate = self.verify_hold(held_goals, passive_reference=before['joints'],
+                                            goal_tolerance_deg=ARM_WARNING_MAX_ERROR_DEG)
                     except Exception as verification_failure:
                         self.last_motion['hold_error'] = str(verification_failure)
                         raise OSError('Arm monitor stop hold not verified; physical state unknown: '
@@ -737,7 +753,8 @@ class ArmController:
                     self.last_motion.update(recovery_reason=reason, progress=progress, warning_reason=warning_reason)
                     if eligible or warning_eligible:
                         try:
-                            certificate = self.verify_hold(held_goals, passive_reference=before['joints'])
+                            certificate = self.verify_hold(held_goals, passive_reference=before['joints'],
+                                            goal_tolerance_deg=ARM_WARNING_MAX_ERROR_DEG)
                         except Exception as verification_failure:
                             self.last_motion.update(recovery_reason='hold_verification_failed',
                                                     warning_reason='hold_verification_failed',

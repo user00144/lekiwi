@@ -40,6 +40,7 @@ import hashlib
 import json
 import math
 from pathlib import Path
+import re
 import statistics
 
 from .episode import atomic_json
@@ -293,8 +294,19 @@ class SkillLibrary:
             item.update(contrast=entry.get('contrast'), strategy=entry.get('strategy'), task=entry['task'])
         return item
 
+    def catalog(self):
+        """Every entry as one line, for the planner to choose from (no count limit, no similarity cut)."""
+        return [{'id': entry['id'], 'line': f'{entry["kind"]} · {_one_line(entry["trigger"], 200)} · task: '
+                                            f'{_one_line(entry["task"], 100)} · confirmed {len(entry["confirmed_in"])}'
+                                            + (' · stale' if self._stale(entry) else '')}
+                for entry in self.entries]
+
+    def pick(self, ids):
+        known = {entry['id']: entry for entry in self.entries}
+        return [self.view(known[entry_id]) for entry_id in ids if entry_id in known]
+
     def recall(self, task, labels=(), compact=False):
-        """Entries most relevant to ``task``: verified workflows first, then repairs; stale ones last."""
+        """Fallback when no planner chooses: entries most similar to ``task``, workflows then repairs."""
         def score(entry):
             overlap = len(set(labels) & set(entry.get('labels') or [])) * 0.3
             return (not self._stale(entry), similarity(entry['task'], task) + overlap, len(entry['confirmed_in']))
@@ -367,10 +379,13 @@ class FailureLedger:
                           f'{record.get("failure_type")} — {record["hypothesis"]}', '',
                           f'**Change to test it:** {record.get("next_try")}'
                           + (f' — expected: {record["prediction"]}' if record.get('prediction') else ''), '']
-            if review and review.get('step_checks'):
-                lines += ['**Step checks (last review):**', '', '| step | expected | observed | met |', '|---|---|---|---|']
-                lines += [f'| {check.get("index")} | {check.get("expected")} | {check.get("observed")} | {check.get("met")} |'
-                          for check in review['step_checks']]
+            if review and any(isinstance(review.get(aspect), dict) for aspect in ('inspection', 'execution', 'planning')):
+                lines.append('**Aspects (last review):**')
+                for aspect in ('inspection', 'execution', 'planning'):
+                    check = review.get(aspect) or {}
+                    if check:
+                        lines.append(f'- {aspect}: **{check.get("verdict")}** — {check.get("finding")}'
+                                     + (f' → fix: {check["fix"]}' if check.get('fix') else ''))
                 lines.append('')
             for test in record.get('hypothesis_tests', []):
                 lines.append(f'- Tested in {Path(test["run"]).name} attempt {test["attempt"]}: {test["result"]}'
@@ -421,8 +436,8 @@ class FailureLedger:
                    'approach': approach or None}
         if review:
             failure['review'] = {key: review.get(key) for key in (
-                'failure_type', 'failure_level', 'failed_step', 'hypothesis', 'evidence', 'next_try', 'prediction',
-                'confidence', 'step_checks', 'agrees_with_host', 'host_type_hint')}
+                'failure_type', 'aspects_in_error', 'inspection', 'execution', 'planning', 'failed_step', 'hypothesis',
+                'evidence', 'next_try', 'prediction', 'confidence', 'agrees_with_host', 'host_type_hint')}
         twin = None
         if same_as:
             twin = next((record for record in self.records if record['id'] == same_as and record['status'] != 'resolved'),
@@ -445,7 +460,7 @@ class FailureLedger:
         if review:  # the latest hypothesis of why this approach fails, untested until a later plan tries it
             twin.update(failure_type=review.get('failure_type'), hypothesis=review.get('hypothesis'),
                         next_try=review.get('next_try'), prediction=review.get('prediction'),
-                        hypothesis_status='untested')
+                        aspects_in_error=review.get('aspects_in_error') or [], hypothesis_status='untested')
         twin['status'] = 'blocked' if blocked else ('eliminated' if len(twin['failures']) >= 2 else 'tried')
         return twin['id'], twin['status']
 
@@ -497,6 +512,7 @@ class FailureLedger:
                 if kind:
                     types[kind] = types.get(kind, 0) + 1
             item.update(failure_type=record.get('failure_type'), failure_types=types,
+                        aspects_in_error=record.get('aspects_in_error') or [],
                         hypothesis=record['hypothesis'], next_try=record.get('next_try'),
                         hypothesis_status=record.get('hypothesis_status', 'untested'),
                         hypothesis_tests=[{key: test.get(key) for key in ('result', 'change')}
@@ -505,11 +521,46 @@ class FailureLedger:
             item.update(task=record['task'], snippet=record['snippet'])
         return item
 
+    @staticmethod
+    def _recall_group(record):
+        """0 open hypothesis (untested/inconclusive) · 1 hypothesis tested and not supported ·
+        2 eliminated/blocked without one · 3 other unresolved · 4 resolved."""
+        if record['status'] == 'resolved':
+            return 4
+        state = record.get('hypothesis_status') if record.get('hypothesis') else None
+        if state in ('untested', 'inconclusive'):
+            return 0
+        if state == 'not_supported':
+            return 1
+        return 2 if record['status'] in ('eliminated', 'blocked') else 3
+
+    def catalog(self):
+        """Every record as one line, for the planner to choose from (no count limit, no similarity cut)."""
+        lines = []
+        for record in self.records:
+            why = record.get('hypothesis') or record['approach']
+            lines.append({'id': record['id'], 'line': (
+                f'{record["status"]} · task: {_one_line(record["task"], 100)} · '
+                f'{record.get("failure_type") or record["signature"]} · {_one_line(why, 220)}'
+                + (f' · hypothesis {record.get("hypothesis_status")}' if record.get('hypothesis') else '')
+                + f' · failed {len(record["failures"])}x')})
+        return lines
+
+    def pick(self, ids):
+        known = {record['id']: record for record in self.records}
+        return [self.view(known[record_id]) for record_id in ids if record_id in known]
+
     def recall(self, task, compact=False):
-        """Approaches tried on similar tasks: unresolved first (eliminated, blocked, tried), then resolved."""
-        similar = [record for record in self.records if similarity(record['task'], task) >= LEDGER_SIMILAR_TASK]
-        similar.sort(key=lambda r: (self.STATUS_ORDER.get(r['status'], 9), -len(r['failures'])))
-        return [self.view(record, compact) for record in similar[:RECALL_LEDGER]]
+        """Fallback when no planner chooses: similar-task records, open hypotheses first."""
+        def last_failure(record):
+            try:
+                return datetime.fromisoformat(record['failures'][-1]['at']).timestamp()
+            except (KeyError, IndexError, TypeError, ValueError):
+                return 0.
+        scored = [(record, similarity(record['task'], task)) for record in self.records]
+        scored = [(record, score) for record, score in scored if score >= LEDGER_SIMILAR_TASK]
+        scored.sort(key=lambda item: (self._recall_group(item[0]), -round(item[1], 2), -last_failure(item[0])))
+        return [self.view(record, compact) for record, _ in scored[:RECALL_LEDGER]]
 
     def counts(self):
         counts = {status: 0 for status in self.STATUS_ORDER}
@@ -522,6 +573,95 @@ def camera_key(camera_config):
     """Locate offsets belong to one camera extrinsic calibration."""
     transform = (camera_config or {}).get('T_base_camera')
     return hashlib.sha256(json.dumps(transform).encode()).hexdigest()[:12] if transform else None
+
+
+RECALL_REFLECTIONS = 4
+_REFLECTION_META = re.compile(r'<!-- reflection (\{.*?\}) -->\n?')
+
+
+def _one_line(text, limit):
+    return ' '.join(str(text or '').split())[:limit]
+
+
+class ReflectionMemory:
+    """Episode reflections (Reflexion-style): after a failed episode the planner writes what happened,
+    why it failed, what it regrets and what to do next time. The Markdown file IS the memory: there is
+    no JSON behind it. Each entry is a '## ' heading followed by a '<!-- reflection {...} -->' line; the
+    text may be edited by people and is read back verbatim at PLANNING of similar tasks.
+    """
+
+    def __init__(self, memory_dir, robot_id, *, frozen=False):
+        self.path = Path(memory_dir) / f'reflections-{_safe_name(robot_id)}.md'
+        self.robot_id, self.frozen = robot_id, frozen
+
+    def entries(self):
+        if not self.path.exists():
+            return []
+        entries = []
+        for block in re.split(r'(?m)^(?=## )', self.path.read_text(encoding='utf-8')):
+            if not block.startswith('## '):
+                continue
+            meta, match = {}, _REFLECTION_META.search(block)
+            if match:
+                try:
+                    meta = json.loads(match.group(1))
+                except ValueError:
+                    meta = {}
+            title = block.splitlines()[0][3:].strip()
+            entries.append({'id': f'R{len(entries) + 1}', 'run': meta.get('run'), 'task': meta.get('task') or title,
+                            'outcome': meta.get('outcome'),
+                            'at': meta.get('at', ''), 'title': title,
+                            'text': _REFLECTION_META.sub('', block).strip()})
+        return entries
+
+    def catalog(self):
+        """Every reflection as one line (R1 = first in the file), for the planner to choose from."""
+        return [{'id': entry['id'], 'line': f'{entry["outcome"] or "note"} · {entry["at"][:10]} · task: '
+                                            f'{_one_line(entry["task"], 100)} · {_one_line(entry["title"], 200)}'}
+                for entry in self.entries()]
+
+    def pick(self, ids):
+        known = {entry['id']: entry for entry in self.entries()}
+        return [known[entry_id] for entry_id in ids if entry_id in known]
+
+    def recall(self, task, limit=RECALL_REFLECTIONS):
+        """Fallback when no planner chooses: reflections on similar tasks, newest first."""
+        similar = [entry for entry in self.entries() if similarity(entry['task'], task) >= LEDGER_SIMILAR_TASK]
+        similar.sort(key=lambda entry: entry['at'], reverse=True)
+        return similar[:limit]
+
+    def append(self, *, run, task, outcome, reflection, hypotheses=()):
+        """Append one episode's reflection; returns the entry title, or None when frozen."""
+        if self.frozen:
+            return None
+        title = _one_line(reflection.get('title'), 160) or 'Episode reflection'
+        meta = json.dumps({'run': str(run), 'task': _one_line(task, 400).replace('-->', '->'), 'outcome': outcome,
+                           'at': _now(), 'confidence': reflection.get('confidence')}, ensure_ascii=False)
+        lines = [f'## {title}', '', f'<!-- reflection {meta} -->',
+                 f'*{_now()[:16].replace("T", " ")} UTC · run `{Path(str(run)).name}` · outcome **{outcome}** · '
+                 f'confidence {reflection.get("confidence")}*', '',
+                 f'**Task.** {_one_line(task, 400)}', '',
+                 f'**What happened.** {reflection.get("what_happened", "")}', '',
+                 f'**Why it failed.** {reflection.get("why_failed", "")}', '',
+                 f'**Regret.** {reflection.get("regret", "")}', '']
+        lessons = [lesson for lesson in reflection.get('lessons') or [] if str(lesson).strip()]
+        if lessons:
+            lines += ['**Next time:**', *[f'- {_one_line(lesson, 400)}' for lesson in lessons], '']
+        if reflection.get('next_hypothesis'):
+            lines += [f'**Next hypothesis to test.** {reflection["next_hypothesis"]}', '']
+        if reflection.get('evidence'):
+            lines += [f'**Evidence.** {reflection["evidence"]}', '']
+        if hypotheses:
+            lines += ['**Hypotheses this episode:** ' + '; '.join(
+                f'{item.get("id")} {item.get("failure_type")} — {item.get("status")}: {_one_line(item.get("hypothesis"), 160)}'
+                for item in hypotheses), '']
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        header = '' if self.path.exists() else (
+            f'# Episode reflections ({self.robot_id})\n\nWritten by the robot after each failed episode and read back '
+            'at PLANNING of similar tasks. You may edit the text; keep each `<!-- reflection ... -->` line.\n\n')
+        with self.path.open('a', encoding='utf-8') as file:
+            file.write(header + '\n'.join(lines) + '\n')
+        return title
 
 
 class EmbodimentMemory:

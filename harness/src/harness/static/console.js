@@ -336,6 +336,27 @@
       body.appendChild(list);
     }
 
+    const reflections = memory.reflections || [];
+    if (reflections.length) {
+      body.appendChild(el('p', 'subhead mt-sm', '에피소드 회고 (왜 실패했나 · 다음 계획이 먼저 읽음)'));
+      const list = el('ul', 'memory-lessons');
+      for (const entry of reflections) {
+        const li = el('li');
+        const head = el('div', 'lesson-head');
+        head.appendChild(el('span', 'lesson-chip hypothesis', entry.outcome || '회고'));
+        head.appendChild(el('span', 'lesson-when', (entry.at || '').slice(0, 16).replace('T', ' ')));
+        li.appendChild(head);
+        li.appendChild(el('p', 'lesson-text', entry.title));
+        const details = el('details');
+        details.appendChild(el('summary', null, '전체 회고 (md)'));
+        details.appendChild(el('pre', 'reflection-text', entry.text));
+        li.appendChild(details);
+        list.appendChild(li);
+      }
+      body.appendChild(list);
+      if (memory.reflections_file) body.appendChild(el('p', 'lesson-text muted', memory.reflections_file));
+    }
+
     const ledger = memory.ledger || [];
     if (ledger.length) {
       body.appendChild(el('p', 'subhead mt-sm', '실패 장부 (해봤는데 안 된 접근)'));
@@ -587,17 +608,21 @@
     plan: '계획 수립', locate: '위치 찾기', pick: '집기', place: '놓기', move_to: 'XYZ 이동',
     home: '홈 복귀', home_arm: '홈 복귀', gripper: '그리퍼', drive: '주행', done: '루프 완료 선언',
     failed: '루프 실패 선언', confirm: '완료 확인', replan: '재계획 요청',
-    navigate_to: '경로 이동', inspect_scene: '장면 확인', act: '행동(act)', review: '실패 원인 가설',
+    navigate_to: '경로 이동', inspect_scene: '장면 확인', act: '행동(act)', review: '실패 원인 가설', reflect: '왜 실패했나', recall: '관련 기억 고르기',
   };
   const FAILURE_TYPE_KO = {
     locate_wrong: '위치 측정 틀림', out_of_reach: '팔이 닿지 않음', grasp_missed: '집기 실패',
     grip_lost: '옮기다 놓침', release_misaligned: '놓는 위치 어긋남', scene_disturbed: '다른 물체를 건드림',
     base_motion_error: '주행 오차', wrong_plan: '계획 자체가 틀림', robot_fault: '로봇 실행 불가', other: '기타',
   };
-  const LEVEL_KO = { execution: '실행 실패', planning: '계획 실패', environment: '환경 변화', unknown: '불명' };
+  const LEVEL_KO = { inspection: '관찰·판단 오류', execution: '실행 오류', planning: '계획 오류', unclear: '불명',
+    environment: '환경 변화', unknown: '불명' };
+  const ASPECT_KO = { inspection: '관찰·판단', execution: '실행', planning: '계획' };
+  const VERDICT_MARK = { error: '✗ 오류', ok: '✓ 정상', unclear: '? 불명' };
   const HYP_STATUS_KO = { untested: '아직 검증 안 함', not_supported: '바꿔봤지만 또 실패', inconclusive: '검증 중 중단', supported: '바꿔서 성공' };
   const MET_MARK = { yes: '✓', no: '✗', unclear: '?' };
-  const PHASE_KO = { planning: '계획', action: '행동', verify: '검증', review: '실패 분석', skill: '호스트 스킬' };
+  const PHASE_KO = { draft: '계획 초안', recall: '기억 검색', planning: '계획', action: '행동', verify: '검증',
+    review: '실패 분석', reflect: '에피소드 회고', skill: '호스트 스킬' };
   const FEEDBACK_KO = { initial: '첫 판단', progress: '진전 있음', stalled: '진전 없음', uncertain: '판단 유보' };
   const JOINT_SHORT = {
     shoulder_pan: 'pan', shoulder_lift: 'lift', elbow_flex: 'elbow', wrist_flex: 'w_flex', wrist_roll: 'w_roll',
@@ -753,6 +778,7 @@
         if (d.error) return { level: 'warn', text: `기억 갱신 실패: ${d.error}` };
         const parts = [];
         for (const h of d.hypotheses || []) parts.push(`가설 ${h.id} ${HYP_STATUS_KO[h.status] || h.status}`);
+        if (d.reflection) parts.push(`회고 기록: ${d.reflection.title}`);
         const v = d.verification || {};
         const failedChecks = Object.entries(v).filter(([k, val]) => val === false && k !== 'passed').map(([k]) => k);
         parts.push(v.passed ? '성공 검증 통과' : `성공 검증 실패${failedChecks.length ? ` (${failedChecks.join(', ')})` : ''}`);
@@ -830,12 +856,34 @@
     });
   }
 
+  function appendReflection(body, r) {
+    const rows = [
+      ['요약', r.title], ['무슨 일이 있었나', r.what_happened], ['왜 실패했나', r.why_failed],
+      ['후회', r.regret], ['다음에 시험할 가설', r.next_hypothesis], ['확신', r.confidence],
+    ];
+    for (const [label, text] of rows) {
+      if (!text) continue;
+      const row = el('div', 'tl-row');
+      row.appendChild(el('span', 'tl-label', label));
+      row.appendChild(el('span', 'tl-meta', text));
+      body.appendChild(row);
+    }
+    if (Array.isArray(r.lessons) && r.lessons.length) {
+      const row = el('div', 'tl-row');
+      row.appendChild(el('span', 'tl-label', '다음엔'));
+      const ul = el('ul', 'tl-outcomes');
+      for (const lesson of r.lessons) ul.appendChild(el('li', 'out-info', lesson));
+      row.appendChild(ul);
+      body.appendChild(row);
+    }
+  }
+
   function appendReview(body, r) {
     const rows = [
       ['처음 틀어진 단계', r.failed_step
         ? `${r.failed_step.index}번 ${TOOL_KO[r.failed_step.tool] || r.failed_step.tool}${r.failed_step.phase ? ` (${r.failed_step.phase})` : ''}`
         : '없음 — 모든 단계가 확인됐는데 과제 실패'],
-      ['유형', `${FAILURE_TYPE_KO[r.failure_type] || r.failure_type} · ${LEVEL_KO[r.failure_level] || r.failure_level} · 확신 ${r.confidence}`
+      ['유형', `${FAILURE_TYPE_KO[r.failure_type] || r.failure_type} · ${(r.aspects_in_error || []).map((a) => LEVEL_KO[a] || a).join(', ') || LEVEL_KO[r.failure_level] || '불명'} · 확신 ${r.confidence}`
         + (r.agrees_with_host === false ? ` · 호스트 측정은 ${FAILURE_TYPE_KO[r.host_type_hint] || r.host_type_hint}` : '')],
       ['가설 ' + (r.id || ''), r.hypothesis],
       ['다음에 바꿀 것', r.next_try],
@@ -848,7 +896,16 @@
       row.appendChild(el('span', 'tl-meta', text));
       body.appendChild(row);
     }
-    if (Array.isArray(r.step_checks) && r.step_checks.length) {
+    for (const aspect of ['inspection', 'execution', 'planning']) {
+      const c = r[aspect];
+      if (!c) continue;
+      const row = el('div', 'tl-row');
+      row.appendChild(el('span', 'tl-label', ASPECT_KO[aspect]));
+      row.appendChild(el('span', `tl-meta ${c.verdict === 'error' ? 'aspect-error' : ''}`,
+        `${VERDICT_MARK[c.verdict] || c.verdict} — ${c.finding || ''}${c.fix ? ` → 고칠 것: ${c.fix}` : ''}`));
+      body.appendChild(row);
+    }
+    if (Array.isArray(r.step_checks) && r.step_checks.length) {  // reviews recorded before the aspect form
       const details = el('details', 'tl-plan');
       details.appendChild(el('summary', null, `단계별 확인 ${r.step_checks.length}개`));
       const ol = el('ul', 'tl-plan-list');
@@ -938,6 +995,9 @@
         head.appendChild(el('span', `tl-feedback fb-${d.feedback}`, FEEDBACK_KO[d.feedback]));
       }
       if (d.attempt) head.appendChild(el('span', 'tl-attempt', `시도 ${d.attempt}`));
+      if (d.diagnosis && d.diagnosis !== 'none') {
+        head.appendChild(el('span', 'tl-feedback fb-stalled', `직전 결과 진단: ${LEVEL_KO[d.diagnosis] || d.diagnosis}`));
+      }
       const timing = [`+${Number(group.ev.elapsed_s || 0).toFixed(1)}s`];
       if (typeof group.thinkS === 'number') timing.push(`생각 ${group.thinkS.toFixed(1)}s`);
       head.appendChild(el('span', 'tl-time', timing.join(' · ')));
@@ -946,7 +1006,7 @@
       const body = el('div', 'tl-body');
       if (group.skill) {
         body.appendChild(el('p', 'tl-reason', `policy.py가 호출한 결정적 스킬입니다 (모델 판단 없음).`));
-      } else if (d.reason && !d.review) {  // a review shows its hypothesis in its own rows
+      } else if (d.reason && !d.review && !d.reflection) {  // these show their content in their own rows
         body.appendChild(el('p', 'tl-reason', d.reason));
       }
       const command = group.skill ? describeCommand(d.args) : describeCommand(d.command);
@@ -971,6 +1031,24 @@
         body.appendChild(row);
       }
       if (d.review) appendReview(body, d.review);
+      if (d.reflection) appendReflection(body, d.reflection);
+      if (Array.isArray(d.recall)) {
+        const row = el('div', 'tl-row');
+        row.appendChild(el('span', 'tl-label', `고른 기억 ${d.recall.length}개`));
+        const ul = el('ul', 'tl-outcomes');
+        if (!d.recall.length) ul.appendChild(el('li', 'out-info', '이 계획과 관련된 기억 없음'));
+        for (const pick of d.recall) {
+          ul.appendChild(el('li', 'out-info', `${pick.id}${pick.step != null ? ` (초안 ${pick.step}단계)` : ''} — ${pick.why}`));
+        }
+        row.appendChild(ul);
+        body.appendChild(row);
+      }
+      if (d.revised_because) {
+        const row = el('div', 'tl-row');
+        row.appendChild(el('span', 'tl-label', '기억 보고 고친 점'));
+        row.appendChild(el('span', 'tl-meta', d.revised_because));
+        body.appendChild(row);
+      }
       if (Array.isArray(d.skills_applied) && d.skills_applied.length) {
         const row = el('div', 'tl-row');
         row.appendChild(el('span', 'tl-label', '따른 항목'));
