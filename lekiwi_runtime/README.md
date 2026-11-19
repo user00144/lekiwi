@@ -148,6 +148,15 @@ hold 검사는 최대 2초 동안 모터 쓰기 없이 안정된 샘플을 기�
 
 아래 명시적 복구는 위 경고 조건에 해당하지 않는 목표 미도달에 적용합니다.
 
+### 이동 중 감시 (`monitor`, `capabilities.arm_motion_monitor: 1`)
+
+팔 단독 이동(베이스 속도 0, 그리퍼 목표 없음)에 `"monitor": {"gripper_min_percent": p}`를 붙이면, 50Hz 보간 루프가 60ms마다 그리퍼 실제 위치를 읽습니다. 연속 2번 `p`% 미만이면(쥐고 있던 물체가 빠져 집게가 더 닫힘) 남은 목표를 쓰지 않고 그 자리에서 측정 위치를 hold하고, 위 경고와 같은 hold 검사(3샘플 안정)를 통과한 경우에만 `status: stopped`, `execution.arm_reached: false`, `execution.arm_hold_verified: true`, `execution.monitor_stop`(조건, 읽은 값, 동작 진행률 `progress_fraction`, 경과 시간)을 반환합니다. 가드는 새 관찰의 관절이 hold 측정값(관절 0.5도/그리퍼 2%p)과 일치할 때만 `movement_allowed: true`를 발급합니다. hold나 그 검증에 실패하면 지금처럼 `uncertain_execution`입니다.
+
+- 읽기 실패 한 번으로는 멈추지 않습니다(연속 판정이 초기화되고 `read_errors`에 기록). 감시는 멈추는 것만 하며 새 동작을 만들지 않습니다.
+- `"gripper_min_percent": null`이면 멈추지 않고 계측만 합니다. 감시가 붙은 모든 이동은 120ms마다 명령 관절의 추종 오차(보간 목표 − 실제)를 읽어 `arm_motion.monitor.max_following_error_deg`로 남깁니다. 팔이 걸림을 판정하는 임계값은 이 실측이 쌓인 뒤 정할 예정이라 지금은 정지 조건이 아닙니다.
+- kiwi-01 실측: 빈 집게를 닫으면 26.2–26.5%, 큐브를 쥐면 27.4–27.9%입니다(닫기 목표 26%). 하네스는 쥔 판정과 같은 기준 `close_percent + held_margin_percent`(27%)를 씁니다.
+- 이 기능을 쓰려면 ORIN에 변경된 runtime을 설치하고 재시작해야 합니다. 하네스는 `arm_motion_monitor`를 광고하지 않는 runtime에는 `monitor`를 보내지 않습니다.
+
 팔 단독 동작에서 목표 미도달이 발생해도, 실제 진행과 자세 유지가 검증되면 작업을 새 관측에서 이어갈 수 있습니다. 베이스·그리퍼 동작, 통신 실패, hold 실패, 보정 범위 위반에는 이 경로를 사용하지 않습니다. 실패 관절 각각이 목표 방향으로 최소 1도이면서 요청 변화량의 20% 이상 진행해야 합니다. 목표·토크·모드·상태·온도를 읽어 확인하고, 전체 관절의 보정 범위와 0.2초 이상 안정된 피드백을 검사합니다. hold 위치 허용오차는 기존 2도/5%p를 유지합니다. 명령하지 않은 그리퍼가 토크 OFF이면 구동 중인 관절로 취급하지 않습니다. 이 경우에도 상태·온도·영점·보정 범위·안정성을 확인하고, 최초 이동 전 그리퍼 위치에서 2%p 이내인지 검사합니다. 꺼진 그리퍼의 이전 목표에 도달했는지는 요구하지 않으며, 그리퍼 토크나 목표값을 쓰지 않습니다. 인증서의 `commanded_joints`, `passive_joints`, `passive_reference`로 이 구분을 재확인 때도 보존합니다.
 
 조건을 만족하면 `status: incomplete`, `execution.arm_reached: false`, `execution.arm_hold_verified: true`, `recovery.eligible: true`를 반환합니다. 아직 이동 허가는 없으며 `arm_reconciliation_required` 상태입니다. 호스트는 `reconcile`에 실패한 `failed_action_id`와 현재 `runtime_id`를 전달합니다. 이 요청은 모터에 쓰지 않고 hold·상태·카메라를 다시 읽어 확인합니다. 성공하면 새 관찰 ID를 발급합니다. 원래 실패 기록은 수정하지 않습니다.

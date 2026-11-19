@@ -257,7 +257,19 @@
     $('policy-stop-btn').disabled = !state.active_run_id;
   }
 
-  const LESSON_STATUS_KO = { verified: '검증됨', hypothesis: '가설', retired: '폐기' };
+  const ENTRY_KIND_KO = { workflow: '검증된 절차', repair: '검증된 수리' };
+  const LEDGER_STATUS_KO = { eliminated: '배제', blocked: '막힘', tried: '시도함', resolved: '해결됨' };
+  const TOPIC_KO = {
+    'episodic-workflows.md': '작업 절차', 'mobile-grasp.md': '집기·놓기', 'search-and-memory.md': '위치 찾기',
+    'navigation.md': '주행·접근', 'lekiwi-operations.md': '운용·복구',
+  };
+
+  function entryChip(entry) {
+    const chip = el('span', `lesson-chip ${entry.stale ? 'retired' : 'verified'}`,
+      `${entry.id} ${ENTRY_KIND_KO[entry.kind] || entry.kind}`);
+    chip.title = entry.trigger || '';
+    return chip;
+  }
 
   function renderMemory(memory) {
     const body = $('memory-body');
@@ -287,24 +299,63 @@
         : '측정 없음 (놓은 뒤 다시 찾을 때 측정)',
       offset.ready, '놓은 위치(팔 FK) - 이후 locate로 본 위치');
     const counts = memory.counts || {};
-    addRow('교훈', `검증 ${counts.verified || 0} · 가설 ${counts.hypothesis || 0} · 폐기 ${counts.retired || 0}`,
-      (counts.verified || 0) > 0, '가설은 이후 에피소드에서 적용해 성공하면 검증됨이 됩니다');
+    const total = Object.values(counts).reduce((a, b) => a + b, 0);
+    addRow('스킬 라이브러리',
+      total ? Object.entries(counts).filter(([, n]) => n).map(([t, n]) => `${TOPIC_KO[t] || t} ${n}`).join(' · ')
+        : '항목 없음 (검증된 성공 실행에서만 추가)',
+      total > 0, memory.library_dir || '');
+    const lc = memory.ledger_counts || {};
+    const unresolved = (lc.eliminated || 0) + (lc.blocked || 0) + (lc.tried || 0);
+    addRow('실패 장부',
+      (unresolved + (lc.resolved || 0))
+        ? `배제 ${lc.eliminated || 0} · 막힘 ${lc.blocked || 0} · 시도 ${lc.tried || 0} · 해결 ${lc.resolved || 0}`
+        : '기록 없음',
+      false, '실패한 접근(스킬 순서 + 마지막 팔 목표). 계획 때 반복하지 말 것으로 전달');
+    if (memory.frozen) addRow('', '동결됨: 읽기만, 새 항목 추가 안 함', false);
     body.appendChild(rows);
 
-    const lessons = memory.lessons || [];
-    if (lessons.length) {
+    const entries = memory.entries || [];
+    if (entries.length) {
       const list = el('ul', 'memory-lessons');
-      for (const lesson of lessons.slice(0, 8)) {
-        const li = el('li', `lesson-${lesson.status}`);
+      for (const entry of entries.slice(0, 10)) {
+        const li = el('li');
         const head = el('div', 'lesson-head');
-        head.appendChild(el('span', `lesson-chip ${lesson.status}`, LESSON_STATUS_KO[lesson.status] || lesson.status));
-        head.appendChild(el('span', 'lesson-id', lesson.id));
-        head.appendChild(el('span', 'lesson-when', `${TOOL_KO[lesson.skill] || lesson.skill} · ${lesson.when}`));
-        if (lesson.support || lesson.contradict) {
-          head.appendChild(el('span', 'lesson-score', `+${lesson.support} / −${lesson.contradict}`));
-        }
+        head.appendChild(entryChip(entry));
+        head.appendChild(el('span', 'lesson-when', TOPIC_KO[entry.topic] || entry.topic));
+        head.appendChild(el('span', 'lesson-score',
+          `재확인 ${entry.confirmed} · 재사용 실패 ${entry.failed_reuse}${entry.stale ? ' · 오래됨' : ''}`));
         li.appendChild(head);
-        li.appendChild(el('p', 'lesson-text', lesson.text));
+        li.appendChild(el('p', 'lesson-text', entry.trigger));
+        if (entry.contrast) li.appendChild(el('p', 'lesson-text muted', entry.contrast));
+        const details = el('details', 'tl-plan');
+        details.appendChild(el('summary', null, `실행된 스킬 ${entry.snippet.length}개`));
+        details.appendChild(el('pre', 'code-block', entry.snippet.join('\n')));
+        li.appendChild(details);
+        list.appendChild(li);
+      }
+      body.appendChild(list);
+    }
+
+    const ledger = memory.ledger || [];
+    if (ledger.length) {
+      body.appendChild(el('p', 'subhead mt-sm', '실패 장부 (해봤는데 안 된 접근)'));
+      const list = el('ul', 'memory-lessons');
+      for (const record of ledger.slice(0, 10)) {
+        const li = el('li');
+        const head = el('div', 'lesson-head');
+        const cls = record.status === 'resolved' ? 'verified' : record.status === 'tried' ? 'hypothesis' : 'retired';
+        head.appendChild(el('span', `lesson-chip ${cls}`, `${record.id} ${LEDGER_STATUS_KO[record.status] || record.status}`));
+        head.appendChild(el('span', 'lesson-when', record.failure));
+        head.appendChild(el('span', 'lesson-score', `실패 ${record.times_failed}회`));
+        li.appendChild(head);
+        li.appendChild(el('p', 'lesson-text', `${record.approach}${record.last_arm_target ? ` · 마지막 팔 목표 ${fmtXyz(record.last_arm_target)}` : ''}`));
+        if (record.hypothesis) {
+          li.appendChild(el('p', 'lesson-text', `가설 (${FAILURE_TYPE_KO[record.failure_type] || record.failure_type}, `
+            + `${HYP_STATUS_KO[record.hypothesis_status] || record.hypothesis_status}): ${record.hypothesis}`));
+          if (record.next_try) li.appendChild(el('p', 'lesson-text muted', `다음에 바꿀 것: ${record.next_try}`));
+        } else {
+          li.appendChild(el('p', 'lesson-text muted', record.last_reason));
+        }
         list.appendChild(li);
       }
       body.appendChild(list);
@@ -421,6 +472,7 @@
     if (
       evName === 'decision_rejected' ||
       evName === 'motion_warning' ||
+      evName === 'monitor_stop' ||
       evName === 'motion_incomplete' ||
       evName === 'motion_failure_feedback' ||
       evName === 'reconcile_started' ||
@@ -447,11 +499,7 @@
     const kind = ev.event;
     const d = ev.data || {};
     if (kind === 'decision') {
-      const cmdPart = d.command
-        ? d.command.cartesian
-          ? `cartesian ${d.command.cartesian.mode} [${d.command.cartesian.xyz_m?.join(', ')}]`
-          : `${d.command.action} (${d.command.duration_ms}ms)`
-        : '';
+      const cmdPart = describeCommand(d.command);  // step-loop command or plan-act skill arguments
       return `[${d.tool}] ${cmdPart ? cmdPart + ' — ' : ''}${d.reason || ''}`;
     }
     if (kind === 'action_prepared') {
@@ -480,7 +528,8 @@
       return `실행 ${ex.outcome || '?'}${ex.arm_reached === true ? ' · 목표 도달' : ex.arm_reached === false ? ' · 목표 미도달' : ''}`
         + `${moved.length ? ` · 관절 변화 ${moved.join(', ')}` : ''}${d.no_joint_progress ? ' · 관절 변화 없음' : ''}`;
     }
-    if (['motion_warning', 'skill_result', 'locate_answer', 'decision_rejected', 'rejection_feedback'].includes(kind)) {
+    if (['motion_warning', 'monitor_stop', 'hypothesis_test', 'skill_result', 'locate_answer', 'decision_rejected', 'rejection_feedback',
+         'memory_update', 'skill_finished'].includes(kind)) {
       const outcome = describeOutcome(ev, new Map());
       if (outcome) return outcome.text;
     }
@@ -538,9 +587,17 @@
     plan: '계획 수립', locate: '위치 찾기', pick: '집기', place: '놓기', move_to: 'XYZ 이동',
     home: '홈 복귀', home_arm: '홈 복귀', gripper: '그리퍼', drive: '주행', done: '루프 완료 선언',
     failed: '루프 실패 선언', confirm: '완료 확인', replan: '재계획 요청',
-    navigate_to: '경로 이동', inspect_scene: '장면 확인', act: '행동(act)',
+    navigate_to: '경로 이동', inspect_scene: '장면 확인', act: '행동(act)', review: '실패 원인 가설',
   };
-  const PHASE_KO = { planning: '계획', action: '행동', verify: '검증', skill: '호스트 스킬' };
+  const FAILURE_TYPE_KO = {
+    locate_wrong: '위치 측정 틀림', out_of_reach: '팔이 닿지 않음', grasp_missed: '집기 실패',
+    grip_lost: '옮기다 놓침', release_misaligned: '놓는 위치 어긋남', scene_disturbed: '다른 물체를 건드림',
+    base_motion_error: '주행 오차', wrong_plan: '계획 자체가 틀림', robot_fault: '로봇 실행 불가', other: '기타',
+  };
+  const LEVEL_KO = { execution: '실행 실패', planning: '계획 실패', environment: '환경 변화', unknown: '불명' };
+  const HYP_STATUS_KO = { untested: '아직 검증 안 함', not_supported: '바꿔봤지만 또 실패', inconclusive: '검증 중 중단', supported: '바꿔서 성공' };
+  const MET_MARK = { yes: '✓', no: '✗', unclear: '?' };
+  const PHASE_KO = { planning: '계획', action: '행동', verify: '검증', review: '실패 분석', skill: '호스트 스킬' };
   const FEEDBACK_KO = { initial: '첫 판단', progress: '진전 있음', stalled: '진전 없음', uncertain: '판단 유보' };
   const JOINT_SHORT = {
     shoulder_pan: 'pan', shoulder_lift: 'lift', elbow_flex: 'elbow', wrist_flex: 'w_flex', wrist_roll: 'w_roll',
@@ -595,6 +652,15 @@
     return parts.length ? parts.join(' · ') : JSON.stringify(cmd);
   }
 
+  function describeMonitorStop(stop) {
+    if (!stop) return '감시 조건이 깨짐';
+    const where = typeof stop.progress_fraction === 'number' ? `동작 ${Math.round(stop.progress_fraction * 100)}% 지점` : '동작 중';
+    if (stop.condition === 'gripper_below_min') {
+      return `${where}에서 그리퍼 ${fmtNum(stop.gripper_percent, 1)}% < 쥔 기준 ${fmtNum(stop.gripper_min_percent, 1)}% (물체 놓침 추정)`;
+    }
+    return `${where}에서 ${stop.condition}`;
+  }
+
   function describeSkillResult(d) {
     const r = d.result || {};
     const bits = [];
@@ -606,6 +672,8 @@
     if (r.grasp_fk_xyz_m) bits.push(`집은 위치 ${fmtXyz(r.grasp_fk_xyz_m)}`);
     if (r.arm_xyz_m) bits.push(`팔 끝 ${fmtXyz(r.arm_xyz_m)}`);
     if (r.locate_offset_applied) bits.push(`위치 보정 적용 (원래 ${fmtXyz(r.xyz_m_raw)})`);
+    if (r.monitor_stop) bits.push(`이동 중 감시 정지: ${describeMonitorStop(r.monitor_stop)}`);
+    if (r.failed_step) bits.push(`실패 단계: ${r.failed_step}`);
     const dm = r.drive_measurement;
     if (dm && dm.accepted) {
       const cmd = Math.hypot(...dm.commanded_m);
@@ -638,6 +706,9 @@
         if (String(p.status).startsWith('warning')) {
           return { level: 'warn', text: `${what} → 완료, 목표와 실측이 조금 다름` };
         }
+        if (String(p.status).startsWith('stopped')) {
+          return { level: 'bad', text: `${what} → 이동 중 감시 정지: ${describeMonitorStop(ex.monitor_stop)}` };
+        }
         return { level: 'bad', text: `${what} → ${p.status}${p.error ? `: ${p.error}` : ''}` };
       }
       case 'decision_rejected':
@@ -654,6 +725,8 @@
           ? ` 최대 ${w.measured_max_error_deg.toFixed(1)}° (허용 ${fmtNum(w.max_error_deg, 0)}°)` : '';
         return { level: 'warn', text: `동작 경고: 목표와 실측 관절 차이${amount} → 실측 자세에서 계속` };
       }
+      case 'monitor_stop':
+        return { level: 'bad', text: `이동 중 감시 정지: ${describeMonitorStop(d.monitor_stop)} → 팔을 그 자리에 세우고 실측 확인` };
       case 'motion_incomplete':
       case 'motion_failure_feedback':
         return { level: 'bad', text: '부분 동작: 일부 관절이 목표에 못 미침 → 재확인·수정 필요' };
@@ -671,13 +744,27 @@
         return describeSkillResult(d);
       case 'skill_finished':
         return { level: d.status === 'completed' ? 'ok' : 'bad', text: `스킬 종료: ${d.status}${d.detail ? ` — ${d.detail}` : ''}` };
+      case 'hypothesis_test':
+        return {
+          level: d.result === 'supported' ? 'ok' : d.result === 'not_supported' ? 'bad' : 'warn',
+          text: `가설 ${d.id} 검증: ${HYP_STATUS_KO[d.result] || d.result}${d.change ? ` — 바꾼 점: ${d.change}` : ''}`,
+        };
       case 'memory_update': {
         if (d.error) return { level: 'warn', text: `기억 갱신 실패: ${d.error}` };
-        const credited = Object.entries(d.credited || {}).map(([id, outcome]) => `${id} ${outcome === 'support' ? '+1 성공' : '−1 실패'}`);
-        const proposed = (d.proposed || []).filter(Boolean);
         const parts = [];
-        if (credited.length) parts.push(`적용한 교훈 채점: ${credited.join(', ')}`);
-        if (proposed.length) parts.push(`새 가설·재제안: ${proposed.join(', ')}`);
+        for (const h of d.hypotheses || []) parts.push(`가설 ${h.id} ${HYP_STATUS_KO[h.status] || h.status}`);
+        const v = d.verification || {};
+        const failedChecks = Object.entries(v).filter(([k, val]) => val === false && k !== 'passed').map(([k]) => k);
+        parts.push(v.passed ? '성공 검증 통과' : `성공 검증 실패${failedChecks.length ? ` (${failedChecks.join(', ')})` : ''}`);
+        const lib = d.library || {};
+        if (lib.added?.length) parts.push(`라이브러리 새 항목 ${lib.added.join(', ')}`);
+        if (lib.confirmed?.length) parts.push(`재확인 ${lib.confirmed.join(', ')}`);
+        if (lib.skipped && v.passed) parts.push(`추가 안 함: ${lib.skipped}`);
+        const recorded = (d.ledger?.recorded || []).map(([id, status]) => `${id} ${LEDGER_STATUS_KO[status] || status}`);
+        if (recorded.length) parts.push(`실패 장부 기록 ${recorded.join(', ')}`);
+        if (d.ledger?.resolved?.length) parts.push(`실패 장부 해결 ${d.ledger.resolved.join(', ')}`);
+        const reuse = Object.entries(d.reuse || {}).map(([id, r]) => `${id} ${r === 'confirmed' ? '재사용 성공' : '재사용 실패'}`);
+        if (reuse.length) parts.push(reuse.join(', '));
         const gain = d.body?.drive?.gain;
         if (gain != null) parts.push(`주행 보정 ×${fmtNum(gain, 3)} (${d.body.drive.samples}회)`);
         return { level: 'info', text: `기억 갱신 — ${parts.join(' · ') || '변경 없음'}` };
@@ -741,6 +828,38 @@
       if (details.open) ui.openTimelineKeys.add(key);
       else ui.openTimelineKeys.delete(key);
     });
+  }
+
+  function appendReview(body, r) {
+    const rows = [
+      ['처음 틀어진 단계', r.failed_step
+        ? `${r.failed_step.index}번 ${TOOL_KO[r.failed_step.tool] || r.failed_step.tool}${r.failed_step.phase ? ` (${r.failed_step.phase})` : ''}`
+        : '없음 — 모든 단계가 확인됐는데 과제 실패'],
+      ['유형', `${FAILURE_TYPE_KO[r.failure_type] || r.failure_type} · ${LEVEL_KO[r.failure_level] || r.failure_level} · 확신 ${r.confidence}`
+        + (r.agrees_with_host === false ? ` · 호스트 측정은 ${FAILURE_TYPE_KO[r.host_type_hint] || r.host_type_hint}` : '')],
+      ['가설 ' + (r.id || ''), r.hypothesis],
+      ['다음에 바꿀 것', r.next_try],
+      ['맞다면 보일 것', r.prediction],
+    ];
+    for (const [label, text] of rows) {
+      if (!text) continue;
+      const row = el('div', 'tl-row');
+      row.appendChild(el('span', 'tl-label', label));
+      row.appendChild(el('span', 'tl-meta', text));
+      body.appendChild(row);
+    }
+    if (Array.isArray(r.step_checks) && r.step_checks.length) {
+      const details = el('details', 'tl-plan');
+      details.appendChild(el('summary', null, `단계별 확인 ${r.step_checks.length}개`));
+      const ol = el('ul', 'tl-plan-list');
+      for (const c of r.step_checks) {
+        ol.appendChild(el('li', null, `${MET_MARK[c.met] || c.met} ${c.index}번 · 예상: ${c.expected} · 실제: ${c.observed}`));
+      }
+      details.appendChild(ol);
+      details.open = true;
+      body.appendChild(details);
+    }
+    for (const note of r.host_notes || []) body.appendChild(el('p', 'tl-pending', `호스트 보정: ${note}`));
   }
 
   function renderDecisionTimeline(events, run) {
@@ -827,7 +946,7 @@
       const body = el('div', 'tl-body');
       if (group.skill) {
         body.appendChild(el('p', 'tl-reason', `policy.py가 호출한 결정적 스킬입니다 (모델 판단 없음).`));
-      } else if (d.reason) {
+      } else if (d.reason && !d.review) {  // a review shows its hypothesis in its own rows
         body.appendChild(el('p', 'tl-reason', d.reason));
       }
       const command = group.skill ? describeCommand(d.args) : describeCommand(d.command);
@@ -843,22 +962,29 @@
         row.appendChild(el('span', 'tl-meta', d.expected));
         body.appendChild(row);
       }
-      if (Array.isArray(d.lessons_applied) && d.lessons_applied.length) {
+      if (d.hypothesis_tested || d.hypothesis_change) {
         const row = el('div', 'tl-row');
-        row.appendChild(el('span', 'tl-label', '적용 교훈'));
+        row.appendChild(el('span', 'tl-label', '검증할 가설'));
+        row.appendChild(el('span', 'tl-meta', d.hypothesis_tested
+          ? `${d.hypothesis_tested}${d.hypothesis_text ? ` — ${d.hypothesis_text}` : ''} → 바꾼 점: ${d.hypothesis_change || '(설명 없음)'}`
+          : `검증 안 함 — ${d.hypothesis_change}`));
+        body.appendChild(row);
+      }
+      if (d.review) appendReview(body, d.review);
+      if (Array.isArray(d.skills_applied) && d.skills_applied.length) {
+        const row = el('div', 'tl-row');
+        row.appendChild(el('span', 'tl-label', '따른 항목'));
         const wrap = el('div', 'tl-lessons');
-        for (const lesson of d.lessons_applied) {
-          const chip = el('span', `lesson-chip ${lesson.status}`, `${lesson.id} ${LESSON_STATUS_KO[lesson.status] || ''}`);
-          chip.title = lesson.text || '';
-          wrap.appendChild(chip);
-          wrap.appendChild(el('span', 'tl-lesson-text', lesson.text || ''));
+        for (const entry of d.skills_applied) {
+          wrap.appendChild(entryChip(entry));
+          wrap.appendChild(el('span', 'tl-lesson-text', `${entry.trigger || ''} (재확인 ${entry.confirmed ?? 0})`));
         }
         row.appendChild(wrap);
         body.appendChild(row);
       }
       if (d.evidence) {
         const row = el('div', 'tl-row');
-        row.appendChild(el('span', 'tl-label', d.phase === 'action' ? '교훈' : d.phase === 'planning' ? '참고 교훈' : '근거'));
+        row.appendChild(el('span', 'tl-label', d.phase === 'action' ? '메모' : d.phase === 'planning' ? '라이브러리 활용' : '근거'));
         row.appendChild(el('span', 'tl-meta', d.evidence));
         body.appendChild(row);
       }

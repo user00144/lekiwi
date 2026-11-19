@@ -12,70 +12,92 @@ import unittest
 
 from harness.memory import (
     EmbodimentMemory,
-    LessonMemory,
+    FailureLedger,
     MemoryTracker,
+    SkillLibrary,
     failure_signature,
     import_experience,
-    select_lessons,
 )
 
 ROOT = Path(__file__).resolve().parents[2]
 CAMERA_CONFIG = ROOT / 'outputs' / 'kinematics' / 'camera-front-kiwi-01.json'
 
 
-class LessonMemoryTests(unittest.TestCase):
-    def test_hypothesis_is_verified_only_by_later_successful_episodes(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            memory = LessonMemory(tmp, 'kiwi-01')
-            lesson = memory.propose('pick at x>0.29 slipped twice; approach to x<=0.28 first',
-                                    skill='pick', signature='object_slipped', run='run-a')
-            self.assertEqual(memory.get(lesson)['status'], 'hypothesis')
-            self.assertEqual(memory.credit({lesson}, set(), 'completion_claim', 'run-a'), {},
-                             'the episode that wrote a lesson cannot confirm it')
-            self.assertEqual(memory.credit({lesson}, set(), 'completion_claim', 'run-b'), {lesson: 'support'})
-            self.assertEqual(memory.get(lesson)['status'], 'hypothesis')
-            memory.credit({lesson}, set(), 'completion_claim', 'run-c')
-            self.assertEqual(memory.get(lesson)['status'], 'verified')
-            self.assertEqual(memory.credit({lesson}, set(), 'uncertain_execution', 'run-d'), {},
-                             'infrastructure stops say nothing about a lesson')
-            memory.save()
-            reloaded = LessonMemory(tmp, 'kiwi-01')
-            self.assertEqual(reloaded.recall()[0]['id'], lesson)
-            self.assertEqual(reloaded.recall()[0]['status'], 'verified')
+def act(tool, status='ok', error=None, **result):
+    args = {'locate': {'label': 'cube', 'bbox_px': [1, 2, 3, 4]}, 'drive': {'drive': {'x': 0.1, 'y': 0.0, 'theta': 0.0, 'duration_ms': 1000}},
+            'pick': {'xyz_m': [0.29, 0.0, -0.09]}, 'home': {}, 'move_to': {'xyz_m': [0.28, 0.0, -0.05], 'approach': 'grasp'},
+            'gripper': {'gripper_percent': 54.6}}.get(tool, {})
+    return {'tool': tool, 'args': args, 'status': status, 'error': error, 'result': result}
 
-    def test_failed_application_and_failed_episode_contradict_until_retired(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            memory = LessonMemory(tmp, 'kiwi-01')
-            lesson = memory.propose('drive 0.1 m/s for 2 s when the cube is beyond 0.4 m', skill='drive',
-                                    signature='ok', run='run-a')
-            self.assertEqual(memory.credit({lesson}, {lesson}, 'completion_claim', 'run-b'), {lesson: 'contradict'},
-                             'an action that applied the lesson failed')
-            self.assertEqual(memory.credit({lesson}, set(), 'blocked', 'run-c'), {lesson: 'contradict'})
-            self.assertEqual(memory.get(lesson)['status'], 'retired')
-            self.assertNotIn(lesson, [item['id'] for item in memory.recall()])
 
-    def test_similar_lessons_merge_and_count_reproposals(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            memory = LessonMemory(tmp, 'kiwi-01')
-            first = memory.propose('같은 좌표로 반복하지 말고 팔을 치운 뒤 위치를 재측정한다.', skill='pick',
-                                   signature='object_slipped', run='run-a')
-            again = memory.propose('같은 좌표로 반복하지 말고 팔을 치운 뒤 큐브 위치를 재측정한다.', skill='pick',
-                                   signature='object_slipped', run='run-b')
-            other = memory.propose('같은 좌표로 반복하지 말고 팔을 치운 뒤 위치를 재측정한다.', skill='drive',
-                                   signature='ok', run='run-b')
-            self.assertEqual(first, again)
-            self.assertNotEqual(first, other)
-            self.assertEqual(memory.get(first)['proposals'], 2)
+VERIFIED = {'verify_confirmed': True, 'executed_skills': True, 'still_holding': True, 'passed': True}
 
-    def test_episode_lesson_selection_prefers_conclusions_and_failures(self):
-        chosen = select_lessons([
-            {'text': 'routine progress note number one', 'skill': 'drive', 'signature': 'ok'},
-            {'text': 'pick slipped at x=0.293; approach closer first', 'skill': 'pick', 'signature': 'object_slipped'},
-            {'text': 'staged lift kept the cube; use it after slips', 'skill': 'attempt', 'signature': 'done', 'final': True},
-            {'text': 'routine progress note number one!', 'skill': 'drive', 'signature': 'ok'},
-            {'text': '', 'skill': 'drive', 'signature': 'ok'},
-        ], limit=3)
-        self.assertEqual([item['skill'] for item in chosen], ['attempt', 'pick', 'drive'])
+
+class SkillLibraryTests(unittest.TestCase):
+    def test_only_verified_episodes_are_admitted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            library = SkillLibrary(tmp, 'kiwi-01')
+            actions = [act('locate', xyz_m=[0.4, 0, -0.09], reachable=False), act('drive'), act('pick')]
+            skipped = library.admit_episode(task='pick up the cube', run='run-a', actions=actions,
+                                            verification={'verify_confirmed': False, 'passed': False})
+            self.assertIn('skipped', skipped)
+            self.assertEqual(library.entries, [])
+            added = library.admit_episode(task='pick up the cube', run='run-b', actions=actions, verification=VERIFIED,
+                                          strategy='approach to x<=0.28 first', labels=['cube'])
+            self.assertEqual(added, {'added': ['S001'], 'confirmed': []})
+            entry = library.entries[0]
+            self.assertEqual((entry['kind'], entry['topic'], entry['shape']), ('workflow', 'episodic-workflows.md',
+                                                                                'locate>drive>pick'))
+            self.assertIn("locate('cube') -> xyz [0.4, 0, -0.09], reachable=False", entry['snippet'])
+            library.save()
+            text = (Path(tmp) / 'episodic-workflows.md').read_text()
+            for field in ('**Trigger:**', '**Snippet (executed skill calls, host-recorded):**', '**Provenance:**',
+                          '**Strategy (verifier note):** approach to x<=0.28 first'):
+                self.assertIn(field, text)
+            self.assertEqual(SkillLibrary(tmp, 'kiwi-01').entries[0]['id'], 'S001')
+
+    def test_same_workflow_is_confirmed_not_duplicated_and_reuse_is_recorded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            library = SkillLibrary(tmp, 'kiwi-01')
+            actions = [act('locate'), act('drive'), act('locate'), act('pick')]
+            library.admit_episode(task='pick up the silver cube', run='run-a', actions=actions, verification=VERIFIED)
+            again = library.admit_episode(task='pick up the silver cube please', run='run-b', actions=actions,
+                                          verification=VERIFIED)
+            self.assertEqual(again, {'added': [], 'confirmed': ['S001']})
+            self.assertEqual(library.record_use({'S001'}, run='run-c', status='blocked', verified=False),
+                             {'S001': 'failed_reuse'})
+            self.assertEqual(library.record_use({'S001'}, run='run-d', status='uncertain_execution', verified=False), {},
+                             'infrastructure stops record nothing')
+            self.assertEqual(library.record_use({'S001'}, run='run-a', status='completion_claim', verified=True), {},
+                             'the source run cannot confirm its own entry')
+            view = library.recall('pick up the silver cube')[0]
+            self.assertEqual((view['confirmed'], view['failed_reuse'], view['stale']), (1, 1, False))
+
+    def test_failure_followed_by_success_becomes_a_repair_entry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            library = SkillLibrary(tmp, 'kiwi-01')
+            actions = [act('locate'), act('pick', 'failed', 'after lift: the object is no longer between the jaws'),
+                       act('home'), act('locate'), act('drive'), act('locate'), act('pick')]
+            result = library.admit_episode(task='pick up the cube', run='run-a', actions=actions, verification=VERIFIED)
+            kinds = {entry['kind']: entry for entry in library.entries}
+            self.assertEqual(set(kinds), {'workflow', 'repair'})
+            repair = kinds['repair']
+            self.assertEqual((repair['topic'], repair['failed_tool'], repair['signature'], repair['shape']),
+                             ('mobile-grasp.md', 'pick', 'object_slipped', 'home>locate>drive>locate>pick'))
+            self.assertIn('failed', repair['contrast'])
+            self.assertEqual(len(result['added']), 2)
+            self.assertNotIn('failed', ' '.join(kinds['workflow']['snippet'][:1]))
+
+    def test_failure_never_resolved_is_not_a_repair_and_frozen_library_is_read_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            library = SkillLibrary(tmp, 'kiwi-01')
+            library.admit_episode(task='locate the cube', run='run-a', actions=[act('locate'), act('pick', 'failed', 'x')],
+                                  verification=VERIFIED)
+            self.assertEqual([entry['kind'] for entry in library.entries], ['workflow'])
+            frozen = SkillLibrary(tmp, 'kiwi-01', frozen=True)
+            self.assertIn('skipped', frozen.admit_episode(task='t', run='run-b', actions=[act('locate')],
+                                                          verification=VERIFIED))
+            self.assertEqual(frozen.record_use({'S001'}, run='run-c', status='blocked', verified=False), {})
 
     def test_failure_signatures(self):
         self.assertEqual(failure_signature('pick', 'ok'), 'ok')
@@ -83,6 +105,66 @@ class LessonMemoryTests(unittest.TestCase):
                          'object_slipped')
         self.assertEqual(failure_signature('pick', 'failed', 'x', {'ik_reason_codes': ['urdf_seed_out_of_range']}),
                          'ik:urdf_seed_out_of_range')
+
+
+class FailureLedgerTests(unittest.TestCase):
+    def test_task_level_failure_is_recorded_and_repeated_approach_is_eliminated(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = FailureLedger(tmp, 'kiwi-01')
+            release = [act('locate'), act('pick'), {'tool': 'move_to', 'args': {'xyz_m': [0.29, 0.0, 0.141]}, 'status': 'ok'},
+                       {'tool': 'gripper', 'args': {'gripper_percent': 54.6}, 'status': 'ok'}]
+            first = ledger.record_attempt(task='place the cube into the cup', run='run-a', attempt=1, actions=release,
+                                          reason='both releases missed the cup')
+            self.assertEqual(first, ('F001', 'tried'))
+            record = ledger.records[0]
+            self.assertEqual((record['level'], record['signature'], record['tail'], record['target']),
+                             ('task', 'goal_not_achieved', 'locate>pick>move_to>gripper', [0.28, 0.0, 0.14]))
+            self.assertEqual(ledger.record_attempt(task='place the cube into the cup', run='run-a', attempt=1,
+                                                   actions=release, reason='same attempt again'), ('F001', 'tried'),
+                             'one attempt is counted once')
+            self.assertEqual(ledger.record_attempt(task='place the cube into the cup!', run='run-b', attempt=1,
+                                                   actions=release, reason='missed again'), ('F001', 'eliminated'))
+            lower = release[:2] + [{'tool': 'move_to', 'args': {'xyz_m': [0.29, 0.0, 0.08]}, 'status': 'ok'}, release[3]]
+            self.assertEqual(ledger.record_attempt(task='place the cube into the cup', run='run-c', attempt=1,
+                                                   actions=lower, reason='bounced off the rim'), ('F002', 'tried'),
+                             'a different release height is a different approach')
+            self.assertIsNone(ledger.record_attempt(task='x', run='run-d', attempt=1, actions=[act('observe')],
+                                                    reason='nothing executed'))
+
+    def test_planner_named_approach_groups_different_call_sequences(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = FailureLedger(tmp, 'kiwi-01')
+            one = [act('locate'), act('pick'), {'tool': 'move_to', 'args': {'xyz_m': [0.25, 0.0, 0.06]}, 'status': 'ok'}]
+            two = [act('locate'), act('drive'), act('locate'), act('pick'), act('drive'),
+                   {'tool': 'move_to', 'args': {'xyz_m': [0.22, 0.03, 0.08]}, 'status': 'ok'}]
+            first = ledger.record_attempt(task='place the cube into the cup', run='run-a', attempt=1, actions=one,
+                                          reason='cup tipped', approach='advance holding the cube toward the cup -> tipped it')
+            self.assertEqual(first, ('F001', 'tried'))
+            self.assertEqual(ledger.record_attempt(task='place the cube into the cup', run='run-b', attempt=1, actions=two,
+                                                   reason='cup tipped again', approach='same advance, slower',
+                                                   same_as='F001'), ('F001', 'eliminated'))
+            self.assertEqual(ledger.records[0]['approach'], 'advance holding the cube toward the cup -> tipped it')
+            self.assertEqual([f['approach'] for f in ledger.records[0]['failures']],
+                             ['advance holding the cube toward the cup -> tipped it', 'same advance, slower'])
+
+    def test_blocked_resolved_recall_and_markdown(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = FailureLedger(tmp, 'kiwi-01')
+            blocked = [act('locate'), {'tool': 'move_to', 'args': {'xyz_m': [0.22, 0.0, 0.085]}, 'status': 'failed',
+                                       'error': 'move_to: IK not executable', 'detail': {'ik_reason_codes': ['ik_no_solution']}}]
+            self.assertEqual(ledger.record_attempt(task='place the cube into the cup', run='run-a', attempt=1,
+                                                   actions=blocked, reason='raised pose unreachable'), ('F001', 'blocked'))
+            ledger.record_attempt(task='open the drawer', run='run-a', attempt=2, actions=[act('locate')], reason='no handle')
+            self.assertEqual([item['id'] for item in ledger.recall('place the cube into the cup')], ['F001'])
+            self.assertEqual(ledger.resolve('place the cube into the cup', 'run-b'), ['F001'])
+            self.assertEqual(ledger.recall('place the cube into the cup')[0]['status'], 'resolved')
+            ledger.save()
+            text = (Path(tmp) / 'failure-ledger.md').read_text()
+            self.assertIn('F001 · resolved', text)
+            self.assertIn('ik:ik_no_solution', text)
+            frozen = FailureLedger(tmp, 'kiwi-01', frozen=True)
+            self.assertIsNone(frozen.record_attempt(task='t', run='r', attempt=1, actions=[act('locate')], reason='x'))
+            self.assertEqual(frozen.resolve('open the drawer', 'run-c'), [])
 
 
 class EmbodimentTests(unittest.TestCase):
@@ -130,29 +212,20 @@ class EmbodimentTests(unittest.TestCase):
             self.assertEqual(offset['offset_m'], [0.008, -0.003])
             self.assertFalse(body.locate_offset('cam-b')['ready'], 'offsets belong to one camera calibration')
 
-    def test_import_experience_seeds_hypotheses_and_drive_samples(self):
+    def test_import_experience_seeds_drive_samples(self):
         rows = [
             {'kind': 'action', 'tool': 'locate', 'status': 'ok', 'args': {'label': 'cube'},
-             'result': {'xyz_m': [0.40, 0.0, -0.09]}, 'lesson': ''},
+             'result': {'xyz_m': [0.40, 0.0, -0.09]}},
             {'kind': 'action', 'tool': 'drive', 'status': 'ok',
-             'args': {'drive': {'x': 0.1, 'y': 0.0, 'theta': 0.0, 'duration_ms': 1000}}, 'lesson': 'start lesson text'},
+             'args': {'drive': {'x': 0.1, 'y': 0.0, 'theta': 0.0, 'duration_ms': 1000}}},
             {'kind': 'action', 'tool': 'locate', 'status': 'ok', 'args': {'label': 'cube'},
-             'result': {'xyz_m': [0.30, 0.0, -0.09]}, 'lesson': 'the drive moved the cube 0.10 m closer'},
-            {'kind': 'action', 'tool': 'pick', 'status': 'failed', 'error': 'after lift: the object is no longer between the jaws',
-             'args': {'xyz_m': [0.30, 0.0, -0.09]}, 'lesson': ''},
-            {'kind': 'action', 'tool': 'home', 'status': 'ok', 'args': {},
-             'lesson': 'after a slip at x=0.30 approach closer before picking'},
+             'result': {'xyz_m': [0.30, 0.0, -0.09]}},
         ]
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / 'experience.jsonl'
             path.write_text('\n'.join(json.dumps({**row, 'robot_id': 'kiwi-01', 'run': 'runs/a'}) for row in rows))
-            counts = import_experience(path, Path(tmp) / 'memory', 'kiwi-01')
-            lessons = LessonMemory(Path(tmp) / 'memory', 'kiwi-01')
-        self.assertEqual(counts['drive_samples'], 1)
-        by_text = {lesson['text']: (lesson['skill'], lesson['signature']) for lesson in lessons.lessons}
-        self.assertEqual(by_text['after a slip at x=0.30 approach closer before picking'], ('pick', 'object_slipped'))
-        self.assertEqual(by_text['the drive moved the cube 0.10 m closer'], ('drive', 'ok'))
-        self.assertTrue(all(lesson['status'] == 'hypothesis' for lesson in lessons.lessons))
+            self.assertEqual(import_experience(path, Path(tmp) / 'memory', 'kiwi-01'), {'drive_samples': 1})
+            self.assertEqual(EmbodimentMemory(Path(tmp) / 'memory', 'kiwi-01').drive_gain()['samples'], 1)
 
 
 class PlanActMemoryIntegrationTest(unittest.IsolatedAsyncioTestCase):
@@ -201,43 +274,62 @@ class PlanActMemoryIntegrationTest(unittest.IsolatedAsyncioTestCase):
                     return [u - 15, v, u + 15, v + 30]  # feature = bbox top centre
 
                 memory_dir = Path(folder) / 'memory'
-                lessons = LessonMemory(memory_dir, 'memory-mock')
-                old = lessons.propose('locate again after every drive before picking', skill='drive',
-                                      signature='ok', run='earlier-run')
-                lessons.save()
-                lessons = LessonMemory(memory_dir, 'memory-mock')
                 body = EmbodimentMemory(memory_dir, 'memory-mock')
-                seen = []
+                seen, seen_ledger, planning_ledgers = [], [], []
 
                 def base(context, tool, **fields):
                     values = {'label': None, 'bbox_px': None, 'xyz_m': None, 'approach': None,
-                              'gripper_percent': None, 'drive': None, 'lesson': '', 'lessons_applied': []}
+                              'gripper_percent': None, 'drive': None, 'lesson': '', 'skills_applied': [],
+                              'failed_approach': '', 'same_as_ledger': None}
                     values.update(fields)
                     return {'robot_id': context['robot_id'], 'observation_id': context['observation_id'],
                             'tool': tool, 'reason': f'scripted {tool}', 'expected': '', **values}
 
+                reviews = []
+
                 class Planner:
+                    def __init__(self, applied, fail=False, test=None):
+                        self.applied, self.fail, self.test = applied, fail, test
+
                     async def plan(self, context, images):
-                        seen.append(context['memory']['lessons'])
+                        seen.append(context['memory']['skill_library'])
+                        planning_ledgers.append(context['memory']['failure_ledger'])
                         return {'robot_id': context['robot_id'], 'observation_id': context['observation_id'],
                                 'tool': 'plan', 'reason': 'scripted plan', 'expected_outcome': 'cube located close',
-                                'lessons_used': 'relocate after driving', 'lessons_applied': [old, 'L999'],
+                                'library_used': 'follow the verified workflow', 'skills_applied': self.applied,
+                                'hypothesis_tested': self.test,
+                                'hypothesis_change': 'drive 0.1 m closer before judging reach' if self.test else '',
                                 'plan': [{'step': 'locate, drive, locate', 'skill': 'locate', 'success_check': 'x<0.35'}]}
 
+                    async def review(self, context, images):
+                        reviews.append((context, [label for label, _, _ in images]))
+                        return {'robot_id': context['robot_id'], 'failed_step_index': 0, 'failure_level': 'planning',
+                                'failure_type': 'wrong_plan', 'confidence': 'medium',
+                                'step_checks': [{'index': 0, 'expected': 'cube within reach', 'observed': 'x=0.40 m',
+                                                 'met': 'no'}],
+                                'hypothesis': 'gave up from 0.40 m without driving closer; reach is x<0.30',
+                                'evidence': 'locate x=0.40 at step 0', 'next_try': 'drive 0.1 m forward, then locate',
+                                'prediction': 'second locate reads x about 0.30', 'approach': 'locate far, give up',
+                                'same_as_ledger': None}
+
                     async def act(self, context, images):
-                        step = len([item for item in context['history']])
+                        step = len(context['history'])
                         if step == 0:
                             return base(context, 'locate', label='cube', bbox_px=box_for(0.40))
+                        if step == 1 and self.fail:
+                            seen_ledger.append(context['failure_ledger'])
+                            return base(context, 'failed', reason='scripted: cube judged out of reach',
+                                        failed_approach='locate from far away, then give up')
                         if step == 1:
-                            return base(context, 'drive', drive={'x': 0.1, 'y': 0.0, 'theta': 0.0, 'duration_ms': 1000},
-                                        lessons_applied=[old])
+                            return base(context, 'drive', drive={'x': 0.1, 'y': 0.0, 'theta': 0.0, 'duration_ms': 1000})
                         if step == 2:
                             return base(context, 'locate', label='cube', bbox_px=box_for(0.305))
                         return base(context, 'done', lesson='a 0.1 m/s 1 s drive closes about 0.095 m of distance')
 
                     async def verify(self, context, images):
                         return {'robot_id': context['robot_id'], 'observation_id': context['observation_id'],
-                                'tool': 'confirm', 'reason': 'scripted confirm', 'evidence': 'scripted', 'lesson': ''}
+                                'tool': 'confirm', 'reason': 'scripted confirm', 'evidence': 'scripted', 'lesson': '',
+                                'failed_approach': '', 'same_as_ledger': None}
 
                 skills_config = {
                     'version': 1, 'calibration_id': ego['calibration_id'],
@@ -249,31 +341,74 @@ class PlanActMemoryIntegrationTest(unittest.IsolatedAsyncioTestCase):
                     'motion': {'speed_margin': 1.4, 'min_duration_ms': 2000, 'max_duration_ms': 20000},
                 }
                 params = StdioServerParameters(command=sys.executable, args=['-m', 'harness', '--server', api])
+                results = []
                 async with stdio_client(params) as (read, write):
                     async with ClientSession(read, write) as session:
                         await session.initialize()
-                        runner = EpisodeRunner(None, MCPRobotTools(session), 'memory-mock', 'find the cube',
-                                               Path(folder) / 'episode',
-                                               EpisodeLimits(max_actions=6, max_steps=10, max_seconds=60),
-                                               cartesian=cartesian)
-                        skills = Skills(runner, skills_config, reason='memory integration test')
-                        result = await PlanActRunner(runner, Planner(), skills, camera, None, max_replans=0,
-                                                     lessons=lessons, embodiment=body).run()
+                        for index, (applied, fail, test) in enumerate(((['S999'], True, None), (['S999'], False, 'F001'),
+                                                                       (['S001'], False, None))):
+                            runner = EpisodeRunner(None, MCPRobotTools(session), 'memory-mock', 'find the cube',
+                                                   Path(folder) / f'episode-{index}',
+                                                   EpisodeLimits(max_actions=6, max_steps=10, max_seconds=60),
+                                                   cartesian=cartesian)
+                            skills = Skills(runner, skills_config, reason='memory integration test')
+                            library = SkillLibrary(memory_dir / 'skill-library', 'memory-mock')
+                            ledger = FailureLedger(memory_dir, 'memory-mock')
+                            results.append(await PlanActRunner(runner, Planner(applied, fail, test), skills, camera, None,
+                                                               max_replans=0, library=library, embodiment=body,
+                                                               ledger=ledger).run())
 
-                self.assertEqual(result['status'], 'completion_claim', result)
-                self.assertEqual(seen[0][0]['id'], old)
-                self.assertEqual(result['memory']['credited'], {old: 'support'}, 'unknown id L999 is ignored')
+                failed, first, second = results
+                self.assertEqual(failed['status'], 'replan_budget', failed)
+                self.assertFalse(failed['memory']['verification']['passed'])
+                self.assertIn('skipped', failed['memory']['library'])
+                self.assertEqual(failed['memory']['ledger'], {'recorded': [['F001', 'tried']], 'resolved': []})
+                self.assertEqual(planning_ledgers[0], [])
+                self.assertEqual([item['id'] for item in planning_ledgers[1]], ['F001'],
+                                 'the next episode plans with the failed approach in view')
+                self.assertEqual(planning_ledgers[1][0]['last_reason'], 'scripted: cube judged out of reach')
+                # REVIEW turn: steps with intent and measurements, host facts, key frames; stored as hypothesis
+                review_context, review_images = reviews[0]
+                self.assertEqual(len(reviews), 1, 'one review per failed attempt, none repeated after the stop')
+                self.assertEqual(review_context['phase'], 'REVIEW')
+                self.assertEqual(review_context['steps'][0]['tool'], 'locate')
+                self.assertIn('expected', review_context['steps'][0])
+                self.assertEqual(review_context['host_facts']['calls'], 1)
+                self.assertIn('ATTEMPT START: front', review_images)
+                self.assertEqual(failed['memory']['hypotheses'][0]['id'], 'H1')
+                ledgered = planning_ledgers[1][0]
+                self.assertEqual(ledgered['approach'], 'locate far, give up', 'the review names the approach')
+                self.assertEqual(ledgered['failure_type'], 'wrong_plan')
+                self.assertEqual(ledgered['next_try'], 'drive 0.1 m forward, then locate')
+                self.assertEqual(ledgered['hypothesis_status'], 'untested')
+                stored_ledger = FailureLedger(memory_dir, 'memory-mock')
+                f001 = stored_ledger.records[0]
+                self.assertEqual(f001['hypothesis_status'], 'supported', 'episode 2 tested F001 and succeeded')
+                self.assertEqual(f001['hypothesis_tests'][0]['change'], 'drive 0.1 m closer before judging reach')
+                self.assertIn('Why (hypothesis, supported)', (memory_dir / 'failure-ledger.md').read_text())
+                self.assertEqual(first['memory']['ledger']['resolved'], ['F001'])
+                seen = seen[1:]
+                self.assertEqual(first['status'], 'completion_claim', first)
+                self.assertEqual(seen[0], [], 'empty library on the first episode')
+                self.assertTrue(first['memory']['verification']['passed'], first['memory'])
+                self.assertEqual(first['memory']['library'], {'added': ['S001'], 'confirmed': []})
+                self.assertEqual(first['memory']['reuse'], {}, 'unknown id S999 is ignored')
+                self.assertEqual(seen[1][0]['id'], 'S001')
+                self.assertEqual(second['memory']['reuse'], {'S001': 'confirmed'})
+                stored = SkillLibrary(memory_dir / 'skill-library', 'memory-mock')
+                entry = stored.entries[0]
+                self.assertEqual(len(stored.entries), 1, 'the same verified workflow is confirmed, not duplicated')
+                self.assertEqual(len(entry['confirmed_in']), 1)
+                self.assertIn('Fix found by testing F001 (wrong_plan)', entry['strategy'], 'skill discovery keeps why')
+                self.assertIn('a 0.1 m/s 1 s drive closes about 0.095 m of distance', entry['strategy'])
+                self.assertTrue(entry['snippet'][1].startswith('drive(x=0.1 m/s'))
+                self.assertIn('S001', (memory_dir / 'skill-library' / 'episodic-workflows.md').read_text())
                 saved_body = EmbodimentMemory(memory_dir, 'memory-mock').drive_gain()
-                self.assertEqual(saved_body['samples'], 1)
+                self.assertEqual(saved_body['samples'], 2)
                 self.assertAlmostEqual(saved_body['gain'], 0.95, delta=0.03)
-                stored = LessonMemory(memory_dir, 'memory-mock')
-                self.assertEqual(stored.get(old)['support'], 1)
-                self.assertIn('a 0.1 m/s 1 s drive closes about 0.095 m of distance', [l['text'] for l in stored.lessons])
-                events = [json.loads(line) for line in (Path(folder) / 'episode' / 'events.jsonl').read_text().splitlines()]
-                locate_results = [e['data'] for e in events if e['event'] == 'skill_result' and e['data']['tool'] == 'locate']
-                self.assertTrue(locate_results[1]['result']['drive_measurement']['accepted'])
+                events = [json.loads(line) for line in (Path(folder) / 'episode-2' / 'events.jsonl').read_text().splitlines()]
                 decisions = [e['data'] for e in events if e['event'] == 'decision']
-                self.assertEqual([item['id'] for item in decisions[0]['lessons_applied']], [old])
+                self.assertEqual([item['id'] for item in decisions[0]['skills_applied']], ['S001'])
             finally:
                 for process in processes:
                     process.terminate()

@@ -15,7 +15,18 @@ ARM_MIN_DURATION_MS = 100
 ARM_MAX_DURATION_MS = 20000
 
 
-def build_command(action, x, y, theta, duration_ms, joints=None):
+def _monitor(monitor, joints, arm_only):
+    """Host-requested in-motion monitor: arm-only moves without a gripper target (runtime arm_motion_monitor)."""
+    if not arm_only or 'gripper' in joints or not isinstance(monitor, dict) or set(monitor) - {'gripper_min_percent'}:
+        raise ValueError('monitor needs an arm-only move without a gripper target; only gripper_min_percent is supported')
+    threshold = monitor.get('gripper_min_percent')
+    if threshold is not None and (type(threshold) not in (int, float) or not math.isfinite(threshold)
+                                  or not 0 < threshold < 100):
+        raise ValueError('monitor.gripper_min_percent must be between 0 and 100 (exclusive), or null')
+    return {'gripper_min_percent': threshold}
+
+
+def build_command(action, x, y, theta, duration_ms, joints=None, monitor=None):
     """Validate the wire command, including callers outside the MCP schema."""
     if not all(type(v) in (int, float) and math.isfinite(v) for v in (x, y, theta)):
         raise ValueError("Velocity must be finite")
@@ -36,8 +47,10 @@ def build_command(action, x, y, theta, duration_ms, joints=None):
                                for k, v in joints.items())):
                 raise ValueError("Invalid arm targets or duration")
             command["joints"] = joints
+        if monitor is not None:
+            command["monitor"] = _monitor(monitor, joints, arm_only)
     elif action == "wait":
-        if joints is not None or any((x, y, theta)):
+        if joints is not None or monitor is not None or any((x, y, theta)):
             raise ValueError("Wait cannot contain motion targets")
     else:
         raise ValueError("Unsupported action")
@@ -78,6 +91,7 @@ class RobotTools:
                       duration_ms: Annotated[int, Field(strict=True, ge=1, le=ARM_MAX_DURATION_MS)] = 500,
                       action: Literal["move", "wait"] = "move",
                       joints: dict[str, Annotated[float, Field(strict=True, allow_inf_nan=False)]] | None = None,
+                      monitor: dict[str, Annotated[float, Field(strict=True, allow_inf_nan=False)] | None] | None = None,
                       observation_id: str | None = None,
                       runtime_id: str | None = None,
                       action_id: str | None = None,
@@ -92,10 +106,13 @@ class RobotTools:
         Arm completion includes joint feedback; torque remains on to hold posture.
         Timeout means outcome unknown; do not blindly retry.
         Guarded episode calls must supply observation_id, runtime_id, action_id and reason together.
+        monitor (runtime capability arm_motion_monitor, arm-only moves without a gripper target):
+        {"gripper_min_percent": p} stops and holds the arm when the gripper reads below p twice in
+        a row during the motion (status stopped); null only records telemetry.
         """
         if isinstance(self.client, SnapshotClient):
             raise ValueError("Snapshots cannot execute robot commands")
-        command = build_command(action, x, y, theta, duration_ms, joints)
+        command = build_command(action, x, y, theta, duration_ms, joints, monitor)
         metadata = dict(observation_id=observation_id, runtime_id=runtime_id, action_id=action_id, reason=reason)
         guarded = any(value is not None for value in metadata.values())
         if guarded:

@@ -37,7 +37,7 @@ from .episode import EpisodeLimits, RunRecord, atomic_json, decode_content
 from .episode_runtime import run_episode
 from .gui_preview import PreviewInput, calculate_preview
 from .manual_xyz import ExecuteInput, ManualBusy, ManualXYZ, PrepareInput
-from .memory import EmbodimentMemory, LessonMemory, camera_key
+from .memory import EmbodimentMemory, FailureLedger, SkillLibrary, camera_key
 from .pose_reference import build_pose_reference
 from .tools import RobotTools
 
@@ -315,9 +315,11 @@ class GuiController:
         act_loop='auto',
         default_limits=None,
         policy_episode_fn=None,
+        freeze_library=False,
     ):
         self.server, self.robot_id, self.model = server, robot_id, model
         self.default_limits = dict(default_limits or DEFAULT_LIMITS)
+        self.freeze_library = bool(freeze_library)
         self.skills_config = Path(skills_config).expanduser().resolve() if skills_config else None
         self.camera_config = Path(camera_config).expanduser().resolve() if camera_config else None
         self.act_loop = resolve_act_loop(act_loop, self.skills_config)
@@ -914,11 +916,17 @@ class GuiController:
         """Robot memory written by direct plan-act runs (RUNS_DIR/memory); read-only."""
         try:
             memory_dir = self.runs_dir / 'memory'
-            lessons = LessonMemory(memory_dir, self.robot_id)
+            library = SkillLibrary(memory_dir / 'skill-library', self.robot_id)
             camera = None
             if self.camera_config is not None:
                 camera = camera_key(json.loads(self.camera_config.read_text(encoding='utf-8')))
-            return {'counts': lessons.counts(), 'lessons': lessons.recall(),
+            entries = sorted(library.entries, key=lambda entry: entry['created_at'], reverse=True)
+            ledger = FailureLedger(memory_dir, self.robot_id)
+            records = sorted(ledger.records, key=lambda r: (FailureLedger.STATUS_ORDER.get(r['status'], 9),
+                                                            r['failures'][-1]['at']))
+            return {'library_dir': str(library.dir), 'frozen': self.freeze_library, 'counts': library.counts(),
+                    'entries': [library.view(entry) for entry in entries[:20]],
+                    'ledger_counts': ledger.counts(), 'ledger': [ledger.view(record) for record in records[:20]],
                     'body': EmbodimentMemory(memory_dir, self.robot_id).summary(camera)}
         except Exception as exc:
             return {'error': f'{type(exc).__name__}: {exc}'}
@@ -1202,6 +1210,8 @@ def main():
                         help='policy.py act(): auto = plan-act when --skills-config is given, else step')
     parser.add_argument('--experience', type=Path, default=None,
                         help='Direct plan-act runs: experience JSONL (default: RUNS_DIR/experience.jsonl)')
+    parser.add_argument('--freeze-skill-library', action='store_true',
+                        help='Read-only skill library (evaluation): plan-act uses RUNS_DIR/memory/skill-library but never writes it')
     args = parser.parse_args()
     if not 1 <= args.port <= 65535:
         parser.error('--port must be 1..65535')
@@ -1218,7 +1228,8 @@ def main():
         from functools import partial
         from .plan_loop import run_plan_episode
         episode_fn = partial(run_plan_episode, skills_config=args.skills_config, camera_config=args.camera_config,
-                             experience_path=args.experience or args.runs_dir / 'experience.jsonl')
+                             experience_path=args.experience or args.runs_dir / 'experience.jsonl',
+                             freeze_library=args.freeze_skill_library)
         limits = PLAN_ACT_LIMITS
     if args.act_loop == 'plan-act' and not args.skills_config:
         parser.error('--act-loop plan-act needs --kinematics-config and --skills-config')
@@ -1238,6 +1249,7 @@ def main():
         act_loop=args.act_loop,
         default_limits=limits,
         policy_episode_fn=run_episode if args.loop == 'plan-act' else None,
+        freeze_library=args.freeze_skill_library,
     )
     import uvicorn
     nav_label = 'SLAM pose file' if controller.pose_file else 'SLAM-free visual mode'

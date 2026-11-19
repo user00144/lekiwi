@@ -4,7 +4,8 @@ import time
 from copy import deepcopy
 
 from .config import load_config
-from .drivers.arm import ARM_CONTROL_REVISION, ARM_WARNING_MAX_ERROR_DEG, ArmController, ArmTargetNotReached
+from .drivers.arm import (ARM_CONTROL_REVISION, ARM_WARNING_MAX_ERROR_DEG, ArmController, ArmMonitorStopped,
+                          ArmTargetNotReached, monitor_problem)
 from .drivers.imu import ImuStream
 from .drivers.servo import ServoBus
 from .drivers.wheels import WheelDrive, valid_motion
@@ -74,24 +75,31 @@ class OrinRobot:
             motion = {key: command.get(key, 0) for key in ("x", "y", "theta")}
             duration = command.get("duration_ms")
             joints = command.get("joints")
+            monitor = command.get("monitor")
             if joints is not None:
                 # Validate velocity independently: arm-only interpolation may
                 # take up to 10 s, while any base motion still stops within 1 s.
                 if (not valid_motion({**motion, "duration_ms": 1})
                         or not self.arm.valid_target(joints, duration)
-                        or any(motion.values()) and duration > BASE_MAX_DURATION_MS):
+                        or any(motion.values()) and duration > BASE_MAX_DURATION_MS
+                        or "monitor" in command and (any(motion.values())
+                                                     or monitor_problem(monitor, joints) is not None)):
                     return False
                 # One bus and thread; wheels run only during arm interpolation.
                 base_motion = self.wheels.driving(**motion) if any(motion.values()) else None
-                self.arm.move(joints, duration, base_motion=base_motion)
+                if monitor is None:
+                    self.arm.move(joints, duration, base_motion=base_motion)
+                else:
+                    self.arm.move(joints, duration, base_motion=base_motion, monitor=monitor)
             else:
-                if not valid_motion({**motion, "duration_ms": duration}):
+                if "monitor" in command or not valid_motion({**motion, "duration_ms": duration}):
                     return False
                 self.wheels.move(motion["x"], motion["y"], motion["theta"], duration)
             return True
         if command.get("action") != "wait":
             return False
-        if command.get("joints") is not None or any(command.get(k, 0) for k in ("x", "y", "theta")):
+        if (command.get("joints") is not None or "monitor" in command
+                or any(command.get(k, 0) for k in ("x", "y", "theta"))):
             return False
         duration = command.get("duration_ms")
         if type(duration) is not int or not 0 <= duration <= 1000:
@@ -113,6 +121,22 @@ class OrinRobot:
         uses_base = moving and (not uses_arm or any(command.get(axis, 0) for axis in ("x", "y", "theta")))
         try:
             accepted = self.execute(command)
+        except ArmMonitorStopped as stop:
+            feedback = stop.feedback
+            hold = feedback.get('hold')
+            # Only the requested monitor of this exact arm-only command, with a verified hold of
+            # this calibration, is a known stop. Anything else keeps its uncertain outcome.
+            if (type(stop) is not ArmMonitorStopped or not uses_arm or uses_base
+                    or not isinstance(command.get('monitor'), dict) or 'gripper' in command['joints']
+                    or feedback.get('targets') != command['joints'] or feedback != self.arm.last_motion
+                    or feedback.get('outcome') != 'monitor_stop' or not isinstance(feedback.get('monitor_stop'), dict)
+                    or not isinstance(hold, dict) or hold.get('verified') is not True
+                    or hold.get('revision') != ARM_CONTROL_REVISION
+                    or hold.get('calibration_id') != self.arm.calibration_id):
+                raise
+            return {'outcome': 'stopped', 'command_sent': True, 'arm_reached': False, 'arm_hold_verified': True,
+                    'arm_motion': deepcopy(feedback), 'monitor_stop': deepcopy(feedback['monitor_stop']),
+                    'base_stop_command_sent': None, 'base_stop_verified': None, 'simulated': self.mock}
         except ArmTargetNotReached as failure:
             feedback = failure.feedback
             hold = feedback.get('hold')

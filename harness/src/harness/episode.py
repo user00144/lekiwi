@@ -47,6 +47,12 @@ class CartesianTarget(BaseModel):
     approach_axis: list[float] | None = Field(min_length=3, max_length=3)
 
 
+class ArmMonitor(BaseModel):
+    """Host-only in-motion check run by the runtime (capability arm_motion_monitor); never model output."""
+    model_config = ConfigDict(extra='forbid', strict=True, allow_inf_nan=False)
+    gripper_min_percent: float | None
+
+
 class Command(BaseModel):
     model_config = ConfigDict(extra='forbid', strict=True, allow_inf_nan=False)
     action: Literal['move', 'wait']
@@ -57,6 +63,7 @@ class Command(BaseModel):
                              description='Arm-only targets: 100..20000ms; base, wait or combined motion: at most 1000ms')
     joints: JointTargets | None
     cartesian: CartesianTarget | None = None
+    monitor: ArmMonitor | None = None
 
     @model_validator(mode='after')
     def motion_duration_matches_command(self):
@@ -65,21 +72,26 @@ class Command(BaseModel):
                                           or not ARM_MIN_DURATION_MS <= self.duration_ms <= ARM_MAX_DURATION_MS):
             raise ValueError('Cartesian move requires zero base velocity, joints=null and duration_ms=100..20000')
         if self.cartesian is None:
-            joints = self.joints.model_dump(exclude_none=True) if self.joints else None
-            build_command(self.action, self.x, self.y, self.theta, self.duration_ms, joints)
+            self.wire()
         return self
+
+    def monitor_wire(self):
+        return self.monitor.model_dump() if self.monitor is not None else None
 
     def request(self):
         if self.cartesian is not None:
-            return {'action': 'move', 'x': 0., 'y': 0., 'theta': 0., 'duration_ms': self.duration_ms,
-                    'cartesian': self.cartesian.model_dump()}
+            request = {'action': 'move', 'x': 0., 'y': 0., 'theta': 0., 'duration_ms': self.duration_ms,
+                       'cartesian': self.cartesian.model_dump()}
+            if self.monitor is not None:
+                request['monitor'] = self.monitor_wire()
+            return request
         return self.wire()
 
     def wire(self):
         if self.cartesian is not None:
             raise ValueError('Cartesian targets must be resolved by the host before motor dispatch')
         joints = self.joints.model_dump(exclude_none=True) if self.joints else None
-        return build_command(self.action, self.x, self.y, self.theta, self.duration_ms, joints)
+        return build_command(self.action, self.x, self.y, self.theta, self.duration_ms, joints, self.monitor_wire())
 
 
 class Decision(BaseModel):
@@ -576,7 +588,9 @@ class EpisodeRunner:
             incomplete = status == 'incomplete' and self._verified_incomplete(packet, action_id, command)
             warning = (status in ('warning', 'warning_without_observation')
                        and self._verified_motion_warning(packet, action_id, command))
-            if not safe_rejection and not confirmed and not incomplete and not warning:
+            stopped = (status in ('stopped', 'stopped_without_observation')
+                       and self._verified_monitor_stop(packet, action_id, command))
+            if not safe_rejection and not confirmed and not incomplete and not warning and not stopped:
                 raise EpisodeStopped('uncertain_execution', f'Execution {status}: observation or result not confirmed')
             if confirmed and self.recovery_constraints is not None and execution.get('arm_reached') is not True:
                 raise EpisodeStopped('uncertain_execution', 'Revised arm motion has no confirmed joint arrival')
@@ -585,6 +599,9 @@ class EpisodeRunner:
             return
         if warning:
             self._accept_motion_warning(packet, images, before, command, requested_command, action_id)
+            return
+        if stopped:
+            self._accept_monitor_stop(packet, images, before, command, action_id)
             return
         if status == 'rejected' and sent is False and execution.get('outcome') == 'rejected':
             self.in_flight = None
@@ -776,6 +793,81 @@ class EpisodeRunner:
             self.record.event('motion_failure_feedback', self.motion_failure_feedback)
         self.rejected_signature = (json.dumps(command, sort_keys=True)
                                    if self.pending_feedback['no_joint_progress'] else None)
+        if not self.pending_feedback['no_joint_progress']:
+            self.rejected_commands.clear()
+            self.rejection_feedback = None
+            self.repeat_block_count = 0
+
+    def _verified_monitor_stop(self, packet, action_id, command):
+        """A runtime stop requested by this command's monitor, with a verified measured hold."""
+        execution = packet.get('execution') or {}
+        capabilities = packet.get('capabilities') or {}
+        motion, stop = execution.get('arm_motion'), execution.get('monitor_stop')
+        monitor, targets = command.get('monitor'), command.get('joints')
+        calibration_id = (self.packet['observation'].get('ego') or {}).get('calibration_id')
+        return not (
+            any(type(capabilities.get(name)) is not int or capabilities[name] != 1
+                for name in ('guarded_execution', 'arm_motion_monitor'))
+            or execution.get('action_id') != action_id or execution.get('outcome') != 'stopped'
+            or execution.get('command_sent') is not True or execution.get('arm_reached') is not False
+            or execution.get('arm_hold_verified') is not True
+            or command.get('action') != 'move' or any(command.get(axis) for axis in ('x', 'y', 'theta'))
+            or not isinstance(targets, dict) or not targets or not set(targets) <= RECOVERY_ARM_JOINTS
+            or not isinstance(monitor, dict) or monitor.get('gripper_min_percent') is None
+            or not isinstance(motion, dict) or motion.get('targets') != targets
+            or motion.get('reached') is not False or motion.get('outcome') != 'monitor_stop'
+            or not isinstance(stop, dict) or stop != motion.get('monitor_stop')
+            or stop.get('condition') != 'gripper_below_min'
+            or stop.get('gripper_min_percent') != monitor['gripper_min_percent']
+            or not self._valid_hold(motion.get('hold'), calibration_id)
+            or not self._finite_number(execution.get('motion_finished_at'))
+            or execution['motion_finished_at'] < motion['hold']['timestamp'])
+
+    def _accept_monitor_stop(self, packet, images, before, command, action_id):
+        # A known partial motion: the runtime held the arm where the check broke. Planning may
+        # continue only from an independent fresh observation consistent with that hold.
+        self.in_flight = None
+        self.previous_result = packet
+        self.completion_candidate = None
+        if packet.get('status') == 'stopped_without_observation':
+            raise EpisodeStopped('post_motion_observation_failed',
+                                 'Arm stopped by its in-motion monitor; fresh observation unavailable')
+        execution = packet['execution']
+        stop, hold = execution['monitor_stop'], execution['arm_motion']['hold']
+        observation = packet.get('observation') or {}
+        ego = observation.get('ego') or {}
+        joints = ego.get('joints')
+        names = RECOVERY_ARM_JOINTS | {'gripper'}
+        if (ego.get('available') is not True or ego.get('error')
+                or ego.get('calibration_id') != hold['calibration_id']
+                or (ego.get('calibration_status') or {}).get('valid') is not True
+                or not self._finite_number(ego.get('timestamp'))
+                or ego['timestamp'] <= execution['motion_finished_at']
+                or not isinstance(joints, dict) or not names <= set(joints)
+                or not all(self._finite_number(joints[name]) for name in names)
+                or any(abs(joints[name] - hold['measured'][name]) > (2. if name == 'gripper' else .5)
+                       for name in names)
+                or not any(label == 'wrist' for label, _, _ in images)):
+            raise EpisodeStopped('post_motion_observation_failed',
+                                 'Monitor stop requires fresh calibrated feedback consistent with its verified hold')
+        self._check_post_motion(packet, command, execution)
+        self.before_images = self.images
+        self._accept_observation(packet, images, previous_id=before['observation']['observation_id'])
+        self.pending_feedback = {
+            **self._feedback(before, packet, command, execution),
+            'monitor_stop': stop, 'arm_reached': False, 'targets': command['joints'], 'measured_joints': joints,
+            'guidance': 'The runtime stopped and held the arm mid-motion because a requested check broke '
+                        f'({stop["condition"]}: the gripper read {stop.get("gripper_percent")}% < '
+                        f'{stop.get("gripper_min_percent")}%, so the object is probably no longer between the jaws). '
+                        'The pose is measured and held. Find the object in the current images; do not assume it '
+                        'is still held or that the target was reached.',
+        }
+        self.record.event('motion_feedback', self.pending_feedback)
+        self.record.event('monitor_stop', {
+            'action_id': action_id, 'command': command, 'monitor_stop': stop,
+            'monitor': execution['arm_motion'].get('monitor'), 'measured_joints': joints,
+            'current_observation_id': observation['observation_id'], 'guidance': self.pending_feedback['guidance']})
+        self.rejected_signature = None
         if not self.pending_feedback['no_joint_progress']:
             self.rejected_commands.clear()
             self.rejection_feedback = None
@@ -981,7 +1073,8 @@ class EpisodeRunner:
                 names = {'shoulder_pan', 'shoulder_lift', 'elbow_flex', 'wrist_flex', 'wrist_roll'}
                 if not isinstance(joints, dict) or set(joints) != names:
                     raise ValueError('IK result must contain exactly the five arm joints, without gripper')
-                resolved = build_command('move', 0., 0., 0., decision.command.duration_ms, joints)
+                resolved = build_command('move', 0., 0., 0., decision.command.duration_ms, joints,
+                                         decision.command.monitor_wire())
         except (EpisodeStopped, TimeoutError, asyncio.CancelledError):
             raise
         except Exception as exc:

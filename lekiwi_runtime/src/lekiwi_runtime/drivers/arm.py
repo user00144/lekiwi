@@ -27,6 +27,26 @@ ARM_WARNING_MAX_ERROR_DEG = 10.0
 HOLD_STABILITY_INTERVAL_S = .2
 HOLD_STABILITY_SAMPLES = 3
 HOLD_STABILITY_TIMEOUT_S = 2.0
+# In-motion monitor (opt-in per arm-only command). The 20 ms interpolation loop reads the
+# gripper every 3 steps (60 ms) and the commanded joints every 6 steps (120 ms, telemetry).
+MONITOR_FIELDS = frozenset({'gripper_min_percent'})
+MONITOR_CONDITIONS = frozenset({'gripper_below_min'})
+MONITOR_GRIPPER_EVERY_STEPS = 3
+MONITOR_TELEMETRY_EVERY_STEPS = 6
+MONITOR_CONSECUTIVE = 2  # consecutive low gripper samples before a stop (one noisy read never stops)
+
+
+def monitor_problem(monitor, joints, base_motion=None):
+    """Why an in-motion monitor cannot be used with this command (None when valid)."""
+    if not isinstance(monitor, dict) or set(monitor) - MONITOR_FIELDS:
+        return 'unknown_monitor_fields'
+    if base_motion is not None or not isinstance(joints, dict) or not joints or 'gripper' in joints:
+        return 'monitor_requires_arm_only_motion_without_gripper_target'
+    threshold = monitor.get('gripper_min_percent')
+    if threshold is not None and (type(threshold) not in (int, float) or not math.isfinite(threshold)
+                                  or not 0 < threshold < 100):
+        return 'invalid_gripper_min_percent'
+    return None
 
 
 class ArmTransportError(OSError):
@@ -53,6 +73,23 @@ class ArmTargetNotReached(OSError):
                            f"error={feedback['errors'][name]:+.3f} {unit}, "
                            f"tolerance={feedback['tolerances'][name]:g} {unit}")
         super().__init__("Arm target not reached within feedback tolerance: " + "; ".join(details))
+
+
+class ArmMonitorStopped(Exception):
+    """A requested in-motion condition broke: the arm was held where it was and the hold verified.
+
+    This is a known, measured stop (never target arrival). Any failure to hold or to verify the
+    hold raises an ordinary error instead, keeping its uncertain outcome.
+    """
+    def __init__(self, feedback):
+        self.feedback = deepcopy(feedback)
+        stop = feedback['monitor_stop']
+        super().__init__(f"Arm stopped by monitor {stop['condition']} at {stop['progress_fraction']:.0%} of the "
+                         f"motion: {stop}")
+
+
+class _MonitorTrip(Exception):
+    """Internal: leaves the interpolation loop so the shared handler holds the arm."""
 
 
 def load_calibration(path: str) -> dict:
@@ -491,11 +528,64 @@ class ArmController:
             return False, 'insufficient_joint_progress', progress
         return True, 'hold_verification_required', progress
 
-    def move(self, joints: dict, duration_ms: int, base_motion=None):
+    def _monitor_sample(self, watch, step, steps, started, goals, before):
+        """Read-only checks between interpolation writes; a read failure never stops the arm.
+
+        A gripper stop needs MONITOR_CONSECUTIVE successive low readings; a failed read resets
+        the count. Following error (commanded interpolation minus measured) is telemetry only.
+        """
+        ids = dict(ARM_JOINTS)
+        threshold = watch['gripper_min_percent']
+        if threshold is not None and step % MONITOR_GRIPPER_EVERY_STEPS == 0:
+            try:
+                raw = self._read(ids['gripper'], PRESENT_POSITION)
+            except OSError:
+                watch['read_errors'] += 1
+                watch['low'] = 0
+            else:
+                percent = raw_to_unit(raw, 'gripper', self.calibration['gripper'])
+                watch['gripper_samples'] += 1
+                seen = watch['gripper_min_seen']
+                watch['gripper_min_seen'] = round(percent if seen is None else min(seen, percent), 3)
+                watch['low'] = watch['low'] + 1 if percent < threshold else 0
+                if watch['low'] >= MONITOR_CONSECUTIVE:
+                    watch['stop'] = {'condition': 'gripper_below_min', 'gripper_percent': round(percent, 3),
+                                     'gripper_min_percent': threshold, 'consecutive_samples': watch['low'],
+                                     'elapsed_s': round(time.monotonic() - started, 3), 'step': step,
+                                     'steps': steps, 'progress_fraction': round(step / steps, 3)}
+                    raise _MonitorTrip()
+        if step % MONITOR_TELEMETRY_EVERY_STEPS == 0:
+            lags = watch['max_following_error_deg']
+            for name, goal in goals.items():
+                try:
+                    measured = self._read(ids[name], PRESENT_POSITION)
+                except OSError:
+                    watch['read_errors'] += 1
+                    continue
+                initial = before['raw'][name]
+                lag = abs(measured - (initial + (goal - initial) * step / steps)) * 360 / 4095
+                lags[name] = round(max(lags.get(name, 0.), lag), 2)
+            watch['telemetry_samples'] += 1
+
+    @staticmethod
+    def _monitor_summary(watch):
+        return {key: deepcopy(watch[key]) for key in (
+            'gripper_min_percent', 'gripper_samples', 'gripper_min_seen', 'telemetry_samples',
+            'max_following_error_deg', 'read_errors')}
+
+    def move(self, joints: dict, duration_ms: int, base_motion=None, monitor=None):
         if not self.valid_target(joints, duration_ms):
             raise PreDispatchRejected("invalid_arm_targets", "Invalid arm targets or duration")
         if base_motion is not None and duration_ms > BASE_MAX_DURATION_MS:
             raise PreDispatchRejected("base_duration_limit", "Combined base and arm motion is limited to 1000 ms")
+        if monitor is not None:
+            problem = monitor_problem(monitor, joints, base_motion)
+            if problem:
+                raise PreDispatchRejected("invalid_arm_monitor", f"Invalid in-motion monitor: {problem}")
+        watch = None if monitor is None else {
+            'gripper_min_percent': monitor.get('gripper_min_percent'), 'gripper_samples': 0,
+            'gripper_min_seen': None, 'telemetry_samples': 0, 'max_following_error_deg': {},
+            'read_errors': 0, 'low': 0, 'stop': None}
         self.last_motion = None
         communication_recoveries = []
         before = self.read_ego()
@@ -569,6 +659,8 @@ class ArmController:
                         for name, goal in goals.items():
                             initial = before["raw"][name]
                             self._write(ids[name], 42, round(initial + (goal - initial) * step / steps))
+                        if watch is not None and step < steps:
+                            self._monitor_sample(watch, step, steps, started, goals, before)
                         time.sleep(max(0, started + step * seconds / steps - time.monotonic()))
                 settling_started = time.monotonic()
                 deadline = settling_started + ARM_FEEDBACK_TIMEOUT_S
@@ -617,6 +709,28 @@ class ArmController:
                                                 hold_error=str(hold_failure))
                         failure.feedback = deepcopy(self.last_motion)
                     raise
+                if type(failure) is _MonitorTrip:
+                    # Requested stop: goals now hold the measured pose. Only a verified hold is a
+                    # known outcome; anything else keeps the ordinary uncertain failure.
+                    self.last_motion = {
+                        'targets': dict(joints), 'target_raw': dict(goals),
+                        'initial_joints': deepcopy(before['joints']), 'initial_raw': deepcopy(before['raw']),
+                        'held_goal_raw': dict(held_goals), 'reached': False, 'outcome': 'monitor_stop',
+                        'monitor_stop': deepcopy(watch['stop']), 'monitor': self._monitor_summary(watch),
+                        'duration_ms': duration_ms, 'interpolation_elapsed_s': time.monotonic() - started,
+                        'communication_recoveries': deepcopy(communication_recoveries),
+                        'timestamp': time.time(), 'hold': None,
+                    }
+                    try:
+                        certificate = self.verify_hold(held_goals, passive_reference=before['joints'])
+                    except Exception as verification_failure:
+                        self.last_motion['hold_error'] = str(verification_failure)
+                        raise OSError('Arm monitor stop hold not verified; physical state unknown: '
+                                      f'{verification_failure}') from verification_failure
+                    self.last_motion.update(hold=certificate,
+                                            measured={name: certificate['measured'][name] for name in joints})
+                    print(f"Arm stopped by monitor: {watch['stop']}", file=sys.stderr, flush=True)
+                    raise ArmMonitorStopped(self.last_motion) from None
                 if type(failure) is ArmTargetNotReached:
                     eligible, reason, progress = self._recovery_eligibility(self.last_motion, before, base_motion)
                     warning_eligible, warning_reason = self._warning_eligibility(self.last_motion, before, base_motion)
@@ -652,4 +766,9 @@ class ArmController:
         self.last_motion = {"targets": dict(joints), "measured": measured, "reached": True,
                             "tolerance_deg": 2, "tolerance_percent": 5, "timestamp": time.time(),
                             "communication_recoveries": communication_recoveries}
+        if watch is not None:
+            self.last_motion["monitor"] = ({"simulated": True} if self.mock else
+                                           {**self._monitor_summary(watch),
+                                            "interpolation_elapsed_s": round(settling_started - started, 3),
+                                            "planned_s": seconds})
         print("Arm target reached; holding position", file=sys.stderr, flush=True)

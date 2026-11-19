@@ -1,20 +1,34 @@
-"""Robot memory for a real, non-resettable robot: verified lessons and measured body corrections.
+"""Robot memory for a real, non-resettable robot: an ASPIRE-style skill library and body corrections.
 
-Two stores per robot under ``<memory_dir>/``:
+Under ``<memory_dir>/``:
 
-* ``lessons-<robot>.json`` (:class:`LessonMemory`): short lessons written by the planner. A new
-  lesson is only a *hypothesis*. It is credited or blamed when a **later** episode explicitly applies
-  it (``lessons_applied``): +support when that episode completes and no action that applied it
-  failed, +contradict when an action applying it failed or the episode failed. Infrastructure stops
-  (uncertain execution, interruption, host errors) change nothing. Lessons become ``verified`` or
-  ``retired`` from these counts, so what the planner is told first has been confirmed on this robot.
+* ``skill-library/`` (:class:`SkillLibrary`): topic Markdown files in the entry schema of
+  ``harness/.claude/skills/lekiwi-mobile-manip/skills`` (Trigger / Contrast / Snippet / Provenance),
+  rendered from ``index.json``. Following ASPIRE, Voyager and ViReSkill, an entry is admitted **only
+  from an episode whose success was verified**: the independent VERIFY turn confirmed it on a fresh
+  observation *and* host measurements agree (e.g. the gripper still holds after a pick, or opened
+  after a place). The Snippet is the skill sequence the host actually executed, not model text.
+  - ``workflow`` entries (``episodic-workflows.md``): the verified successful path of a task.
+  - ``repair`` entries (topic by failed skill): a failure inside the verified episode and the
+    executed steps that got past it (ASPIRE's validated repair).
+  Failures alone never become entries. Reuse is recorded: a later verified success that applied an
+  entry adds a confirmation; a failed reuse is recorded and shown, so stale entries are visible.
+  ``frozen=True`` makes the library read-only (held-out evaluation, as in ASPIRE).
+* ``failure-ledger-<robot>.json`` + ``failure-ledger.md`` (:class:`FailureLedger`): ASPIRE's per-task
+  analysis of directions already tried. Every failed attempt (a skill failure, or a task-level
+  failure where every call "succeeded" but the goal was not met) is recorded as an *approach*: the
+  planner's one-line description of what was tried and where it failed (it also names the ledger
+  record of the same approach, as ASPIRE's analysis is LLM-maintained), with host-recorded evidence
+  (last executed calls, last arm target, failing call) and the reported reason. Status:
+  ``tried`` (failed once), ``eliminated`` (the same approach failed twice), ``blocked`` (could not be
+  executed: IK / rejection / missing calibration), ``resolved`` (a later verified success on a
+  similar task). Infrastructure stops are not recorded. Planning sees the unresolved approaches as
+  directions not to repeat unless the condition that caused the failure changed.
 * ``embodiment-<robot>.json`` (:class:`EmbodimentMemory`): numeric corrections the host measures
   itself, without any model judgement:
   - drive gain = object shift measured by two ``locate`` calls around base moves / commanded
     speed*time (1.0 = the base travels exactly as commanded);
   - locate offset = where an object was released (arm FK) minus where ``locate`` later saw it.
-  Medians over recent samples are reported to the planner; the locate offset is applied to new
-  ``locate`` results only once enough consistent samples exist.
 
 Nothing here replays actions; it only changes what the planner is told and how locate is corrected.
 """
@@ -30,11 +44,6 @@ import statistics
 
 from .episode import atomic_json
 
-MAX_LESSONS = 300
-LESSONS_PER_EPISODE = 4
-RECALL_VERIFIED = 8
-RECALL_HYPOTHESES = 8
-SIMILAR_LESSON = 0.45
 INFRASTRUCTURE_STOPS = frozenset({
     'uncertain_execution', 'interrupted', 'host_error', 'startup_error', 'observation_failed',
     'observation_invalid', 'post_motion_observation_failed', 'runtime_changed', 'guarded_execution_unavailable',
@@ -47,6 +56,12 @@ LOCATE_MAX_OFFSET_M = 0.03
 LOCATE_MAX_SPREAD_M = 0.006
 READY_SAMPLES = 3
 KEEP_SAMPLES = 60
+SIMILAR_TASK = 0.6
+RECALL_WORKFLOWS = 3
+RECALL_REPAIRS = 5
+RECALL_LEDGER = 6
+LEDGER_SIMILAR_TASK = 0.5
+BLOCKING_SIGNATURES = ('ik', 'rejected', 'camera_uncalibrated', 'roll_limit')
 
 
 def _now():
@@ -75,7 +90,7 @@ def similarity(a, b):
 
 
 def failure_signature(tool, status, error=None, detail=None):
-    """Short, stable name of how a skill ended; lessons are keyed by (skill, signature)."""
+    """Short, stable name of how a skill ended; repair entries are keyed by (skill, signature)."""
     if status in ('ok', 'completed'):
         return 'ok'
     codes = (detail or {}).get('ik_reason_codes') or []
@@ -91,107 +106,415 @@ def failure_signature(tool, status, error=None, detail=None):
     return 'failed'
 
 
-def select_lessons(candidates, limit=LESSONS_PER_EPISODE):
-    """Pick an episode's lessons: conclusions first, then failures, then the most recent; no near-duplicates.
-
-    Each candidate is {'text', 'skill', 'signature', 'final': bool}; order is chronological.
-    """
-    ranked = sorted(enumerate(candidates), key=lambda item: (item[1].get('final', False),
-                                                            item[1].get('signature') not in ('ok', None), item[0]),
-                    reverse=True)
-    chosen = []
-    for _, candidate in ranked:
-        text = ' '.join(str(candidate.get('text') or '').split())
-        if len(text) < 8 or any(similarity(text, other['text']) >= SIMILAR_LESSON for other in chosen):
-            continue
-        chosen.append({**candidate, 'text': text})
-        if len(chosen) >= limit:
-            break
-    return chosen
+TOPICS = {
+    'episodic-workflows.md': 'Episodic Workflows: verified task sequences',
+    'mobile-grasp.md': 'Mobile Grasping: verified pick / place / arm repairs',
+    'search-and-memory.md': 'Search and Locate: verified locate repairs',
+    'navigation.md': 'Navigation: verified base-approach repairs',
+    'lekiwi-operations.md': 'LeKiwi Operations: verified recovery from rejections and arm state',
+}
+REPAIR_TOPIC = {'pick': 'mobile-grasp.md', 'place': 'mobile-grasp.md', 'move_to': 'mobile-grasp.md',
+                'gripper': 'mobile-grasp.md', 'locate': 'search-and-memory.md', 'drive': 'navigation.md'}
+GOAL_TOOLS = frozenset({'pick', 'place'})
 
 
-class LessonMemory:
-    def __init__(self, memory_dir, robot_id):
-        self.path = Path(memory_dir) / f'lessons-{_safe_name(robot_id)}.json'
-        self.robot_id = robot_id
-        data = _load(self.path, {})
-        self.lessons = list(data.get('lessons') or [])
-        self.next_id = int(data.get('next_id') or len(self.lessons) + 1)
+def _call(action):
+    """One executed skill call as a snippet line, with the host-measured result."""
+    tool, args, result = action.get('tool'), action.get('args') or {}, action.get('result') or {}
+    if tool == 'locate':
+        text = f'locate({args.get("label")!r})'
+        if result.get('xyz_m'):
+            text += f' -> xyz {result["xyz_m"]}, reachable={result.get("reachable")}'
+    elif tool == 'drive':
+        drive = args.get('drive') or {}
+        text = (f'drive(x={drive.get("x")} m/s, y={drive.get("y")} m/s, theta={drive.get("theta")} deg/s, '
+                f'{drive.get("duration_ms")} ms)')
+    elif tool in ('pick', 'place'):
+        text = f'{tool}({args.get("xyz_m")})'
+        if result.get('gripper_after_close') is not None:
+            text += f' -> gripper {result["gripper_after_close"]}% after close'
+    elif tool == 'move_to':
+        text = f'move_to({args.get("xyz_m")}, approach={args.get("approach")!r})'
+    elif tool == 'gripper':
+        text = f'gripper({args.get("gripper_percent")}%)'
+    else:
+        text = f'{tool}()'
+    status = action.get('status')
+    if status != 'ok':
+        text += f'  # {status}: {action.get("error") or ""}'.rstrip()
+    return text
 
+
+def _shape(actions):
+    """Tool sequence with repeats collapsed (locate>drive>locate>pick), used to merge workflows."""
+    tools = []
+    for action in actions:
+        if action.get('status') == 'ok' and action.get('tool') not in ('observe',) and (
+                not tools or tools[-1] != action['tool']):
+            tools.append(action['tool'])
+    return '>'.join(tools)
+
+
+class SkillLibrary:
+    def __init__(self, library_dir, robot_id, *, frozen=False, templates_dir=None):
+        self.dir = Path(library_dir)
+        self.robot_id, self.frozen = robot_id, frozen
+        self.templates_dir = Path(templates_dir) if templates_dir else None
+        data = _load(self.dir / 'index.json', {})
+        self.entries = list(data.get('entries') or [])
+        self.next_id = int(data.get('next_id') or len(self.entries) + 1)
+
+    # -- persistence -------------------------------------------------------------------
     def save(self):
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        live = [lesson for lesson in self.lessons if lesson['status'] != 'retired']
-        retired = [lesson for lesson in self.lessons if lesson['status'] == 'retired']
-        self.lessons = live[-MAX_LESSONS:] + retired[-max(0, MAX_LESSONS - len(live)):]
-        atomic_json(self.path, {'version': 1, 'robot_id': self.robot_id, 'next_id': self.next_id,
-                                'lessons': self.lessons})
+        if self.frozen:
+            return
+        self.dir.mkdir(parents=True, exist_ok=True)
+        atomic_json(self.dir / 'index.json', {'version': 1, 'robot_id': self.robot_id, 'next_id': self.next_id,
+                                              'entries': self.entries})
+        for topic, title in TOPICS.items():
+            (self.dir / topic).write_text(self.render(topic, title), encoding='utf-8')
 
-    def get(self, lesson_id):
-        return next((lesson for lesson in self.lessons if lesson['id'] == lesson_id), None)
+    def render(self, topic, title):
+        lines = [f'# {title}', '',
+                 'Auto-curated by the plan-act loop from episodes verified on this robot (VERIFY turn on a fresh',
+                 'observation + host measurements). Source of truth: `index.json`; do not edit by hand.', '']
+        entries = [entry for entry in self.entries if entry['topic'] == topic]
+        if not entries:
+            lines.append('_No verified entries yet._')
+        for entry in entries:
+            lines += [f'## {entry["id"]} · {entry["title"]}', '',
+                      f'**Trigger:** {entry["trigger"]}', '']
+            if entry.get('contrast'):
+                lines += [f'**Contrast:** {entry["contrast"]}', '']
+            lines += ['**Snippet (executed skill calls, host-recorded):**', '', '```text', *entry['snippet'], '```', '']
+            if entry.get('strategy'):
+                lines += [f'**Strategy (verifier note):** {entry["strategy"]}', '']
+            prov = entry['provenance']
+            lines += [f'**Provenance:** task="{entry["task"]}", run={Path(prov["run"]).name}, date={prov["date"][:10]}, '
+                      f'verification={json.dumps(prov["verification"], ensure_ascii=False)}; '
+                      f'confirmed in {len(entry["confirmed_in"])} later run(s), failed on reuse '
+                      f'{len(entry["failed_reuse_in"])} time(s).', '']
+        return '\n'.join(lines) + '\n'
 
-    def propose(self, text, *, skill, signature, run, source=None):
-        """Store a hypothesis, or count a re-proposal of a similar existing lesson."""
-        text = ' '.join(str(text or '').split())[:400]
-        if len(text) < 8:
-            return None
-        for lesson in self.lessons:
-            if (lesson['status'] != 'retired' and lesson['skill'] == skill and lesson['signature'] == signature
-                    and similarity(lesson['text'], text) >= SIMILAR_LESSON):
-                if lesson.get('source_run') != run and run not in lesson.get('proposed_in', []):
-                    lesson['proposals'] = lesson.get('proposals', 1) + 1
-                    lesson['proposed_in'] = (lesson.get('proposed_in', []) + [run])[-10:]
-                return lesson['id']
-        lesson = {'id': f'L{self.next_id:03d}', 'text': text, 'skill': skill, 'signature': signature,
-                  'status': 'hypothesis', 'support': 0, 'contradict': 0, 'proposals': 1,
-                  'source_run': run, 'proposed_in': [run], 'source': source or {}, 'created_at': _now(),
-                  'uses': []}
+    # -- writing -------------------------------------------------------------------------
+    def _new(self, **fields):
+        entry = {'id': f'S{self.next_id:03d}', 'created_at': _now(), 'confirmed_in': [], 'failed_reuse_in': [],
+                 **fields}
         self.next_id += 1
-        self.lessons.append(lesson)
-        return lesson['id']
+        self.entries.append(entry)
+        return entry['id']
 
-    @staticmethod
-    def _status(lesson):
-        support, contradict = lesson['support'], lesson['contradict']
-        if contradict >= 2 and contradict > support:
-            return 'retired'
-        if support >= 2 and support >= 2 * contradict:
-            return 'verified'
-        return 'hypothesis'
+    def _confirm(self, entry, run):
+        if run not in entry['confirmed_in'] and run != entry['provenance']['run']:
+            entry['confirmed_in'].append(run)
 
-    def credit(self, applied, failed, episode_status, run):
-        """One update per applied lesson per episode; returns {lesson_id: 'support'|'contradict'}."""
-        if episode_status in INFRASTRUCTURE_STOPS:
+    def admit_episode(self, *, task, run, actions, verification, strategy='', labels=(), final_actions=None):
+        """Admit verified knowledge from one episode; returns {'added': [...], 'confirmed': [...]} or a skip.
+
+        ``actions``: every executed call of the episode (repairs); ``final_actions``: the verified
+        attempt only (workflow; defaults to ``actions``).
+        """
+        if self.frozen:
+            return {'skipped': 'library frozen (evaluation mode)'}
+        if not verification.get('passed'):
+            return {'skipped': 'episode success not verified', 'verification': verification}
+        provenance = {'run': run, 'date': _now(), 'verification': verification}
+        added, confirmed = [], []
+        final_actions = actions if final_actions is None else final_actions
+        ok_path = [action for action in final_actions if action.get('status') == 'ok' and action.get('tool') != 'observe']
+        shape = _shape(final_actions)
+        twin = next((entry for entry in self.entries if entry['kind'] == 'workflow' and entry['shape'] == shape
+                     and similarity(entry['task'], task) >= SIMILAR_TASK), None)
+        if twin:
+            self._confirm(twin, run)
+            confirmed.append(twin['id'])
+        elif ok_path:
+            added.append(self._new(kind='workflow', topic='episodic-workflows.md', task=task, labels=list(labels),
+                                   shape=shape, title=f'{task[:70]} ({shape})',
+                                   trigger=f'Task similar to "{task}"' + (f' with {", ".join(labels)}' if labels else ''),
+                                   contrast=None, snippet=[_call(action) for action in ok_path],
+                                   strategy=strategy, provenance=provenance))
+        # Repairs: each failed call, followed by the executed steps up to the next success of the same
+        # tool (or of a goal tool, or the end of the verified episode).
+        for index, action in enumerate(actions):
+            if action.get('status') == 'ok' or action.get('tool') in ('observe', None):
+                continue
+            tool = action['tool']
+            signature = failure_signature(tool, action.get('status'), action.get('error'), action.get('detail'))
+            fix = []
+            for later in actions[index + 1:]:
+                fix.append(later)
+                if later.get('status') == 'ok' and (later['tool'] == tool or later['tool'] in GOAL_TOOLS):
+                    break
+            if not any(item.get('status') == 'ok' for item in fix):
+                continue
+            fix_shape = _shape(fix)
+            twin = next((entry for entry in self.entries if entry['kind'] == 'repair' and entry['failed_tool'] == tool
+                         and entry['signature'] == signature and entry['shape'] == fix_shape
+                         and similarity(entry['task'], task) >= SIMILAR_TASK), None)
+            if twin:
+                self._confirm(twin, run)
+                confirmed.append(twin['id'])
+                continue
+            added.append(self._new(kind='repair', topic=REPAIR_TOPIC.get(tool, 'lekiwi-operations.md'), task=task,
+                                   labels=list(labels), failed_tool=tool, signature=signature, shape=fix_shape,
+                                   title=f'{tool} {signature} -> {fix_shape}',
+                                   trigger=f'{tool} ends with {signature} during a task like "{task}"',
+                                   contrast=f'{_call(action)} failed; the steps below then succeeded in the same verified episode.',
+                                   snippet=[_call(item) for item in fix], strategy=strategy, provenance=provenance))
+        return {'added': added, 'confirmed': confirmed}
+
+    def record_use(self, ids, *, run, status, verified):
+        """A later run that applied entries: confirmation if it was a verified success, else a failed reuse."""
+        if self.frozen or status in INFRASTRUCTURE_STOPS:
             return {}
-        episode_ok = episode_status == 'completion_claim'
         changes = {}
-        for lesson_id in sorted(set(applied)):
-            lesson = self.get(lesson_id)
-            if lesson is None or lesson.get('source_run') == run:
-                continue  # a lesson is never confirmed by the episode that wrote it
-            outcome = 'support' if episode_ok and lesson_id not in failed else 'contradict'
-            lesson[outcome] += 1
-            lesson['uses'] = (lesson.get('uses', []) + [{'run': run, 'outcome': outcome, 'episode': episode_status,
-                                                          'at': _now()}])[-12:]
-            lesson['status'] = self._status(lesson)
-            changes[lesson_id] = outcome
+        for entry in self.entries:
+            if entry['id'] not in ids or entry['provenance']['run'] == run:
+                continue
+            if verified:
+                self._confirm(entry, run)
+                changes[entry['id']] = 'confirmed'
+            elif run not in entry['failed_reuse_in']:
+                entry['failed_reuse_in'].append(run)
+                changes[entry['id']] = 'failed_reuse'
         return changes
 
-    def recall(self):
-        """Lessons for the planner: verified first, then the most re-proposed / recent hypotheses."""
-        verified = sorted((lesson for lesson in self.lessons if lesson['status'] == 'verified'),
-                          key=lambda lesson: (lesson['support'] - lesson['contradict'], lesson['support']),
-                          reverse=True)[:RECALL_VERIFIED]
-        hypotheses = [lesson for lesson in self.lessons if lesson['status'] == 'hypothesis']
-        hypotheses = sorted(hypotheses, key=lambda lesson: (lesson['signature'] != 'ok', lesson.get('proposals', 1),
-                                                            lesson['created_at']), reverse=True)[:RECALL_HYPOTHESES]
-        return [{'id': lesson['id'], 'status': lesson['status'], 'skill': lesson['skill'],
-                 'when': lesson['signature'], 'text': lesson['text'], 'support': lesson['support'],
-                 'contradict': lesson['contradict']} for lesson in verified + hypotheses]
+    # -- reading -------------------------------------------------------------------------
+    @staticmethod
+    def _stale(entry):
+        return len(entry['failed_reuse_in']) >= 2 and len(entry['failed_reuse_in']) > len(entry['confirmed_in'])
+
+    def view(self, entry, compact=False):
+        item = {'id': entry['id'], 'kind': entry['kind'], 'topic': entry['topic'], 'trigger': entry['trigger'],
+                'snippet': entry['snippet'], 'confirmed': len(entry['confirmed_in']),
+                'failed_reuse': len(entry['failed_reuse_in']), 'stale': self._stale(entry)}
+        if not compact:
+            item.update(contrast=entry.get('contrast'), strategy=entry.get('strategy'), task=entry['task'])
+        return item
+
+    def recall(self, task, labels=(), compact=False):
+        """Entries most relevant to ``task``: verified workflows first, then repairs; stale ones last."""
+        def score(entry):
+            overlap = len(set(labels) & set(entry.get('labels') or [])) * 0.3
+            return (not self._stale(entry), similarity(entry['task'], task) + overlap, len(entry['confirmed_in']))
+        workflows = sorted((e for e in self.entries if e['kind'] == 'workflow'), key=score, reverse=True)
+        repairs = sorted((e for e in self.entries if e['kind'] == 'repair'), key=score, reverse=True)
+        return [self.view(entry, compact) for entry in workflows[:RECALL_WORKFLOWS] + repairs[:RECALL_REPAIRS]]
 
     def counts(self):
-        counts = {'verified': 0, 'hypothesis': 0, 'retired': 0}
-        for lesson in self.lessons:
-            counts[lesson['status']] = counts.get(lesson['status'], 0) + 1
+        counts = {topic: 0 for topic in TOPICS}
+        for entry in self.entries:
+            counts[entry['topic']] = counts.get(entry['topic'], 0) + 1
+        return counts
+
+
+def _approach_shape(actions, tail=5):
+    """Last ``tail`` tools of an attempt including failed calls (observe skipped, repeats collapsed)."""
+    tools = []
+    for action in actions:
+        tool = action.get('tool')
+        if tool and tool != 'observe' and (not tools or tools[-1] != tool):
+            tools.append(tool)
+    return '>'.join(tools[-tail:])
+
+
+def _last_target(actions):
+    """Last arm target of an attempt, rounded to 2 cm, so 'release at z=0.14' differs from 'z=0.08'."""
+    for action in reversed(actions):
+        xyz = (action.get('args') or {}).get('xyz_m')
+        if action.get('tool') in ('move_to', 'place', 'pick') and xyz:
+            return [round(round(value / 0.02) * 0.02, 2) for value in xyz]
+    return None
+
+
+class FailureLedger:
+    STATUS_ORDER = {'eliminated': 0, 'blocked': 1, 'tried': 2, 'resolved': 3}
+
+    def __init__(self, memory_dir, robot_id, *, frozen=False):
+        self.dir = Path(memory_dir)
+        self.path = self.dir / f'failure-ledger-{_safe_name(robot_id)}.json'
+        self.robot_id, self.frozen = robot_id, frozen
+        data = _load(self.path, {})
+        self.records = list(data.get('records') or [])
+        self.next_id = int(data.get('next_id') or len(self.records) + 1)
+
+    def save(self):
+        if self.frozen:
+            return
+        self.dir.mkdir(parents=True, exist_ok=True)
+        atomic_json(self.path, {'version': 1, 'robot_id': self.robot_id, 'next_id': self.next_id,
+                                'records': self.records})
+        (self.dir / 'failure-ledger.md').write_text(self.render(), encoding='utf-8')
+
+    def render(self):
+        lines = ['# Failure Ledger: approaches already tried', '',
+                 'Auto-recorded by the plan-act loop from failed attempts (infrastructure stops excluded).',
+                 'Source of truth: the JSON file next to this one; do not edit by hand.', '']
+        if not self.records:
+            lines.append('_No failed attempts recorded yet._')
+        for record in sorted(self.records, key=lambda r: (self.STATUS_ORDER.get(r['status'], 9), r['id'])):
+            last = record['failures'][-1]
+            lines += [f'## {record["id"]} · {record["status"]} · {record["approach"]}', '',
+                      f'**Host evidence:** last tools `{record["tail"]}`, last arm target {record["target"]}', '',
+                      f'**Task:** {record["task"]}', '',
+                      f'**Failure:** {self._failure_text(record)}; failed {len(record["failures"])} time(s). '
+                      f'Last reason: {last["reason"]}', '',
+                      '**Executed (host-recorded):**', '', '```text', *record['snippet'], '```', '']
+            review = last.get('review')
+            if record.get('hypothesis'):
+                lines += [f'**Why (hypothesis, {record.get("hypothesis_status", "untested")}):** '
+                          f'{record.get("failure_type")} — {record["hypothesis"]}', '',
+                          f'**Change to test it:** {record.get("next_try")}'
+                          + (f' — expected: {record["prediction"]}' if record.get('prediction') else ''), '']
+            if review and review.get('step_checks'):
+                lines += ['**Step checks (last review):**', '', '| step | expected | observed | met |', '|---|---|---|---|']
+                lines += [f'| {check.get("index")} | {check.get("expected")} | {check.get("observed")} | {check.get("met")} |'
+                          for check in review['step_checks']]
+                lines.append('')
+            for test in record.get('hypothesis_tests', []):
+                lines.append(f'- Tested in {Path(test["run"]).name} attempt {test["attempt"]}: {test["result"]}'
+                             + (f' — change: {test["change"]}' if test.get('change') else ''))
+            if record.get('hypothesis_tests'):
+                lines.append('')
+            if record['status'] == 'resolved':
+                lines += [f'**Resolved by:** {Path(record["resolved_by"]).name}', '']
+        return '\n'.join(lines) + '\n'
+
+    def record_attempt(self, *, task, run, attempt, actions, reason, approach=None, same_as=None, labels=(),
+                       review=None):
+        """Record one failed attempt; returns (record_id, status) or None when nothing was executed.
+
+        ``approach``/``same_as``: the planner's one-line description of the failed approach and the id
+        of the ledger record it repeats (None if new). Without them (e.g. a budget stop) the host
+        groups by the last executed tools, last arm target and failure signature.
+        ``review``: the REVIEW turn's structured result (first failed step, failure type, hypothesis of
+        why, the change to test it); its approach/same_as take precedence over the action turn's.
+        """
+        if review:
+            approach = review.get('approach') or approach
+            same_as = review.get('same_as_ledger') or same_as
+        if self.frozen:
+            return None
+        calls = [action for action in actions if action.get('tool') and action.get('tool') != 'observe']
+        if not calls:
+            return None
+        failed = [action for action in calls if action.get('status') != 'ok']
+        step = stop = None
+        if failed:
+            last = failed[-1]
+            tool, level = last['tool'], 'skill'
+            signature = failure_signature(tool, last.get('status'), last.get('error'), last.get('detail'))
+            result = last.get('result') or {}
+            step, monitor = result.get('failed_step'), result.get('monitor_stop')
+            if isinstance(monitor, dict):  # the runtime stopped the arm in motion where the check broke
+                signature = 'object_slipped'
+                stop = {key: monitor.get(key) for key in ('condition', 'progress_fraction', 'elapsed_s',
+                                                          'gripper_percent', 'gripper_min_percent')}
+        else:
+            tool, level, signature = None, 'task', 'goal_not_achieved'
+        # Blocked only when the attempt ended on a call the robot could not execute.
+        blocked = calls[-1].get('status') != 'ok' and signature.startswith(BLOCKING_SIGNATURES)
+        tail, target = _approach_shape(calls), _last_target(calls)
+        approach = ' '.join(str(approach or '').split())[:300]
+        failure = {'run': run, 'attempt': attempt, 'at': _now(), 'reason': ' '.join(str(reason or '').split())[:400],
+                   'approach': approach or None}
+        if review:
+            failure['review'] = {key: review.get(key) for key in (
+                'failure_type', 'failure_level', 'failed_step', 'hypothesis', 'evidence', 'next_try', 'prediction',
+                'confidence', 'step_checks', 'agrees_with_host', 'host_type_hint')}
+        twin = None
+        if same_as:
+            twin = next((record for record in self.records if record['id'] == same_as and record['status'] != 'resolved'),
+                        None)
+        if twin is None and not approach:
+            twin = next((record for record in self.records if record['status'] != 'resolved'
+                         and record['tail'] == tail and record['target'] == target and record['signature'] == signature
+                         and similarity(record['task'], task) >= SIMILAR_TASK), None)
+        if twin is None:
+            twin = {'id': f'F{self.next_id:03d}', 'task': task, 'labels': list(labels),
+                    'approach': approach or f'{tail} (last arm target {target})', 'tail': tail, 'target': target,
+                    'level': level, 'tool': tool, 'signature': signature, 'failures': [], 'status': 'tried',
+                    'created_at': _now()}
+            self.next_id += 1
+            self.records.append(twin)
+        if not any(item['run'] == run and item['attempt'] == attempt for item in twin['failures']):
+            twin['failures'].append(failure)
+        twin.update(snippet=[_call(action) for action in calls[-8:]], tail=tail, target=target, level=level, tool=tool,
+                    signature=signature, failed_step=step, in_motion_stop=stop)
+        if review:  # the latest hypothesis of why this approach fails, untested until a later plan tries it
+            twin.update(failure_type=review.get('failure_type'), hypothesis=review.get('hypothesis'),
+                        next_try=review.get('next_try'), prediction=review.get('prediction'),
+                        hypothesis_status='untested')
+        twin['status'] = 'blocked' if blocked else ('eliminated' if len(twin['failures']) >= 2 else 'tried')
+        return twin['id'], twin['status']
+
+    def record_test(self, record_id, *, run, attempt, result, change=''):
+        """A later plan tested this record's hypothesis: supported / not_supported / inconclusive."""
+        if self.frozen:
+            return False
+        record = next((item for item in self.records if item['id'] == record_id), None)
+        if record is None or not record.get('hypothesis'):
+            return False
+        tests = record.setdefault('hypothesis_tests', [])
+        if not any(test['run'] == run and test['attempt'] == attempt for test in tests):
+            tests.append({'run': run, 'attempt': attempt, 'result': result, 'change': str(change or '')[:400],
+                          'at': _now()})
+        record['hypothesis_status'] = result
+        return True
+
+    def resolve(self, task, run):
+        """A verified success on a similar task: earlier failed approaches are resolved (kept for context)."""
+        if self.frozen:
+            return []
+        resolved = []
+        for record in self.records:
+            if record['status'] != 'resolved' and similarity(record['task'], task) >= SIMILAR_TASK:
+                record['status'], record['resolved_by'] = 'resolved', run
+                resolved.append(record['id'])
+        return resolved
+
+    @staticmethod
+    def _failure_text(record):
+        text = f'{record["level"]}-level {record.get("tool") or "goal"} {record["signature"]}'
+        if record.get('failed_step'):
+            text += f' at step {record["failed_step"]!r}'
+        stop = record.get('in_motion_stop')
+        if stop:
+            text += (f' (robot stopped the arm in motion at {stop.get("progress_fraction") or 0:.0%}: gripper '
+                     f'{stop.get("gripper_percent")}% < {stop.get("gripper_min_percent")}%)')
+        return text
+
+    def view(self, record, compact=False):
+        item = {'id': record['id'], 'status': record['status'], 'approach': record['approach'],
+                'last_tools': record['tail'], 'last_arm_target': record['target'],
+                'failure': self._failure_text(record),
+                'times_failed': len(record['failures']), 'last_reason': record['failures'][-1]['reason']}
+        if record.get('hypothesis'):
+            types = {}
+            for failure in record['failures']:
+                kind = (failure.get('review') or {}).get('failure_type')
+                if kind:
+                    types[kind] = types.get(kind, 0) + 1
+            item.update(failure_type=record.get('failure_type'), failure_types=types,
+                        hypothesis=record['hypothesis'], next_try=record.get('next_try'),
+                        hypothesis_status=record.get('hypothesis_status', 'untested'),
+                        hypothesis_tests=[{key: test.get(key) for key in ('result', 'change')}
+                                          for test in record.get('hypothesis_tests', [])[-3:]])
+        if not compact:
+            item.update(task=record['task'], snippet=record['snippet'])
+        return item
+
+    def recall(self, task, compact=False):
+        """Approaches tried on similar tasks: unresolved first (eliminated, blocked, tried), then resolved."""
+        similar = [record for record in self.records if similarity(record['task'], task) >= LEDGER_SIMILAR_TASK]
+        similar.sort(key=lambda r: (self.STATUS_ORDER.get(r['status'], 9), -len(r['failures'])))
+        return [self.view(record, compact) for record in similar[:RECALL_LEDGER]]
+
+    def counts(self):
+        counts = {status: 0 for status in self.STATUS_ORDER}
+        for record in self.records:
+            counts[record['status']] = counts.get(record['status'], 0) + 1
         return counts
 
 
@@ -336,38 +659,20 @@ class MemoryTracker:
 
 
 def import_experience(experience_path, memory_dir, robot_id):
-    """Seed memory from an existing experience.jsonl: hypotheses and drive samples, nothing verified.
-
-    A planner lesson is written after seeing the previous skill result, so it is attributed to that
-    result (skill and failure signature), not to the action it was attached to.
-    """
-    lessons, embodiment = LessonMemory(memory_dir, robot_id), EmbodimentMemory(memory_dir, robot_id)
-    trackers, previous, candidates = {}, {}, {}
-    counts = {'lessons': 0, 'drive_samples': 0}
+    """Seed drive-gain samples from an existing experience.jsonl (locate -> drive -> locate chains)."""
+    embodiment = EmbodimentMemory(memory_dir, robot_id)
+    trackers, counts = {}, {'drive_samples': 0}
     for line in Path(experience_path).read_text(encoding='utf-8').splitlines():
         try:
             record = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if record.get('robot_id') != robot_id:
+        if record.get('robot_id') != robot_id or record.get('kind') != 'action':
             continue
         run = record.get('run') or 'unknown'
-        kind = record.get('kind')
-        if kind in ('attempt', 'verify') and record.get('lesson'):
-            candidates.setdefault(run, []).append({'text': record['lesson'], 'skill': kind,
-                                                   'signature': record.get('verdict') or 'unknown', 'final': True})
-            continue
-        if kind != 'action':
-            continue
         tracker = trackers.setdefault(run, MemoryTracker(embodiment, run=run))
         tool, status, result = record.get('tool'), record.get('status'), record.get('result') or {}
         args = record.get('args') or {}
-        if record.get('lesson'):
-            seen = previous.get(run)
-            skill = seen['tool'] if seen else 'general'
-            signature = failure_signature(seen['tool'], seen['status'], seen.get('error'), seen.get('detail')) if seen else 'start'
-            candidates.setdefault(run, []).append({'text': record['lesson'], 'skill': skill, 'signature': signature})
-        previous[run] = record
         if tool == 'locate' and status == 'ok' and result.get('xyz_m'):
             found = tracker.after_locate(args.get('label'), result['xyz_m'], None)
             if (found.get('drive_measurement') or {}).get('accepted'):
@@ -377,34 +682,94 @@ def import_experience(experience_path, memory_dir, robot_id):
             tracker.after_drive(drive['x'], drive['y'], drive['theta'], drive['duration_ms'])
         else:
             tracker.after_arm_skill(tool, ok=status == 'ok')
-    for run, items in candidates.items():
-        for lesson in select_lessons(items):
-            before = lessons.next_id
-            lessons.propose(lesson['text'], skill=lesson['skill'], signature=lesson['signature'], run=run,
-                            source={'imported_from': str(experience_path)})
-            counts['lessons'] += lessons.next_id - before
-    lessons.save()
     embodiment.save()
+    return counts
+
+
+def import_failures(experience_path, memory_dir, robot_id):
+    """Seed the failure ledger from experience.jsonl, attempt by attempt, in run order.
+
+    An attempt failed when the action loop declared ``failed``, when VERIFY did not confirm it, or
+    when the episode stopped inside it for a non-infrastructure reason. A run that ended in a
+    completion claim resolves earlier records of similar tasks.
+    """
+    ledger = FailureLedger(memory_dir, robot_id)
+    runs = {}
+    for line in Path(experience_path).read_text(encoding='utf-8').splitlines():
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if record.get('robot_id') != robot_id:
+            continue
+        state = runs.setdefault(record.get('run') or 'unknown', {'task': record.get('task') or '', 'attempts': {},
+                                                                 'pending_verify': None, 'episode': None})
+        kind = record.get('kind')
+        if kind in ('action', 'attempt'):
+            attempt = state['attempts'].setdefault(record.get('attempt') or 1, {'actions': [], 'verdict': None,
+                                                                              'reason': None, 'verify': None,
+                                                                              'approach': None, 'same_as': None})
+            if kind == 'action':
+                attempt['actions'].append(record)
+            else:
+                attempt['verdict'], attempt['reason'] = record.get('verdict'), record.get('reason')
+                attempt['approach'], attempt['same_as'] = record.get('failed_approach'), record.get('same_as_ledger')
+                if attempt['verdict'] == 'done':
+                    state['pending_verify'] = record.get('attempt')
+        elif kind == 'verify' and state['pending_verify'] in state['attempts']:
+            state['attempts'][state['pending_verify']]['verify'] = (record.get('verdict'), record.get('reason'))
+        elif kind == 'episode':
+            state['episode'] = (record.get('status'), record.get('reason'))
+    counts = {'recorded': 0, 'resolved': 0}
+    for run, state in runs.items():
+        status, detail = state['episode'] or (None, None)
+        for number, attempt in sorted(state['attempts'].items()):
+            verify = attempt['verify']
+            if attempt['verdict'] == 'failed':
+                reason = attempt['reason'] or 'failed'
+            elif attempt['verdict'] == 'done' and verify and verify[0] != 'confirm':
+                reason = f'VERIFY {verify[0]}: {verify[1]}'
+            elif (attempt['verdict'] is None and status and status not in INFRASTRUCTURE_STOPS
+                  and status != 'completion_claim'):
+                reason = detail or status
+            else:
+                continue
+            if ledger.record_attempt(task=state['task'], run=run, attempt=number, actions=attempt['actions'],
+                                     reason=reason, approach=attempt['approach'], same_as=attempt['same_as']):
+                counts['recorded'] += 1
+        if status == 'completion_claim':
+            counts['resolved'] += len(ledger.resolve(state['task'], run))
+    ledger.save()
     return counts
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description='Inspect or seed LeKiwi robot memory')
     sub = parser.add_subparsers(dest='command', required=True)
-    show = sub.add_parser('show', help='Print lessons and measured body corrections')
+    show = sub.add_parser('show', help='Print the skill library and measured body corrections')
     show.add_argument('--memory-dir', type=Path, default=Path('runs/memory'))
     show.add_argument('--robot-id', default='kiwi-01')
-    seed = sub.add_parser('import-experience', help='Seed hypotheses and drive samples from experience.jsonl')
+    seed = sub.add_parser('import-experience', help='Seed drive samples from experience.jsonl')
     seed.add_argument('experience', type=Path)
     seed.add_argument('--memory-dir', type=Path, default=Path('runs/memory'))
     seed.add_argument('--robot-id', default='kiwi-01')
+    failures = sub.add_parser('import-failures', help='Seed the failure ledger from experience.jsonl')
+    failures.add_argument('experience', type=Path)
+    failures.add_argument('--memory-dir', type=Path, default=Path('runs/memory'))
+    failures.add_argument('--robot-id', default='kiwi-01')
     args = parser.parse_args(argv)
     if args.command == 'import-experience':
         print(json.dumps(import_experience(args.experience, args.memory_dir, args.robot_id), ensure_ascii=False))
         return 0
-    lessons, embodiment = LessonMemory(args.memory_dir, args.robot_id), EmbodimentMemory(args.memory_dir, args.robot_id)
-    print(json.dumps({'counts': lessons.counts(), 'embodiment': embodiment.summary(),
-                      'recall': lessons.recall()}, ensure_ascii=False, indent=2))
+    if args.command == 'import-failures':
+        print(json.dumps(import_failures(args.experience, args.memory_dir, args.robot_id), ensure_ascii=False))
+        return 0
+    library = SkillLibrary(args.memory_dir / 'skill-library', args.robot_id)
+    embodiment = EmbodimentMemory(args.memory_dir, args.robot_id)
+    ledger = FailureLedger(args.memory_dir, args.robot_id)
+    print(json.dumps({'skill_library': library.counts(), 'entries': [library.view(e) for e in library.entries],
+                      'failure_ledger': ledger.counts(), 'ledger': [ledger.view(r) for r in ledger.records],
+                      'embodiment': embodiment.summary()}, ensure_ascii=False, indent=2))
     return 0
 
 

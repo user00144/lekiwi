@@ -113,6 +113,8 @@ def main():
     parser.add_argument("--camera-config", type=Path, help="plan-act: calibrated front camera for locate (optional)")
     parser.add_argument("--experience", type=Path, help="plan-act: experience JSONL (default: runs/experience.jsonl)")
     parser.add_argument("--max-replans", type=int, default=3)
+    parser.add_argument("--freeze-skill-library", action="store_true",
+                        help="plan-act: read the skill library but never write it (evaluation)")
     args = parser.parse_args()
     if args.execute and args.snapshot:
         parser.error("--execute cannot be combined with --snapshot")
@@ -131,7 +133,8 @@ def main():
             if not args.kinematics_config or not args.skills_config:
                 parser.error("--loop plan-act needs --kinematics-config and --skills-config")
             plan_act = {"skills_config": args.skills_config, "camera_config": args.camera_config,
-                        "experience_path": args.experience, "max_replans": args.max_replans}
+                        "experience_path": args.experience, "max_replans": args.max_replans,
+                        "freeze_library": args.freeze_skill_library}
         result = runtime.run_episode(args.robot_id, args.instruction, run_dir=args.run_dir,
                                      max_actions=args.max_actions, max_steps=args.max_steps,
                                      max_seconds=args.max_seconds, kinematics_config=args.kinematics_config,

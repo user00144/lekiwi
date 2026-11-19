@@ -54,6 +54,9 @@ class Skills:
         self.speed_margin = float(motion['speed_margin'])
         self.min_ms, self.max_ms = int(motion['min_duration_ms']), int(motion['max_duration_ms'])
         self.calibration_id = config.get('calibration_id')
+        # In-motion monitor (runtime capability arm_motion_monitor): while the gripper reads as holding,
+        # every arm move asks the runtime to stop and hold if it closes past the held threshold.
+        self.monitor_enabled = bool((config.get('monitor') or {}).get('enabled', True))
         self.log = []
 
     # -- state ---------------------------------------------------------------
@@ -94,6 +97,23 @@ class Skills:
         if not self.runner._fresh():
             await self.runner.observe()
 
+    @property
+    def held_threshold(self):
+        """Gripper percent above which the jaws are stopped by an object (same rule as holding())."""
+        return self.close_percent + self.held_margin
+
+    def monitor_for_move(self):
+        """Monitor for the next arm-only move, or None when the runtime cannot run one.
+
+        Not used during constrained recovery steps, so that runtime recovery stays unchanged.
+        """
+        capabilities = self.runner.packet.get('capabilities') or {}
+        if (not self.monitor_enabled or capabilities.get('arm_motion_monitor') != 1
+                or self.runner.recovery_constraints):
+            return None
+        held = self.gripper_state() == 'closed_on_object'  # an open gripper also reads above the threshold
+        return {'gripper_min_percent': self.held_threshold if held else None}
+
     # -- primitives ----------------------------------------------------------
     async def send(self, command, label):
         """One guarded command from the latest measured observation."""
@@ -120,10 +140,22 @@ class Skills:
                  'error_code': result.get('error_code'), 'error': result.get('error') or result.get('reason'),
                  'duration_ms': command.get('duration_ms'),
                  'xyz_after_m': _round(self.current_xyz()), 'gripper_after': self.gripper_percent()}
+        telemetry = (execution.get('arm_motion') or {}).get('monitor')
+        if command.get('monitor') is not None:
+            entry['monitor'] = {'gripper_min_percent': command['monitor'].get('gripper_min_percent'),
+                                **{key: telemetry.get(key) for key in ('gripper_min_seen', 'max_following_error_deg')
+                                   if isinstance(telemetry, dict)}}
         self.log.append(entry)
+        if entry['status'] == 'stopped':
+            stop = execution.get('monitor_stop') or {}
+            entry['monitor_stop'] = stop
+            raise SkillFailed(f"{label}: stopped mid-motion by the in-motion monitor at "
+                              f"{stop.get('progress_fraction', 0):.0%} (gripper {stop.get('gripper_percent')}% < "
+                              f"{stop.get('gripper_min_percent')}%): the object is probably no longer between the jaws",
+                              self.log, {'monitor_stop': stop, 'failed_step': label, 'failed_primitive': entry})
         if not entry['sent'] or entry['status'] not in ('completed', 'warning'):
             raise SkillFailed(f"{label}: {entry['status']} {entry['error_code'] or ''} {entry['error'] or ''}".strip(),
-                              self.log, {'failed_primitive': entry,
+                              self.log, {'failed_primitive': entry, 'failed_step': label,
                                          'recovery_constraints': runner.recovery_constraints})
         return entry
 
@@ -150,19 +182,24 @@ class Skills:
             if span is None:
                 raise SkillFailed(f"{label}: IK not executable {result.get('reason_codes')}", self.log,
                                   {'ik_reason_codes': result.get('reason_codes'), 'ik_reasons': result.get('reasons'),
-                                   'target_xyz_m': request['xyz_m'], 'swept_path': result.get('swept_path')})
+                                   'target_xyz_m': request['xyz_m'], 'swept_path': result.get('swept_path'),
+                                   'failed_step': label})
             if span < .5:
                 return {'label': label, 'already_there': True}
             roll_change = abs(result['joints']['wrist_roll'] - self.joints()['wrist_roll'])
             if roll_change > MAX_ROLL_CHANGE_DEG:
                 raise SkillFailed(f'{label}: IK needs a {roll_change:.0f} deg wrist_roll change (limit '
                                   f'{MAX_ROLL_CHANGE_DEG:g}); not sent', self.log,
-                                  {'target_xyz_m': request['xyz_m'], 'roll_change_deg': roll_change})
+                                  {'target_xyz_m': request['xyz_m'], 'roll_change_deg': roll_change,
+                                   'failed_step': label})
             constraints = self.runner.recovery_constraints
             if not constraints:
-                return await self.send({'action': 'move', 'x': 0., 'y': 0., 'theta': 0.,
-                                        'duration_ms': self.duration_for(span), 'joints': None,
-                                        'cartesian': request}, label)
+                command = {'action': 'move', 'x': 0., 'y': 0., 'theta': 0., 'duration_ms': self.duration_for(span),
+                           'joints': None, 'cartesian': request}
+                monitor = self.monitor_for_move()
+                if monitor is not None:
+                    command['monitor'] = monitor
+                return await self.send(command, label)
             # Constrained recovery: joint-interpolated waypoint within the runtime limit.
             limit = float(constraints['max_joint_delta_deg']) * .95
             joints = self.joints()
@@ -176,7 +213,7 @@ class Skills:
                              'joints': None, 'cartesian': step}, f'{label} (constrained step)')
             if fraction >= 1.:
                 return self.log[-1]
-        raise SkillFailed(f'{label}: constrained steps exhausted', self.log)
+        raise SkillFailed(f'{label}: constrained steps exhausted', self.log, {'failed_step': label})
 
     def reach_report(self, xyz):
         """IK feasibility (no motion) of the pick hover and grasp points for a floor target."""
@@ -192,10 +229,19 @@ class Skills:
         grip = self.gripper_percent()
         return grip is not None and grip > self.close_percent + self.held_margin
 
+    def gripper_state(self):
+        """open / closed_on_object (jaws stopped above the close target) / closed_empty / unknown."""
+        grip = self.gripper_percent()
+        if grip is None:
+            return 'unknown'
+        if grip >= self.open_percent - 5:
+            return 'open'
+        return 'closed_on_object' if grip > self.held_threshold else 'closed_empty'
+
     def require_holding(self, label):
         if not self.holding():
             raise SkillFailed(f'{label}: the object is no longer between the jaws (gripper {self.gripper_percent()}%)',
-                              self.log, {'gripper_percent': self.gripper_percent()})
+                              self.log, {'gripper_percent': self.gripper_percent(), 'failed_step': label})
 
     def _hover(self, xyz):
         return [xyz[0], xyz[1], xyz[2] + self.hover_m]

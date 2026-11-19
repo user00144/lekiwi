@@ -151,24 +151,54 @@ FK와 해석적 Jacobian은 **Pinocchio (`pin`)**, 관절 제한 안의 미분 I
 
 `--skills-config`를 주면 기본 루프가 plan-act가 됩니다(`--loop step`으로 예전 방식). 한 번에 작은 명령 하나를 고르는 대신 다음 구조로 동작합니다.
 
-1. **Planning**(높은 reasoning): 작업·현재 영상·이전 시도·**로봇 기억**(아래)을 보고 전체 계획(최대 10단계)을 세우고, 기댈 교훈의 ID를 `lessons_applied`로 밝힙니다.
+1. **Planning**(높은 reasoning): 작업·현재 영상·이전 시도·**스킬 라이브러리**(아래)를 보고 전체 계획(최대 10단계)을 세우고, 따를 항목 ID를 `skills_applied`로 밝힙니다.
 2. **Action Loop**(짧은 reasoning): 한 턴에 큰 스킬 하나를 고릅니다. `locate`(front 영상의 상자 → 팔 기준 XYZ), `pick`/`place`(XYZ에서 집기·놓기), `move_to`, `home`, `gripper`, `drive`, `observe`. 루프가 스스로 `done` 또는 `failed`를 선언할 때까지 반복합니다.
 3. `failed` → 기록 후 다시 Planning. `done` → 새 관찰로 **Verify** 턴이 독립적으로 확인(confirm)하거나 재계획을 요청합니다.
-4. 끝나면 로봇 기억을 갱신합니다. 원시 기록은 계속 `runs/experience.jsonl`에 남습니다.
+4. 끝나면 성공이 검증된 경우에만 스킬 라이브러리에 추가합니다. 원시 기록은 계속 `runs/experience.jsonl`에 남습니다.
 
-### 로봇 기억 (`runs/memory/`, 리셋할 수 없는 실제 로봇용)
+### 로봇 기억 (`runs/memory/`)
 
-시뮬레이션처럼 같은 장면을 다시 돌려 검증할 수 없으므로, 기억은 **이후 실제 에피소드의 결과로 검증**됩니다.
+**스킬 라이브러리** (`runs/memory/skill-library/`, ASPIRE·Voyager·ViReSkill 방식): `.claude/skills/lekiwi-mobile-manip/skills`의 항목 형식(Trigger / Contrast / Snippet / Provenance)과 주제 파일을 그대로 쓰며, plan-act 루프가 직접 읽고 씁니다.
 
-- **교훈** (`lessons-<robot>.json`): 모델이 남긴 교훈은 처음엔 **가설**입니다. 에피소드마다 최대 4개(결론·실패 우선, 비슷한 것은 합침), 그 교훈이 본 직전 결과의 스킬·실패 유형으로 분류합니다. 이후 에피소드가 그 교훈을 `lessons_applied`로 밝히고 적용했을 때 에피소드가 성공하면 +1, 그 교훈을 적용한 행동이 실패하거나 에피소드가 실패하면 −1입니다. +2 이상이고 −의 2배 이상이면 **검증됨**, −2 이상이고 +보다 많으면 **폐기**. 교훈을 쓴 에피소드는 스스로 검증하지 못하고, 통신·중단 같은 인프라 정지는 점수에 반영하지 않습니다. Planning에는 검증됨이 먼저, 가설은 "확인 안 됨"으로 전달됩니다.
-- **몸 보정** (`embodiment-<robot>.json`, 모델 판단 없이 호스트가 측정):
+- **저장 조건**: 성공이 **검증된 에피소드만** — VERIFY 턴이 새 관찰로 확인(confirm)하고, 호스트 측정도 맞아야 합니다(집기로 끝나면 그리퍼가 아직 물체를 잡고 있음, 놓기로 끝나면 그리퍼가 열림, 미해결 부분 동작 없음). 실패한 에피소드는 아무것도 추가하지 않습니다.
+- **workflow 항목** (`episodic-workflows.md`): 검증된 시도에서 실제 실행된 스킬 순서와 측정 결과(예: `locate -> xyz, reachable` → `drive(...)` → `pick(...)`). 같은 과제·같은 순서면 새로 만들지 않고 "재확인"을 늘립니다.
+- **repair 항목** (`mobile-grasp.md`, `search-and-memory.md`, `navigation.md`, `lekiwi-operations.md`): 검증된 에피소드 안에서 실패한 호출과, 그 뒤 실제로 통과시킨 단계들(ASPIRE의 검증된 수리).
+- **Snippet은 모델이 쓴 글이 아니라 호스트가 기록한 실행 결과**입니다. Strategy 칸에만 완료 선언·VERIFY의 짧은 메모가 들어갑니다.
+- **사용**: Planning에 지금 과제와 비슷한 workflow 3개·repair 5개를 주고, Codex는 따른 항목 ID를 `skills_applied`로 밝힙니다. 나중에 그 항목을 따른 실행이 검증된 성공이면 "재확인", 실패하면 "재사용 실패"로 기록하고, 재사용 실패가 더 많으면 "오래됨"으로 표시합니다. 비슷한 과제의 실패 호출은 `recent_failures`로 "피할 사례"로만 보여줍니다(규칙 아님).
+- **평가 모드**: `--freeze-skill-library`로 읽기만 하고 쓰지 않습니다(ASPIRE의 동결 평가).
+- 원본은 `index.json`이고 Markdown 파일은 거기서 다시 생성됩니다.
+
+**실패 분석 → 가설 → 검증** (REFLECT 방식, Plan 루프 ↔ Action 루프):
+
+1. Action 루프가 실패하면(`failed`, VERIFY 재계획, 또는 예산·blocked로 에피소드 종료) **REVIEW 턴**이 한 번 돕니다. Codex가 받는 것: 실행한 스킬마다 이유·예상·호스트 측정값, 시도 시작 영상과 장면을 바꾼 마지막 스킬 4개의 직후 영상(정면·손목), 현재 영상, 호스트 사실(처음 실패한 호출, 이동 중 감시 정지, 차체가 안 움직였는데 다시 측정한 위치가 3 cm 이상 바뀐 물체, 지금 그리퍼 상태).
+2. Codex는 단계를 순서대로 확인해(`step_checks`: 예상·실제·충족 여부) **처음 틀어진 단계**를 찾고, 실패 유형(위치 측정 틀림 · 팔이 닿지 않음 · 집기 실패 · 옮기다 놓침 · 놓는 위치 어긋남 · 다른 물체를 건드림 · 주행 오차 · 계획 자체가 틀림 · 로봇 실행 불가)과 **가설**(왜), 그 가설을 확인할 **바꿀 점**(`next_try`), 맞다면 보일 결과(`prediction`)를 냅니다. 호스트는 측정과 어긋나면 고칩니다(이미 실패한 호출보다 뒤 단계를 첫 실패로 고르면 그 호출로 당김, 측정으로 정해지는 유형과 다르면 함께 표시).
+3. 다음 Planning은 가설 목록(이번 에피소드 `H1, H2…`와 실패 장부의 `F###`)을 보고, 검증할 가설을 `hypothesis_tested`로, 계획에서 바꾼 점을 `hypothesis_change`로 밝힙니다.
+4. 그 시도의 결과로 가설이 정리됩니다: 바꿨는데 또 실패 → `not_supported`, 중간에 끊김 → `inconclusive`, 호스트 검증까지 통과한 성공 → `supported`.
+5. 에피소드가 끝나면 실패는 가설과 함께 실패 장부로, 성공은 스킬 라이브러리로 갑니다(검증된 가설이 있으면 "Fix found by testing H1: …"가 그 스킬의 Strategy에 남음).
+
+GUI 판단 기록에 **실패 분석** 카드(처음 틀어진 단계, 유형, 가설, 다음에 바꿀 것, 단계별 확인 ✓✗?)와 계획 카드의 **검증할 가설**이, 로봇 기억 카드에 장부 가설과 검증 상태가 나옵니다. REVIEW를 모르는 플래너(스크립트 등)는 이 단계를 건너뜁니다.
+
+**실패 장부** (`failure-ledger-<robot>.json` + `failure-ledger.md`, ASPIRE의 과제별 분석 문서 방식): 실패한 시도는 모두 기록합니다. 스킬 호출 실패뿐 아니라 호출은 다 성공했는데 목표를 못 이룬 경우(예: 컵 밖에 떨어뜨림)도 포함하고, 통신·관찰 같은 인프라 정지는 제외합니다.
+
+- 기록 내용: Codex가 실패를 선언할 때 쓰는 **실패한 접근 한 줄**(`failed_approach`)과 이유, 호스트가 붙이는 증거(마지막 실행 스킬들, 마지막 팔 목표, 실패한 호출).
+- 같은 접근이면 Codex가 장부 ID(`same_as_ledger`)를 밝혀 묶습니다(접근 한 줄이 없으면 호스트가 마지막 스킬·팔 목표·실패 유형으로 묶음).
+- 상태: **시도함**(1회 실패) · **배제**(같은 접근 2회 이상 실패) · **막힘**(마지막 호출이 IK·거부·보정 문제로 실행 불가) · **해결됨**(이후 비슷한 과제가 검증된 성공).
+- Planning·Action에 해결 안 된 기록을 "이미 해봤고 안 된 접근"으로 주며, 배제·막힘 접근은 원인이 된 조건을 바꾸고 그 이유를 밝힐 때만 다시 시도하게 합니다. 실패는 스킬 라이브러리에는 들어가지 않습니다.
+- 스킬이 실패하면 어느 단계(`failed_step`, 예: `place hover`)에서 깨졌는지와, 이동 중 감시로 멈춘 경우 동작 몇 % 지점이었는지도 남깁니다.
+
+**이동 중 감시** (runtime이 `capabilities.arm_motion_monitor: 1`을 광고할 때, `lekiwi_runtime/README.md` 참고): 그리퍼가 쥔 상태(`close_percent + held_margin_percent` 초과)에서 하는 모든 팔 이동(`pick`의 들어올리기, `place`의 hover·내리기, 쥔 채 `move_to`·`home`)에 호스트가 `monitor: {gripper_min_percent: 27}`을 자동으로 붙입니다. 이동 도중 물체가 빠지면 runtime이 그 자리에서 팔을 세우고, 스킬은 `monitor_stop`·`failed_step`과 함께 실패합니다. Codex는 다음 턴에 이 정보와 새 영상을 받습니다(Codex가 고르는 값이 아니라 호스트가 정함). 쥐지 않은 이동에는 계측만 붙어 팔 추종 오차를 기록합니다. 복구 제한 중의 작은 단계 이동과 runtime이 이 기능을 모르는 경우에는 붙이지 않습니다. 스킬 설정에 `"monitor": {"enabled": false}`를 넣으면 끕니다.
+
+**몸 보정** (`embodiment-<robot>.json`, 모델 판단 없이 호스트가 측정):
   - 주행 계수 = `locate` → `drive` → `locate`(사이에 팔이 물체를 건드리지 않음, 회전 없음)에서 물체가 실제로 다가온 거리 / 명령한 속도×시간. 0.5 m보다 먼 측정·3 cm 미만 이동은 제외. Planning·Action에 `body.drive.gain`으로 전달.
-  - 위치 보정 = `place`로 놓은 위치(팔 FK) − 이후 같은 물체를 `locate`한 위치. 같은 카메라 보정에서 3회 이상 일관되면(편차 ≤ 6 mm, 크기 ≤ 3 cm) 새 `locate` 결과에 자동 적용(`xyz_m_raw`에 원래 값).
-- GUI 왼쪽 **로봇 기억** 카드에 보정값과 교훈(검증됨/가설)이, 판단 카드에 적용한 교훈·주행 측정·기억 갱신이 나옵니다.
+  - 위치 보정 = `place`로 놓은 위치(팔 FK) − 이후 같은 물체를 `locate`한 위치. 같은 카메라 보정에서 3회 이상 일관되면(편차 ≤ 6 mm, 크기 ≤ 3 cm) 새 `locate` 결과에 자동 적용.
+
+GUI 왼쪽 **로봇 기억** 카드에 라이브러리 항목(재확인·재사용 실패 횟수, 실행된 스킬)과 보정값이, 판단 카드에 따른 항목·성공 검증 결과·라이브러리 갱신이 나옵니다.
 
 ```bash
-# 기존 experience.jsonl에서 가설·주행 측정값 가져오기(검증 상태는 0부터)
+# 기존 experience.jsonl에서 주행 측정값 가져오기
 harness/.venv/bin/python -m harness.memory import-experience runs/experience.jsonl --memory-dir runs/memory
+# 기존 experience.jsonl에서 실패 장부 채우기
+harness/.venv/bin/python -m harness.memory import-failures runs/experience.jsonl --memory-dir runs/memory
 harness/.venv/bin/python -m harness.memory show --memory-dir runs/memory
 ```
 

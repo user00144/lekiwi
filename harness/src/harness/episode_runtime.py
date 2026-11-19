@@ -157,6 +157,9 @@ def planner_decision_schema():
     command = schema['$defs']['Command']
     command['properties']['cartesian'].pop('default', None)
     command['required'].append('cartesian')
+    # In-motion monitors are chosen by host skills, never by the model.
+    command['properties'].pop('monitor', None)
+    schema['$defs'].pop('ArmMonitor', None)
     return schema
 
 

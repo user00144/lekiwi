@@ -807,6 +807,7 @@ select:focus {
 .tl-card.phase-planning { border-left-color: #2563eb; }
 .tl-card.phase-action { border-left-color: var(--primary); }
 .tl-card.phase-verify { border-left-color: #7c3aed; }
+.tl-card.phase-review { border-left-color: #c2410c; }
 .tl-card.phase-skill { border-left-color: #b45309; }
 .tl-card.phase-observe { border-left-color: #94a3b8; }
 
@@ -844,6 +845,7 @@ select:focus {
 .tl-phase.phase-planning { background: #2563eb; }
 .tl-phase.phase-action { background: var(--primary); }
 .tl-phase.phase-verify { background: #7c3aed; }
+.tl-phase.phase-review { background: #c2410c; }
 .tl-phase.phase-skill { background: #b45309; }
 
 .tl-tool {
@@ -1153,7 +1155,7 @@ select:focus {
 
 .memory-row {
   display: grid;
-  grid-template-columns: 64px minmax(0, 1fr);
+  grid-template-columns: 92px minmax(0, 1fr);
   gap: 8px;
   font-size: 12.5px;
 }
